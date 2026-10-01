@@ -19,6 +19,7 @@ local INVENTORY_FILE = OUTPUT_FOLDER .. "/inventory.json"
 local ATTRIBUTES_FILE = OUTPUT_FOLDER .. "/attributes.json"
 local TOOLS_FILE = OUTPUT_FOLDER .. "/tools.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
+local WARNINGS_FILE = OUTPUT_FOLDER .. "/warnings.json"
 
 local YIELD_EVERY = 250
 local MAX_SERIALIZE_DEPTH = 32
@@ -35,13 +36,20 @@ local nextInstanceId = 0
 
 local classCounts = {}
 local errors = {}
+local warnings = {}
 local attributeIndex = {}
 local toolRecords = {}
 local instanceIds = setmetatable({}, { __mode = "k" })
 local instanceMetaById = {}
+local traversedInstances = {}
+local invalidUtf8Cache = {}
+local invalidUtf8StringCount = 0
+local invalidClassObjects = setmetatable({}, { __mode = "k" })
+local invalidClassNameCount = 0
 
 local remoteIndex = {
 	RemoteEvents = {},
+	UnreliableRemoteEvents = {},
 	RemoteFunctions = {},
 	BindableEvents = {},
 	BindableFunctions = {}
@@ -50,7 +58,8 @@ local remoteIndex = {
 local scriptIndex = {
 	LocalScripts = {},
 	ModuleScripts = {},
-	Scripts = {}
+	Scripts = {},
+	CoreScripts = {}
 }
 
 local inventoryToolIds = {
@@ -59,13 +68,97 @@ local inventoryToolIds = {
 	StarterGear = {}
 }
 
+local function isContinuationByte(value)
+	return value ~= nil and value >= 0x80 and value <= 0xBF
+end
+
+local function sanitizeString(value)
+	if type(value) ~= "string" then
+		value = tostring(value)
+	end
+
+	local utf8Ok, utf8Length = pcall(utf8.len, value)
+	if utf8Ok and utf8Length ~= nil then
+		return value
+	end
+
+	local cached = invalidUtf8Cache[value]
+	if cached then
+		return cached
+	end
+
+	local output = {}
+	local index = 1
+	local length = #value
+
+	while index <= length do
+		local b1 = string.byte(value, index)
+		local sequenceLength = 0
+
+		if b1 <= 0x7F then
+			sequenceLength = 1
+		elseif b1 >= 0xC2 and b1 <= 0xDF then
+			local b2 = string.byte(value, index + 1)
+			if isContinuationByte(b2) then
+				sequenceLength = 2
+			end
+		elseif b1 >= 0xE0 and b1 <= 0xEF then
+			local b2 = string.byte(value, index + 1)
+			local b3 = string.byte(value, index + 2)
+			local secondValid = false
+
+			if b1 == 0xE0 then
+				secondValid = b2 ~= nil and b2 >= 0xA0 and b2 <= 0xBF
+			elseif b1 == 0xED then
+				secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x9F
+			else
+				secondValid = isContinuationByte(b2)
+			end
+
+			if secondValid and isContinuationByte(b3) then
+				sequenceLength = 3
+			end
+		elseif b1 >= 0xF0 and b1 <= 0xF4 then
+			local b2 = string.byte(value, index + 1)
+			local b3 = string.byte(value, index + 2)
+			local b4 = string.byte(value, index + 3)
+			local secondValid = false
+
+			if b1 == 0xF0 then
+				secondValid = b2 ~= nil and b2 >= 0x90 and b2 <= 0xBF
+			elseif b1 == 0xF4 then
+				secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x8F
+			else
+				secondValid = isContinuationByte(b2)
+			end
+
+			if secondValid and isContinuationByte(b3) and isContinuationByte(b4) then
+				sequenceLength = 4
+			end
+		end
+
+		if sequenceLength > 0 then
+			table.insert(output, string.sub(value, index, index + sequenceLength - 1))
+			index = index + sequenceLength
+		else
+			table.insert(output, string.format("\\x%02X", b1))
+			index = index + 1
+		end
+	end
+
+	local sanitized = table.concat(output)
+	invalidUtf8Cache[value] = sanitized
+	invalidUtf8StringCount = invalidUtf8StringCount + 1
+	return sanitized
+end
+
 local function safeName(object)
 	local ok, value = pcall(function()
 		return object.Name
 	end)
 
 	if ok then
-		return value
+		return sanitizeString(value)
 	end
 
 	return "<unknown>"
@@ -76,8 +169,16 @@ local function safeClassName(object)
 		return object.ClassName
 	end)
 
-	if ok then
-		return value
+	if ok and type(value) == "string" then
+		value = sanitizeString(value)
+		if value ~= "" then
+			return value
+		end
+	end
+
+	if not invalidClassObjects[object] then
+		invalidClassObjects[object] = true
+		invalidClassNameCount = invalidClassNameCount + 1
 	end
 
 	return "Instance"
@@ -89,16 +190,16 @@ local function safeFullName(object)
 	end)
 
 	if ok then
-		return result
+		return sanitizeString(result)
 	end
 
 	return safeName(object)
 end
 
-local function recordError(stage, object, message, property)
+local function makeIssue(stage, object, message, property)
 	local entry = {
-		Stage = stage,
-		Error = tostring(message)
+		Stage = sanitizeString(stage),
+		Error = sanitizeString(message)
 	}
 
 	if object then
@@ -109,10 +210,18 @@ local function recordError(stage, object, message, property)
 	end
 
 	if property then
-		entry.Property = property
+		entry.Property = sanitizeString(property)
 	end
 
-	table.insert(errors, entry)
+	return entry
+end
+
+local function recordError(stage, object, message, property)
+	table.insert(errors, makeIssue(stage, object, message, property))
+end
+
+local function recordWarning(stage, object, message, property)
+	table.insert(warnings, makeIssue(stage, object, message, property))
 end
 
 local function safeGet(object, property)
@@ -156,16 +265,16 @@ local function assignInstanceId(object)
 	return id
 end
 
-local function updateInstanceMeta(object, id, parentId)
+local function updateInstanceMeta(object, id, parentId, name, className, path)
 	local meta = instanceMetaById[id]
 	if not meta then
 		meta = { Id = id }
 		instanceMetaById[id] = meta
 	end
 
-	meta.Name = safeName(object)
-	meta.ClassName = safeClassName(object)
-	meta.Path = safeFullName(object)
+	meta.Name = name or safeName(object)
+	meta.ClassName = className or safeClassName(object)
+	meta.Path = path or safeFullName(object)
 	meta.ParentId = parentId
 	meta.ReferencedOnly = false
 end
@@ -191,6 +300,25 @@ local function finiteNumber(value)
 	end
 
 	return value ~= math.huge and value ~= -math.huge
+end
+
+local function serializeComponentNumber(value)
+	if finiteNumber(value) then
+		return value
+	end
+
+	return {
+		__type = "NonFiniteNumber",
+		value = sanitizeString(tostring(value))
+	}
+end
+
+local function optionalMap(value)
+	if next(value) == nil then
+		return nil
+	end
+
+	return value
 end
 
 local function isArrayTable(value)
@@ -246,7 +374,11 @@ serializeValue = function(value, state)
 
 	local valueType = typeof(value)
 
-	if valueType == "string" or valueType == "boolean" then
+	if valueType == "string" then
+		return sanitizeString(value)
+	end
+
+	if valueType == "boolean" then
 		return value
 	end
 
@@ -257,65 +389,71 @@ serializeValue = function(value, state)
 
 		return {
 			__type = "Number",
-			value = tostring(value)
+			value = sanitizeString(tostring(value))
 		}
 	end
 
 	if valueType == "Vector3" then
 		return {
 			__type = "Vector3",
-			x = value.X,
-			y = value.Y,
-			z = value.Z
+			x = serializeComponentNumber(value.X),
+			y = serializeComponentNumber(value.Y),
+			z = serializeComponentNumber(value.Z)
 		}
 	end
 
 	if valueType == "Vector2" then
 		return {
 			__type = "Vector2",
-			x = value.X,
-			y = value.Y
+			x = serializeComponentNumber(value.X),
+			y = serializeComponentNumber(value.Y)
 		}
 	end
 
 	if valueType == "Color3" then
 		return {
 			__type = "Color3",
-			r = value.R,
-			g = value.G,
-			b = value.B
+			r = serializeComponentNumber(value.R),
+			g = serializeComponentNumber(value.G),
+			b = serializeComponentNumber(value.B)
 		}
 	end
 
 	if valueType == "CFrame" then
+		local rawComponents = { value:GetComponents() }
+		local components = {}
+		for index, component in ipairs(rawComponents) do
+			components[index] = serializeComponentNumber(component)
+		end
+
 		return {
 			__type = "CFrame",
-			components = { value:GetComponents() }
+			components = components
 		}
 	end
 
 	if valueType == "UDim" then
 		return {
 			__type = "UDim",
-			scale = value.Scale,
-			offset = value.Offset
+			scale = serializeComponentNumber(value.Scale),
+			offset = serializeComponentNumber(value.Offset)
 		}
 	end
 
 	if valueType == "UDim2" then
 		return {
 			__type = "UDim2",
-			xScale = value.X.Scale,
-			xOffset = value.X.Offset,
-			yScale = value.Y.Scale,
-			yOffset = value.Y.Offset
+			xScale = serializeComponentNumber(value.X.Scale),
+			xOffset = serializeComponentNumber(value.X.Offset),
+			yScale = serializeComponentNumber(value.Y.Scale),
+			yOffset = serializeComponentNumber(value.Y.Offset)
 		}
 	end
 
 	if valueType == "BrickColor" then
 		return {
 			__type = "BrickColor",
-			name = value.Name,
+			name = sanitizeString(value.Name),
 			number = value.Number
 		}
 	end
@@ -323,15 +461,15 @@ serializeValue = function(value, state)
 	if valueType == "EnumItem" then
 		return {
 			__type = "EnumItem",
-			value = tostring(value)
+			value = sanitizeString(tostring(value))
 		}
 	end
 
 	if valueType == "NumberRange" then
 		return {
 			__type = "NumberRange",
-			min = value.Min,
-			max = value.Max
+			min = serializeComponentNumber(value.Min),
+			max = serializeComponentNumber(value.Max)
 		}
 	end
 
@@ -355,9 +493,9 @@ serializeValue = function(value, state)
 		local keypoints = {}
 		for _, keypoint in ipairs(value.Keypoints) do
 			table.insert(keypoints, {
-				time = keypoint.Time,
-				value = keypoint.Value,
-				envelope = keypoint.Envelope
+				time = serializeComponentNumber(keypoint.Time),
+				value = serializeComponentNumber(keypoint.Value),
+				envelope = serializeComponentNumber(keypoint.Envelope)
 			})
 		end
 
@@ -371,7 +509,7 @@ serializeValue = function(value, state)
 		local keypoints = {}
 		for _, keypoint in ipairs(value.Keypoints) do
 			table.insert(keypoints, {
-				time = keypoint.Time,
+				time = serializeComponentNumber(keypoint.Time),
 				value = serializeValue(keypoint.Value)
 			})
 		end
@@ -439,8 +577,8 @@ serializeValue = function(value, state)
 	end
 
 	return {
-		__type = valueType,
-		value = tostring(value)
+		__type = sanitizeString(valueType),
+		value = sanitizeString(tostring(value))
 	}
 end
 
@@ -457,11 +595,12 @@ local function getAttributes(object)
 	local output = {}
 
 	for name, value in pairs(attributes) do
+		local safeAttributeName = sanitizeString(name)
 		local success, serialized = pcall(serializeValue, value)
 		if success then
-			output[name] = serialized
+			output[safeAttributeName] = serialized
 		else
-			recordError("SerializeAttribute", object, serialized, name)
+			recordError("SerializeAttribute", object, serialized, safeAttributeName)
 		end
 	end
 
@@ -476,6 +615,10 @@ local function getTags(object)
 	if not ok then
 		recordError("GetTags", object, tags)
 		return {}
+	end
+
+	for index, tag in ipairs(tags) do
+		tags[index] = sanitizeString(tag)
 	end
 
 	table.sort(tags)
@@ -575,6 +718,7 @@ local PROPERTY_GROUPS = {
 
 local REMOTE_BUCKETS = {
 	RemoteEvent = "RemoteEvents",
+	UnreliableRemoteEvent = "UnreliableRemoteEvents",
 	RemoteFunction = "RemoteFunctions",
 	BindableEvent = "BindableEvents",
 	BindableFunction = "BindableFunctions"
@@ -583,7 +727,8 @@ local REMOTE_BUCKETS = {
 local SCRIPT_BUCKETS = {
 	LocalScript = "LocalScripts",
 	ModuleScript = "ModuleScripts",
-	Script = "Scripts"
+	Script = "Scripts",
+	CoreScript = "CoreScripts"
 }
 
 local function captureProperty(object, output, property)
@@ -606,9 +751,9 @@ local function captureProperty(object, output, property)
 	end
 end
 
-local function getUsefulProperties(object)
+local function getUsefulProperties(object, className)
 	local data = {}
-	local className = safeClassName(object)
+	className = className or safeClassName(object)
 
 	for _, group in ipairs(PROPERTY_GROUPS) do
 		if safeIsA(object, group.Class) then
@@ -629,22 +774,21 @@ local function getUsefulProperties(object)
 	return data
 end
 
-local function registerAttributes(object, id, path, attributes)
+local function registerAttributes(id, name, className, path, attributes)
 	if next(attributes) == nil then
 		return
 	end
 
 	table.insert(attributeIndex, {
 		Id = id,
-		Name = safeName(object),
-		ClassName = safeClassName(object),
+		Name = name,
+		ClassName = className,
 		Path = path,
 		Attributes = attributes
 	})
 end
 
-local function registerRemote(object, id, parentId, path, attributes, tags)
-	local className = safeClassName(object)
+local function registerRemote(id, name, className, parentId, path, attributes, tags)
 	local bucket = REMOTE_BUCKETS[className]
 	if not bucket then
 		return
@@ -652,17 +796,16 @@ local function registerRemote(object, id, parentId, path, attributes, tags)
 
 	table.insert(remoteIndex[bucket], {
 		Id = id,
-		Name = safeName(object),
+		Name = name,
 		ClassName = className,
 		Path = path,
 		ParentId = parentId,
-		Attributes = attributes,
+		Attributes = optionalMap(attributes),
 		Tags = tags
 	})
 end
 
-local function registerScript(object, id, parentId, path, properties)
-	local className = safeClassName(object)
+local function registerScript(id, name, className, parentId, path, properties)
 	local bucket = SCRIPT_BUCKETS[className]
 	if not bucket then
 		return
@@ -670,7 +813,7 @@ local function registerScript(object, id, parentId, path, properties)
 
 	local record = {
 		Id = id,
-		Name = safeName(object),
+		Name = name,
 		ClassName = className,
 		Path = path,
 		ParentId = parentId
@@ -703,15 +846,15 @@ local function resolveInventorySource(object, inheritedSource)
 	return inheritedSource
 end
 
-local function createToolRecord(object, id, path, source, attributes, properties)
+local function createToolRecord(object, id, name, className, path, source, attributes, properties)
 	local record = {
 		Id = id,
-		Name = safeName(object),
-		ClassName = safeClassName(object),
+		Name = name,
+		ClassName = className,
 		Path = path,
 		Source = source,
-		Attributes = attributes,
-		Properties = properties,
+		Attributes = optionalMap(attributes),
+		Properties = optionalMap(properties),
 		HandleId = nil,
 		AnimationIds = {},
 		SoundIds = {},
@@ -732,7 +875,7 @@ local function createToolRecord(object, id, path, source, attributes, properties
 	}
 end
 
-local function registerToolDescendant(toolState, object, id, className)
+local function registerToolDescendant(toolState, object, id, className, name)
 	if not toolState then
 		return
 	end
@@ -754,7 +897,7 @@ local function registerToolDescendant(toolState, object, id, className)
 	end
 
 	local parent, parentReadable = safeGet(object, "Parent")
-	if parentReadable and parent == toolState.Instance and safeName(object) == "Handle" and record.HandleId == nil then
+	if parentReadable and parent == toolState.Instance and name == "Handle" and record.HandleId == nil then
 		record.HandleId = id
 	end
 end
@@ -792,18 +935,19 @@ end
 
 local function makeFailedNode(object, parentId, dumpError)
 	local id = assignInstanceId(object)
-	updateInstanceMeta(object, id, parentId)
+	local name = safeName(object)
+	local className = safeClassName(object)
+	local path = safeFullName(object)
+	updateInstanceMeta(object, id, parentId, name, className, path)
 
 	return {
 		Id = id,
-		Name = safeName(object),
-		ClassName = safeClassName(object),
-		Path = safeFullName(object),
+		Name = name,
+		ClassName = className,
+		Path = path,
 		ParentId = parentId,
-		DumpError = tostring(dumpError),
-		Attributes = {},
+		DumpError = sanitizeString(dumpError),
 		Tags = {},
-		Properties = {},
 		Children = {}
 	}
 end
@@ -811,17 +955,49 @@ end
 local dumpNode
 
 dumpNode = function(object, parentId, context)
-	local id = assignInstanceId(object)
-	updateInstanceMeta(object, id, parentId)
+	local previousVisit = traversedInstances[object]
+	if previousVisit then
+		recordWarning(
+			"RevisitedInstance",
+			object,
+			string.format(
+				"Instance #%d was already traversed at %s and was skipped on a later encounter",
+				previousVisit.Id,
+				previousVisit.Path
+			)
+		)
+		return nil, "revisited"
+	end
 
-	nodeCount = nodeCount + 1
-	if nodeCount % YIELD_EVERY == 0 then
-		task.wait()
+	local id = assignInstanceId(object)
+	local expectedParent = context and context.ParentObject or nil
+	if expectedParent then
+		local actualParent, parentReadable = safeGet(object, "Parent")
+		if parentReadable and actualParent ~= expectedParent then
+			recordWarning(
+				"ParentChangedBeforeVisit",
+				object,
+				"Instance changed parent after GetChildren() and was skipped from the stale parent snapshot"
+			)
+			return nil, "parent_changed"
+		end
 	end
 
 	local name = safeName(object)
 	local className = safeClassName(object)
 	local path = safeFullName(object)
+
+	traversedInstances[object] = {
+		Id = id,
+		ParentId = parentId,
+		Path = path
+	}
+	updateInstanceMeta(object, id, parentId, name, className, path)
+
+	nodeCount = nodeCount + 1
+	if nodeCount % YIELD_EVERY == 0 then
+		task.wait()
+	end
 	local source = resolveInventorySource(object, context and context.InventorySource or nil)
 	local parentToolState = context and context.ToolState or nil
 
@@ -829,18 +1005,20 @@ dumpNode = function(object, parentId, context)
 
 	local attributes = getAttributes(object)
 	local tags = getTags(object)
-	local properties = getUsefulProperties(object)
+	local properties = getUsefulProperties(object, className)
 
-	registerAttributes(object, id, path, attributes)
-	registerRemote(object, id, parentId, path, attributes, tags)
-	registerScript(object, id, parentId, path, properties)
-	registerToolDescendant(parentToolState, object, id, className)
+	registerAttributes(id, name, className, path, attributes)
+	registerRemote(id, name, className, parentId, path, attributes, tags)
+	registerScript(id, name, className, parentId, path, properties)
+	registerToolDescendant(parentToolState, object, id, className, name)
 
 	local currentToolState = parentToolState
 	if className == "Tool" or safeIsA(object, "Tool") then
 		currentToolState = createToolRecord(
 			object,
 			id,
+			name,
+			className,
 			path,
 			source,
 			attributes,
@@ -854,28 +1032,44 @@ dumpNode = function(object, parentId, context)
 		ClassName = className,
 		Path = path,
 		ParentId = parentId,
-		Attributes = attributes,
+		Attributes = optionalMap(attributes),
 		Tags = tags,
-		Properties = properties,
+		Properties = optionalMap(properties),
 		Children = {}
 	}
 
 	for _, child in ipairs(getSortedChildren(object)) do
-		local ok, childData = pcall(
+		local ok, childData, childStatus = pcall(
 			dumpNode,
 			child,
 			id,
 			{
 				InventorySource = source,
-				ToolState = currentToolState
+				ToolState = currentToolState,
+				ParentObject = object
 			}
 		)
 
-		if ok and childData then
-			table.insert(node.Children, childData)
+		if ok then
+			if childData then
+				table.insert(node.Children, childData)
+			elseif childStatus == nil then
+				recordError("DumpNode", child, "dumpNode returned no data")
+			end
 		else
 			recordError("DumpNode", child, childData)
 			table.insert(node.Children, makeFailedNode(child, id, childData))
+		end
+	end
+
+	if expectedParent then
+		local finalParent, parentReadable = safeGet(object, "Parent")
+		if parentReadable and finalParent ~= expectedParent then
+			recordWarning(
+				"ParentChangedDuringVisit",
+				object,
+				"Instance changed parent while it was being dumped; the node keeps its first-seen snapshot location"
+			)
 		end
 	end
 
@@ -968,17 +1162,20 @@ local function buildInventory()
 	}
 end
 
+local function totalBucketCount(index)
+	local total = 0
+	for _, bucket in pairs(index) do
+		total = total + #bucket
+	end
+	return total
+end
+
 local function totalRemoteCount()
-	return #remoteIndex.RemoteEvents
-		+ #remoteIndex.RemoteFunctions
-		+ #remoteIndex.BindableEvents
-		+ #remoteIndex.BindableFunctions
+	return totalBucketCount(remoteIndex)
 end
 
 local function totalScriptCount()
-	return #scriptIndex.LocalScripts
-		+ #scriptIndex.ModuleScripts
-		+ #scriptIndex.Scripts
+	return totalBucketCount(scriptIndex)
 end
 
 local function buildSummary(elapsed)
@@ -1002,10 +1199,10 @@ local function buildSummary(elapsed)
 	local lines = {
 		"Schema: " .. SCHEMA_NAME,
 		"Schema Version: " .. tostring(SCHEMA_VERSION),
-		"Game: " .. tostring(game.Name),
+		"Game: " .. sanitizeString(game.Name),
 		"PlaceId: " .. tostring(game.PlaceId),
 		"GameId: " .. tostring(game.GameId),
-		"JobId: " .. tostring(game.JobId),
+		"JobId: " .. sanitizeString(game.JobId),
 		"Total Instances: " .. tostring(nodeCount),
 		"Registered IDs: " .. tostring(nextInstanceId),
 		"Remotes / Bindables: " .. tostring(totalRemoteCount()),
@@ -1013,6 +1210,9 @@ local function buildSummary(elapsed)
 		"Objects With Attributes: " .. tostring(#attributeIndex),
 		"Tools: " .. tostring(#toolRecords),
 		"Errors: " .. tostring(#errors),
+		"Warnings: " .. tostring(#warnings),
+		"Sanitized invalid UTF-8 strings: " .. tostring(invalidUtf8StringCount),
+		"Invalid / empty class names: " .. tostring(invalidClassNameCount),
 		"Time: " .. string.format("%.2fs", elapsed),
 		"",
 		"Class Counts:"
@@ -1041,8 +1241,8 @@ local function encodeJSON(data, label)
 
 	local fallbackOk, fallback = pcall(function()
 		return HttpService:JSONEncode({
-			Error = tostring(result),
-			Message = label .. " export failed"
+			Error = sanitizeString(result),
+			Message = sanitizeString(label .. " export failed")
 		})
 	end)
 
@@ -1104,37 +1304,42 @@ local function run()
 	end
 
 	local rootId = assignInstanceId(game)
-	updateInstanceMeta(game, rootId, nil)
+	updateInstanceMeta(game, rootId, nil, "game", "DataModel", "game")
 
 	local root = {
 		Id = rootId,
 		Name = "game",
 		ClassName = "DataModel",
 		Path = "game",
-		Attributes = getAttributes(game),
+		Attributes = optionalMap(getAttributes(game)),
 		Tags = getTags(game),
 		Properties = {
-			Name = game.Name,
+			Name = sanitizeString(game.Name),
 			PlaceId = game.PlaceId,
 			GameId = game.GameId,
-			JobId = game.JobId
+			JobId = sanitizeString(game.JobId)
 		},
 		Children = {}
 	}
 
 	for _, service in ipairs(getSortedChildren(game)) do
-		local ok, result = pcall(
+		local ok, result, status = pcall(
 			dumpNode,
 			service,
 			rootId,
 			{
 				InventorySource = nil,
-				ToolState = nil
+				ToolState = nil,
+				ParentObject = game
 			}
 		)
 
-		if ok and result then
-			table.insert(root.Children, result)
+		if ok then
+			if result then
+				table.insert(root.Children, result)
+			elseif status == nil then
+				recordError("DumpRootChild", service, "dumpNode returned no data")
+			end
 		else
 			recordError("DumpRootChild", service, result)
 			table.insert(root.Children, makeFailedNode(service, rootId, result))
@@ -1151,6 +1356,7 @@ local function run()
 	local remotesDocument = {
 		Total = totalRemoteCount(),
 		RemoteEvents = remoteIndex.RemoteEvents,
+		UnreliableRemoteEvents = remoteIndex.UnreliableRemoteEvents,
 		RemoteFunctions = remoteIndex.RemoteFunctions,
 		BindableEvents = remoteIndex.BindableEvents,
 		BindableFunctions = remoteIndex.BindableFunctions
@@ -1160,7 +1366,8 @@ local function run()
 		Total = totalScriptCount(),
 		LocalScripts = scriptIndex.LocalScripts,
 		ModuleScripts = scriptIndex.ModuleScripts,
-		Scripts = scriptIndex.Scripts
+		Scripts = scriptIndex.Scripts,
+		CoreScripts = scriptIndex.CoreScripts
 	}
 
 	local meta = {
@@ -1168,13 +1375,13 @@ local function run()
 		SchemaVersion = SCHEMA_VERSION,
 		GeneratedAtUnix = os.time(),
 		Game = {
-			Name = game.Name,
+			Name = sanitizeString(game.Name),
 			PlaceId = game.PlaceId,
 			GameId = game.GameId,
-			JobId = game.JobId
+			JobId = sanitizeString(game.JobId)
 		},
 		Player = LocalPlayer and {
-			Name = LocalPlayer.Name,
+			Name = safeName(LocalPlayer),
 			UserId = LocalPlayer.UserId
 		} or nil,
 		Stats = {
@@ -1185,6 +1392,9 @@ local function run()
 			ObjectsWithAttributes = #attributeIndex,
 			Tools = #toolRecords,
 			Errors = #errors,
+			Warnings = #warnings,
+			SanitizedInvalidUtf8Strings = invalidUtf8StringCount,
+			InvalidClassNames = invalidClassNameCount,
 			ElapsedSeconds = elapsed
 		},
 		Capabilities = capabilities
@@ -1209,7 +1419,13 @@ local function run()
 	writeSafe(ATTRIBUTES_FILE, encoded.Attributes)
 	writeSafe(TOOLS_FILE, encoded.Tools)
 
+	local warningJSON = encodeJSON(warnings, "warnings.json")
+	writeSafe(WARNINGS_FILE, warningJSON)
+
 	meta.Stats.Errors = #errors
+	meta.Stats.Warnings = #warnings
+	meta.Stats.SanitizedInvalidUtf8Strings = invalidUtf8StringCount
+	meta.Stats.InvalidClassNames = invalidClassNameCount
 	writeSafe(SUMMARY_FILE, buildSummary(elapsed))
 	writeSafe(META_FILE, encodeJSON(meta, "meta.json"))
 
@@ -1224,6 +1440,8 @@ local function run()
 	print("Attributes:", #attributeIndex)
 	print("Tools:", #toolRecords)
 	print("Errors:", #errors)
+	print("Warnings:", #warnings)
+	print("Sanitized invalid UTF-8 strings:", invalidUtf8StringCount)
 	print("Time:", string.format("%.2fs", elapsed))
 	print("Folder:", OUTPUT_FOLDER)
 end
