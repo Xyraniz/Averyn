@@ -18,11 +18,28 @@ local SUMMARY_FILE = OUTPUT_FOLDER .. "/summary.txt"
 local INVENTORY_FILE = OUTPUT_FOLDER .. "/inventory.json"
 local ATTRIBUTES_FILE = OUTPUT_FOLDER .. "/attributes.json"
 local TOOLS_FILE = OUTPUT_FOLDER .. "/tools.json"
+local VALUES_FILE = OUTPUT_FOLDER .. "/values.json"
+local PLAYERS_FILE = OUTPUT_FOLDER .. "/players.json"
+local PLAYER_REFERENCES_FILE = OUTPUT_FOLDER .. "/player_references.json"
+local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
+local RUNTIME_EVENTS_FILE = OUTPUT_FOLDER .. "/runtime_events.json"
+local RUNTIME_VALUES_FILE = OUTPUT_FOLDER .. "/runtime_values.json"
+local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
 local WARNINGS_FILE = OUTPUT_FOLDER .. "/warnings.json"
 
 local YIELD_EVERY = 250
 local MAX_SERIALIZE_DEPTH = 32
+
+local CONFIG = {
+	RuntimeTrace = false,
+	RuntimeTraceSeconds = 30,
+	RuntimeTraceAllValues = false,
+	RuntimeFlushEvery = 25,
+	RuntimeMaxEvents = 3000,
+	RuntimeMaxValueChanges = 3000,
+	StateIndexMaxPerBucket = 1500
+}
 
 local capabilities = {
 	writefile = type(writefile) == "function",
@@ -39,13 +56,22 @@ local errors = {}
 local warnings = {}
 local attributeIndex = {}
 local toolRecords = {}
+local valueRecords = {}
+local playerReferences = {}
 local instanceIds = setmetatable({}, { __mode = "k" })
 local instanceMetaById = {}
 local traversedInstances = {}
 local invalidUtf8Cache = {}
 local invalidUtf8StringCount = 0
 local invalidClassObjects = setmetatable({}, { __mode = "k" })
+local invalidClassWarned = setmetatable({}, { __mode = "k" })
 local invalidClassNameCount = 0
+local runtimeEventRecords = {}
+local runtimeValueRecords = {}
+local runtimeConnections = {}
+local runtimeStartedAt = os.clock()
+local snapshotFinalized = false
+local currentDumpId = nil
 
 local remoteIndex = {
 	RemoteEvents = {},
@@ -152,6 +178,29 @@ local function sanitizeString(value)
 	return sanitized
 end
 
+local function escapeText(value)
+	value = sanitizeString(value)
+	local output = {}
+
+	for index = 1, #value do
+		local byte = string.byte(value, index)
+
+		if byte == 9 then
+			table.insert(output, "\\t")
+		elseif byte == 10 then
+			table.insert(output, "\\n")
+		elseif byte == 13 then
+			table.insert(output, "\\r")
+		elseif byte < 32 or byte == 127 then
+			table.insert(output, string.format("\\x%02X", byte))
+		else
+			table.insert(output, string.char(byte))
+		end
+	end
+
+	return table.concat(output)
+end
+
 local function safeName(object)
 	local ok, value = pcall(function()
 		return object.Name
@@ -244,6 +293,18 @@ local function safeIsA(object, className)
 	return ok and result or false
 end
 
+local function safeIsDescendantOf(object, ancestor)
+	if not object or not ancestor then
+		return false
+	end
+
+	local ok, result = pcall(function()
+		return object:IsDescendantOf(ancestor)
+	end)
+
+	return ok and result or false
+end
+
 local function assignInstanceId(object)
 	local existing = instanceIds[object]
 	if existing then
@@ -284,14 +345,22 @@ local function makeInstanceReference(object)
 		return nil
 	end
 
-	local id = assignInstanceId(object)
+	local id = instanceIds[object]
+	if not id and not snapshotFinalized then
+		id = assignInstanceId(object)
+	end
 
-	return {
-		Id = id,
+	local reference = {
 		Name = safeName(object),
 		ClassName = safeClassName(object),
 		Path = safeFullName(object)
 	}
+
+	if id then
+		reference.Id = id
+	end
+
+	return reference
 end
 
 local function finiteNumber(value)
@@ -462,6 +531,15 @@ serializeValue = function(value, state)
 		return {
 			__type = "EnumItem",
 			value = sanitizeString(tostring(value))
+		}
+	end
+
+	if valueType == "Font" then
+		return {
+			__type = "Font",
+			family = sanitizeString(value.Family),
+			weight = serializeValue(value.Weight),
+			style = serializeValue(value.Style)
 		}
 	end
 
@@ -826,9 +904,176 @@ local function registerScript(id, name, className, parentId, path, properties)
 	table.insert(scriptIndex[bucket], record)
 end
 
+local function registerValue(object, id, name, className, parentId, path, attributes, tags)
+	if not safeIsA(object, "ValueBase") then
+		return
+	end
+
+	local rawValue, readable, readError = safeGet(object, "Value")
+	local record = {
+		Id = id,
+		Name = name,
+		ClassName = className,
+		Path = path,
+		ParentId = parentId,
+		Attributes = optionalMap(attributes),
+		Tags = tags,
+		Readable = readable
+	}
+
+	if readable then
+		if rawValue == nil then
+			record.IsNil = true
+		else
+			record.Value = serializeValue(rawValue)
+		end
+	else
+		record.ReadError = sanitizeString(readError)
+	end
+
+	table.insert(valueRecords, record)
+end
+
 local backpack = LocalPlayer and LocalPlayer:FindFirstChildOfClass("Backpack") or nil
 local character = LocalPlayer and LocalPlayer.Character or nil
 local starterGear = LocalPlayer and LocalPlayer:FindFirstChild("StarterGear") or nil
+
+local playerDescriptors = {}
+local playerReferenceKeys = {}
+
+local function preparePlayerDescriptors()
+	playerDescriptors = {}
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local descriptor = {
+			Player = player,
+			Name = player.Name,
+			DisplayName = player.DisplayName,
+			UserId = player.UserId,
+			Character = player.Character,
+			Backpack = player:FindFirstChildOfClass("Backpack"),
+			PlayerGui = player:FindFirstChildOfClass("PlayerGui"),
+			StarterGear = player:FindFirstChild("StarterGear")
+		}
+
+		table.insert(playerDescriptors, descriptor)
+	end
+
+	table.sort(playerDescriptors, function(a, b)
+		if a.UserId ~= b.UserId then
+			return a.UserId < b.UserId
+		end
+
+		return a.Name < b.Name
+	end)
+end
+
+local function addPlayerReference(descriptor, objectId, field, matchKind, value)
+	local key = table.concat({
+		tostring(descriptor.UserId),
+		tostring(objectId),
+		tostring(field),
+		tostring(matchKind)
+	}, "|")
+
+	if playerReferenceKeys[key] then
+		return
+	end
+
+	playerReferenceKeys[key] = true
+	table.insert(playerReferences, {
+		PlayerName = sanitizeString(descriptor.Name),
+		DisplayName = sanitizeString(descriptor.DisplayName),
+		UserId = descriptor.UserId,
+		ObjectId = objectId,
+		Field = sanitizeString(field),
+		MatchKind = sanitizeString(matchKind),
+		Value = serializeValue(value)
+	})
+end
+
+local function scanValueForPlayerReferences(objectId, field, value)
+	local valueType = typeof(value)
+
+	for _, descriptor in ipairs(playerDescriptors) do
+		if valueType == "string" then
+			if value == descriptor.Name then
+				addPlayerReference(descriptor, objectId, field, "Username", value)
+			elseif descriptor.DisplayName ~= descriptor.Name and value == descriptor.DisplayName then
+				addPlayerReference(descriptor, objectId, field, "DisplayName", value)
+			elseif value == tostring(descriptor.UserId) then
+				addPlayerReference(descriptor, objectId, field, "UserIdString", value)
+			end
+		elseif valueType == "number" and value == descriptor.UserId then
+			addPlayerReference(descriptor, objectId, field, "UserIdNumber", value)
+		elseif valueType == "Instance" then
+			if value == descriptor.Player then
+				addPlayerReference(descriptor, objectId, field, "PlayerInstance", value)
+			elseif descriptor.Character and value == descriptor.Character then
+				addPlayerReference(descriptor, objectId, field, "CharacterInstance", value)
+			elseif descriptor.Backpack and value == descriptor.Backpack then
+				addPlayerReference(descriptor, objectId, field, "BackpackInstance", value)
+			elseif descriptor.PlayerGui and value == descriptor.PlayerGui then
+				addPlayerReference(descriptor, objectId, field, "PlayerGuiInstance", value)
+			end
+		end
+	end
+end
+
+local function scanAttributesForPlayerReferences(objectId, attributes)
+	for name, value in pairs(attributes) do
+		scanValueForPlayerReferences(objectId, "Attribute:" .. sanitizeString(name), value)
+	end
+end
+
+local function findTopServiceName(object)
+	local current = object
+	local previous = object
+
+	while current do
+		previous = current
+		local parent, readable = safeGet(current, "Parent")
+		if not readable or parent == nil then
+			break
+		end
+
+		if parent == game then
+			return safeName(current)
+		end
+
+		current = parent
+	end
+
+	return safeName(previous)
+end
+
+local function describeToolLocation(object, source)
+	local result = {
+		Location = source or findTopServiceName(object)
+	}
+
+	for _, descriptor in ipairs(playerDescriptors) do
+		local ownerLocation
+
+		if descriptor.Backpack and safeIsDescendantOf(object, descriptor.Backpack) then
+			ownerLocation = "PlayerBackpack"
+		elseif descriptor.Character and safeIsDescendantOf(object, descriptor.Character) then
+			ownerLocation = "PlayerCharacter"
+		elseif descriptor.StarterGear and safeIsDescendantOf(object, descriptor.StarterGear) then
+			ownerLocation = "PlayerStarterGear"
+		end
+
+		if ownerLocation then
+			result.Location = ownerLocation
+			result.OwnerName = sanitizeString(descriptor.Name)
+			result.OwnerUserId = descriptor.UserId
+			result.IsLocalPlayer = descriptor.Player == LocalPlayer
+			break
+		end
+	end
+
+	return result
+end
 
 local function resolveInventorySource(object, inheritedSource)
 	if object == backpack then
@@ -847,12 +1092,17 @@ local function resolveInventorySource(object, inheritedSource)
 end
 
 local function createToolRecord(object, id, name, className, path, source, attributes, properties)
+	local location = describeToolLocation(object, source)
 	local record = {
 		Id = id,
 		Name = name,
 		ClassName = className,
 		Path = path,
 		Source = source,
+		Location = location.Location,
+		OwnerName = location.OwnerName,
+		OwnerUserId = location.OwnerUserId,
+		IsLocalPlayer = location.IsLocalPlayer,
 		Attributes = optionalMap(attributes),
 		Properties = optionalMap(properties),
 		HandleId = nil,
@@ -899,6 +1149,168 @@ local function registerToolDescendant(toolState, object, id, className, name)
 	local parent, parentReadable = safeGet(object, "Parent")
 	if parentReadable and parent == toolState.Instance and name == "Handle" and record.HandleId == nil then
 		record.HandleId = id
+	end
+end
+
+local RUNTIME_KEYWORDS = {
+	"team",
+	"red",
+	"blue",
+	"match",
+	"round",
+	"player",
+	"owner",
+	"enemy",
+	"ally",
+	"score",
+	"state",
+	"teleport",
+	"spawn",
+	"respawn",
+	"winner",
+	"dead"
+}
+
+local flushRuntimeTrace
+
+local function isRuntimeInteresting(name, path)
+	local haystack = string.lower((name or "") .. " " .. (path or ""))
+
+	for _, keyword in ipairs(RUNTIME_KEYWORDS) do
+		if string.find(haystack, keyword, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function maybeFlushRuntimeTrace()
+	if not flushRuntimeTrace then
+		return
+	end
+
+	local total = #runtimeEventRecords + #runtimeValueRecords
+	if total > 0 and total % CONFIG.RuntimeFlushEvery == 0 then
+		flushRuntimeTrace()
+	end
+end
+
+local function watchRuntimeRemote(object, id, name, className, path)
+	if not CONFIG.RuntimeTrace then
+		return
+	end
+
+	if className ~= "RemoteEvent" and className ~= "UnreliableRemoteEvent" then
+		return
+	end
+
+	local ok, signal = pcall(function()
+		return object.OnClientEvent
+	end)
+
+	if not ok or not signal then
+		return
+	end
+
+	local connectionOk, connection = pcall(function()
+		return signal:Connect(function(...)
+			if #runtimeEventRecords >= CONFIG.RuntimeMaxEvents then
+				return
+			end
+
+			local packed = table.pack(...)
+			local arguments = {}
+
+			for index = 1, packed.n do
+				local serializeOk, serialized = pcall(serializeValue, packed[index])
+				if serializeOk then
+					arguments[index] = serialized
+				else
+					arguments[index] = {
+						__type = "SerializationError",
+						value = sanitizeString(serialized)
+					}
+				end
+			end
+
+			table.insert(runtimeEventRecords, {
+				Time = os.clock() - runtimeStartedAt,
+				RemoteId = id,
+				Name = name,
+				ClassName = className,
+				Path = path,
+				ArgumentCount = packed.n,
+				Arguments = arguments
+			})
+
+			maybeFlushRuntimeTrace()
+		end)
+	end)
+
+	if connectionOk and connection then
+		table.insert(runtimeConnections, connection)
+	else
+		recordWarning("RuntimeRemoteTrace", object, connection)
+	end
+end
+
+local function watchRuntimeValue(object, id, name, className, path)
+	if not CONFIG.RuntimeTrace or not safeIsA(object, "ValueBase") then
+		return
+	end
+
+	if not CONFIG.RuntimeTraceAllValues and not isRuntimeInteresting(name, path) then
+		return
+	end
+
+	local signalOk, signal = pcall(function()
+		return object:GetPropertyChangedSignal("Value")
+	end)
+
+	if not signalOk or not signal then
+		return
+	end
+
+	local connectionOk, connection = pcall(function()
+		return signal:Connect(function()
+			if #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges then
+				return
+			end
+
+			local value, readable, readError = safeGet(object, "Value")
+			local serialized
+
+			if readable then
+				local serializeOk, result = pcall(serializeValue, value)
+				serialized = serializeOk and result or {
+					__type = "SerializationError",
+					value = sanitizeString(result)
+				}
+			else
+				serialized = {
+					__type = "ReadError",
+					value = sanitizeString(readError)
+				}
+			end
+
+			table.insert(runtimeValueRecords, {
+				Time = os.clock() - runtimeStartedAt,
+				Id = id,
+				Name = name,
+				ClassName = className,
+				Path = path,
+				Value = serialized
+			})
+
+			maybeFlushRuntimeTrace()
+		end)
+	end)
+
+	if connectionOk and connection then
+		table.insert(runtimeConnections, connection)
+	else
+		recordWarning("RuntimeValueTrace", object, connection)
 	end
 end
 
@@ -987,6 +1399,15 @@ dumpNode = function(object, parentId, context)
 	local className = safeClassName(object)
 	local path = safeFullName(object)
 
+	if invalidClassObjects[object] and not invalidClassWarned[object] then
+		invalidClassWarned[object] = true
+		recordWarning(
+			"InvalidClassName",
+			object,
+			"ClassName was empty or unreadable and was replaced with Instance"
+		)
+	end
+
 	traversedInstances[object] = {
 		Id = id,
 		ParentId = parentId,
@@ -1010,7 +1431,19 @@ dumpNode = function(object, parentId, context)
 	registerAttributes(id, name, className, path, attributes)
 	registerRemote(id, name, className, parentId, path, attributes, tags)
 	registerScript(id, name, className, parentId, path, properties)
+	registerValue(object, id, name, className, parentId, path, attributes, tags)
 	registerToolDescendant(parentToolState, object, id, className, name)
+
+	scanAttributesForPlayerReferences(id, attributes)
+	if safeIsA(object, "ValueBase") then
+		local rawValue, readable = safeGet(object, "Value")
+		if readable then
+			scanValueForPlayerReferences(id, "Value", rawValue)
+		end
+	end
+
+	watchRuntimeRemote(object, id, name, className, path)
+	watchRuntimeValue(object, id, name, className, path)
 
 	local currentToolState = parentToolState
 	if className == "Tool" or safeIsA(object, "Tool") then
@@ -1091,8 +1524,8 @@ local function makeTree(node, depth, output)
 		string.format(
 			"%s%s [%s] (#%s)%s",
 			prefix,
-			node.Name,
-			node.ClassName,
+			escapeText(node.Name),
+			escapeText(node.ClassName),
 			tostring(node.Id),
 			suffix
 		)
@@ -1115,9 +1548,271 @@ local function sortRecordsByPath(records)
 	end)
 end
 
+local function tokenizeText(value)
+	local text = sanitizeString(value or "")
+	text = string.gsub(text, "([a-z0-9])([A-Z])", "%1 %2")
+	text = string.gsub(text, "[^%w]+", " ")
+
+	local tokens = {}
+	local seen = {}
+
+	for token in string.gmatch(text, "%w+") do
+		local lowered = string.lower(token)
+		if not seen[lowered] then
+			seen[lowered] = true
+			table.insert(tokens, token)
+		end
+	end
+
+	return tokens
+end
+
+local function buildAncestorNames(parentId)
+	local reverse = {}
+	local currentId = parentId
+	local guard = 0
+
+	while currentId and guard < 128 do
+		guard = guard + 1
+		local meta = instanceMetaById[currentId]
+		if not meta then
+			break
+		end
+
+		table.insert(reverse, meta.Name)
+		currentId = meta.ParentId
+	end
+
+	local result = {}
+	for index = #reverse, 1, -1 do
+		table.insert(result, reverse[index])
+	end
+
+	return result
+end
+
+local function enrichRemoteRecords()
+	for _, bucket in pairs(remoteIndex) do
+		for _, record in ipairs(bucket) do
+			record.Ancestors = buildAncestorNames(record.ParentId)
+
+			local tokenMap = {}
+			local tokens = {}
+
+			local function addTokens(value)
+				for _, token in ipairs(tokenizeText(value)) do
+					local lowered = string.lower(token)
+					if not tokenMap[lowered] then
+						tokenMap[lowered] = true
+						table.insert(tokens, token)
+					end
+				end
+			end
+
+			addTokens(record.Name)
+			for _, ancestorName in ipairs(record.Ancestors) do
+				addTokens(ancestorName)
+			end
+
+			table.sort(tokens, function(a, b)
+				return string.lower(a) < string.lower(b)
+			end)
+
+			record.Tokens = tokens
+		end
+	end
+end
+
+local function buildPathStats(instanceIndex)
+	local counts = {}
+
+	for _, meta in ipairs(instanceIndex) do
+		counts[meta.Path] = (counts[meta.Path] or 0) + 1
+	end
+
+	local collisions = {}
+	local groups = 0
+	local affected = 0
+
+	for path, count in pairs(counts) do
+		if count > 1 then
+			groups = groups + 1
+			affected = affected + count
+			table.insert(collisions, {
+				Path = path,
+				Count = count
+			})
+		end
+	end
+
+	table.sort(collisions, function(a, b)
+		if a.Count ~= b.Count then
+			return a.Count > b.Count
+		end
+
+		return a.Path < b.Path
+	end)
+
+	local top = {}
+	for index = 1, math.min(50, #collisions) do
+		top[index] = collisions[index]
+	end
+
+	return {
+		DuplicatePathGroups = groups,
+		InstancesInDuplicatePaths = affected,
+		TopCollisions = top
+	}
+end
+
+local function buildPlayerIndex()
+	local referenceCounts = {}
+	for _, reference in ipairs(playerReferences) do
+		referenceCounts[reference.UserId] = (referenceCounts[reference.UserId] or 0) + 1
+	end
+
+	local records = {}
+
+	for _, descriptor in ipairs(playerDescriptors) do
+		local player = descriptor.Player
+		local team, teamReadable = safeGet(player, "Team")
+		local teamColor, teamColorReadable = safeGet(player, "TeamColor")
+		local neutral, neutralReadable = safeGet(player, "Neutral")
+
+		local record = {
+			Name = sanitizeString(descriptor.Name),
+			DisplayName = sanitizeString(descriptor.DisplayName),
+			UserId = descriptor.UserId,
+			PlayerId = instanceIds[player],
+			CharacterId = descriptor.Character and instanceIds[descriptor.Character] or nil,
+			BackpackId = descriptor.Backpack and instanceIds[descriptor.Backpack] or nil,
+			PlayerGuiId = descriptor.PlayerGui and instanceIds[descriptor.PlayerGui] or nil,
+			StarterGearId = descriptor.StarterGear and instanceIds[descriptor.StarterGear] or nil,
+			ReferenceCount = referenceCounts[descriptor.UserId] or 0
+		}
+
+		if teamReadable and team then
+			record.NativeTeam = makeInstanceReference(team)
+		end
+
+		if teamColorReadable and teamColor ~= nil then
+			record.TeamColor = serializeValue(teamColor)
+		end
+
+		if neutralReadable and neutral ~= nil then
+			record.Neutral = neutral
+		end
+
+		table.insert(records, record)
+	end
+
+	return {
+		Total = #records,
+		Players = records
+	}
+end
+
+local STATE_BUCKETS = {
+	Team = { "team", "teams", "red", "blue", "ally", "allies", "enemy", "enemies" },
+	Match = { "match", "round", "duel", "gamephase", "gamestate" },
+	Player = { "player", "players", "owner", "userid", "username" },
+	Teleport = { "teleport", "teleporting", "spawn", "respawn", "respawned" },
+	Score = { "score", "kills", "kill", "deaths", "death", "winner", "win" }
+}
+
+local function stateRecordFromMeta(meta, valueById)
+	local record = {
+		Id = meta.Id,
+		Name = meta.Name,
+		ClassName = meta.ClassName,
+		Path = meta.Path,
+		ParentId = meta.ParentId
+	}
+
+	local valueRecord = valueById[meta.Id]
+	if valueRecord then
+		record.Value = valueRecord.Value
+	end
+
+	return record
+end
+
+local function buildStateIndex(instanceIndex)
+	local buckets = {}
+	local counts = {}
+	local valueById = {}
+
+	for _, valueRecord in ipairs(valueRecords) do
+		valueById[valueRecord.Id] = valueRecord
+	end
+
+	for bucketName in pairs(STATE_BUCKETS) do
+		buckets[bucketName] = {}
+		counts[bucketName] = 0
+	end
+
+	for _, meta in ipairs(instanceIndex) do
+		local tokenSet = {}
+		local nameTokenSet = {}
+
+		for _, token in ipairs(tokenizeText(meta.Name or "")) do
+			local lowered = string.lower(token)
+			tokenSet[lowered] = true
+			nameTokenSet[lowered] = true
+		end
+
+		for _, token in ipairs(tokenizeText(meta.Path or "")) do
+			tokenSet[string.lower(token)] = true
+		end
+
+		for bucketName, keywords in pairs(STATE_BUCKETS) do
+			local matched = bucketName == "Player" and meta.ClassName == "Player"
+			local searchSet = bucketName == "Player" and nameTokenSet or tokenSet
+
+			if not matched then
+				for _, keyword in ipairs(keywords) do
+					if searchSet[keyword] then
+						matched = true
+						break
+					end
+				end
+			end
+
+			if matched then
+				counts[bucketName] = counts[bucketName] + 1
+				if #buckets[bucketName] < CONFIG.StateIndexMaxPerBucket then
+					table.insert(buckets[bucketName], stateRecordFromMeta(meta, valueById))
+				end
+			end
+		end
+	end
+
+	return {
+		Counts = counts,
+		Buckets = buckets
+	}
+end
+
 local function finalizeIndexes()
 	sortRecordsByPath(attributeIndex)
 	sortRecordsByPath(toolRecords)
+	sortRecordsByPath(valueRecords)
+
+	table.sort(playerReferences, function(a, b)
+		if a.UserId ~= b.UserId then
+			return a.UserId < b.UserId
+		end
+
+		if a.ObjectId ~= b.ObjectId then
+			return a.ObjectId < b.ObjectId
+		end
+
+		if a.Field ~= b.Field then
+			return a.Field < b.Field
+		end
+
+		return a.MatchKind < b.MatchKind
+	end)
 
 	for _, bucket in pairs(remoteIndex) do
 		sortRecordsByPath(bucket)
@@ -1137,6 +1832,8 @@ local function finalizeIndexes()
 	for _, ids in pairs(inventoryToolIds) do
 		table.sort(ids)
 	end
+
+	enrichRemoteRecords()
 end
 
 local function buildInstanceIndex()
@@ -1178,7 +1875,7 @@ local function totalScriptCount()
 	return totalBucketCount(scriptIndex)
 end
 
-local function buildSummary(elapsed)
+local function buildSummary(elapsed, pathStats)
 	local classes = {}
 
 	for className, count in pairs(classCounts) do
@@ -1208,15 +1905,34 @@ local function buildSummary(elapsed)
 		"Remotes / Bindables: " .. tostring(totalRemoteCount()),
 		"Scripts: " .. tostring(totalScriptCount()),
 		"Objects With Attributes: " .. tostring(#attributeIndex),
+		"ValueBase Records: " .. tostring(#valueRecords),
+		"Player References: " .. tostring(#playerReferences),
 		"Tools: " .. tostring(#toolRecords),
+		"Duplicate Path Groups: " .. tostring(pathStats.DuplicatePathGroups),
+		"Instances In Duplicate Paths: " .. tostring(pathStats.InstancesInDuplicatePaths),
 		"Errors: " .. tostring(#errors),
 		"Warnings: " .. tostring(#warnings),
-		"Sanitized invalid UTF-8 strings: " .. tostring(invalidUtf8StringCount),
+		"Sanitized invalid UTF-8 unique strings: " .. tostring(invalidUtf8StringCount),
 		"Invalid / empty class names: " .. tostring(invalidClassNameCount),
 		"Time: " .. string.format("%.2fs", elapsed),
 		"",
-		"Class Counts:"
+		"Top Duplicate Paths:"
 	}
+
+	if #pathStats.TopCollisions == 0 then
+		table.insert(lines, "(none)")
+	else
+		for index = 1, math.min(10, #pathStats.TopCollisions) do
+			local collision = pathStats.TopCollisions[index]
+			table.insert(
+				lines,
+				string.format("%dx %s", collision.Count, escapeText(collision.Path))
+			)
+		end
+	end
+
+	table.insert(lines, "")
+	table.insert(lines, "Class Counts:")
 
 	for _, entry in ipairs(classes) do
 		table.insert(
@@ -1234,7 +1950,7 @@ local function encodeJSON(data, label)
 	end)
 
 	if ok then
-		return result
+		return result, true
 	end
 
 	recordError("JSONEncode", nil, result, label)
@@ -1247,10 +1963,10 @@ local function encodeJSON(data, label)
 	end)
 
 	if fallbackOk then
-		return fallback
+		return fallback, false
 	end
 
-	return "{}"
+	return "{}", false
 end
 
 local function ensureOutputFolder()
@@ -1292,6 +2008,84 @@ local function writeSafe(path, contents)
 	return true
 end
 
+local function fileNameFromPath(path)
+	return string.match(path, "[^/]+$") or path
+end
+
+local function writeJSONDocument(path, data, label, writtenFiles, required)
+	local encoded, encodeSuccess = encodeJSON(data, label)
+	local bytes = #encoded
+	local writeSuccess = writeSafe(path, encoded)
+	local success = encodeSuccess and writeSuccess
+
+	if writtenFiles then
+		table.insert(writtenFiles, {
+			File = fileNameFromPath(path),
+			Bytes = bytes,
+			Encoded = encodeSuccess,
+			Written = writeSuccess,
+			Success = success,
+			Required = required ~= false
+		})
+	end
+
+	return success, bytes
+end
+
+local function writeTextDocument(path, contents, writtenFiles, required)
+	local bytes = #contents
+	local success = writeSafe(path, contents)
+
+	if writtenFiles then
+		table.insert(writtenFiles, {
+			File = fileNameFromPath(path),
+			Bytes = bytes,
+			Success = success,
+			Required = required ~= false
+		})
+	end
+
+	return success, bytes
+end
+
+flushRuntimeTrace = function()
+	if not capabilities.writefile then
+		return
+	end
+
+	local eventsDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = CONFIG.RuntimeTrace and #runtimeConnections > 0,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeEventRecords,
+		Events = runtimeEventRecords
+	}
+
+	local valuesDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = CONFIG.RuntimeTrace and #runtimeConnections > 0,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeValueRecords,
+		Changes = runtimeValueRecords
+	}
+
+	writeSafe(RUNTIME_EVENTS_FILE, encodeJSON(eventsDocument, "runtime_events.json"))
+	writeSafe(RUNTIME_VALUES_FILE, encodeJSON(valuesDocument, "runtime_values.json"))
+end
+
+local function stopRuntimeTrace()
+	for _, connection in ipairs(runtimeConnections) do
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+
+	runtimeConnections = {}
+	flushRuntimeTrace()
+end
+
 local function run()
 	if not capabilities.writefile then
 		warn("GameStructureDump: writefile is unavailable; dump aborted.")
@@ -1302,6 +2096,25 @@ local function run()
 		warn("GameStructureDump: output folder could not be created or verified; dump aborted.")
 		return
 	end
+
+	local guidOk, guid = pcall(function()
+		return HttpService:GenerateGUID(false)
+	end)
+
+	currentDumpId = guidOk and guid or string.format("%d-%d", os.time(), math.floor(os.clock() * 1000))
+	runtimeStartedAt = os.clock()
+
+	local initialManifest = {
+		Schema = SCHEMA_NAME,
+		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
+		Complete = false,
+		Status = "InProgress",
+		GeneratedAtUnix = os.time()
+	}
+
+	writeSafe(MANIFEST_FILE, encodeJSON(initialManifest, "manifest.json"))
+	preparePlayerDescriptors()
 
 	local rootId = assignInstanceId(game)
 	updateInstanceMeta(game, rootId, nil, "game", "DataModel", "game")
@@ -1346,12 +2159,20 @@ local function run()
 		end
 	end
 
+	snapshotFinalized = true
 	finalizeIndexes()
 
 	local inventory = buildInventory()
 	local instanceIndex = buildInstanceIndex()
+	local playerIndex = buildPlayerIndex()
+	local pathStats = buildPathStats(instanceIndex)
+	local stateDocument = buildStateIndex(instanceIndex)
 	local treeLines = makeTree(root)
-	local elapsed = os.clock() - started
+	local snapshotElapsed = os.clock() - started
+
+	stateDocument.PathCollisions = pathStats
+	stateDocument.PlayerReferenceCount = #playerReferences
+	stateDocument.ValueRecordCount = #valueRecords
 
 	local remotesDocument = {
 		Total = totalRemoteCount(),
@@ -1370,10 +2191,84 @@ local function run()
 		CoreScripts = scriptIndex.CoreScripts
 	}
 
+	local valuesDocument = {
+		Total = #valueRecords,
+		Values = valueRecords
+	}
+
+	local playerReferencesDocument = {
+		Total = #playerReferences,
+		References = playerReferences
+	}
+
+	local writtenFiles = {}
+
+	local treeText = table.concat(treeLines, "\n")
+	writeTextDocument(TREE_FILE, treeText, writtenFiles, true)
+	treeText = nil
+	treeLines = nil
+
+	writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
+	writeJSONDocument(INSTANCES_FILE, instanceIndex, "instances.json", writtenFiles, true)
+	writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true)
+	writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+	writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
+	writeJSONDocument(ATTRIBUTES_FILE, attributeIndex, "attributes.json", writtenFiles, true)
+	writeJSONDocument(TOOLS_FILE, toolRecords, "tools.json", writtenFiles, true)
+	writeJSONDocument(VALUES_FILE, valuesDocument, "values.json", writtenFiles, true)
+	writeJSONDocument(PLAYERS_FILE, playerIndex, "players.json", writtenFiles, true)
+	writeJSONDocument(
+		PLAYER_REFERENCES_FILE,
+		playerReferencesDocument,
+		"player_references.json",
+		writtenFiles,
+		true
+	)
+	writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
+
+	local runtimeEventsDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = CONFIG.RuntimeTrace and #runtimeConnections > 0,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeEventRecords,
+		Events = runtimeEventRecords
+	}
+
+	local runtimeValuesDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = CONFIG.RuntimeTrace and #runtimeConnections > 0,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeValueRecords,
+		Changes = runtimeValueRecords
+	}
+
+	writeJSONDocument(
+		RUNTIME_EVENTS_FILE,
+		runtimeEventsDocument,
+		"runtime_events.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_VALUES_FILE,
+		runtimeValuesDocument,
+		"runtime_values.json",
+		writtenFiles,
+		false
+	)
+
+	writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
+
+	local totalElapsed = os.clock() - started
 	local meta = {
 		Schema = SCHEMA_NAME,
 		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
 		GeneratedAtUnix = os.time(),
+		IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
+		PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
 		Game = {
 			Name = sanitizeString(game.Name),
 			PlaceId = game.PlaceId,
@@ -1390,60 +2285,110 @@ local function run()
 			RemotesAndBindables = totalRemoteCount(),
 			Scripts = totalScriptCount(),
 			ObjectsWithAttributes = #attributeIndex,
+			ValueBaseRecords = #valueRecords,
+			PlayerReferences = #playerReferences,
 			Tools = #toolRecords,
+			DuplicatePathGroups = pathStats.DuplicatePathGroups,
+			InstancesInDuplicatePaths = pathStats.InstancesInDuplicatePaths,
 			Errors = #errors,
 			Warnings = #warnings,
-			SanitizedInvalidUtf8Strings = invalidUtf8StringCount,
+			SanitizedInvalidUtf8UniqueStrings = invalidUtf8StringCount,
 			InvalidClassNames = invalidClassNameCount,
-			ElapsedSeconds = elapsed
+			SnapshotSeconds = snapshotElapsed,
+			ElapsedSeconds = totalElapsed
+		},
+		RuntimeTrace = {
+			Enabled = CONFIG.RuntimeTrace,
+			Seconds = CONFIG.RuntimeTraceSeconds,
+			AllValues = CONFIG.RuntimeTraceAllValues,
+			MaxEvents = CONFIG.RuntimeMaxEvents,
+			MaxValueChanges = CONFIG.RuntimeMaxValueChanges
 		},
 		Capabilities = capabilities
 	}
 
-	local encoded = {
-		Structure = encodeJSON(root, "structure.json"),
-		Instances = encodeJSON(instanceIndex, "instances.json"),
-		Remotes = encodeJSON(remotesDocument, "remotes.json"),
-		Scripts = encodeJSON(scriptsDocument, "scripts.json"),
-		Inventory = encodeJSON(inventory, "inventory.json"),
-		Attributes = encodeJSON(attributeIndex, "attributes.json"),
-		Tools = encodeJSON(toolRecords, "tools.json")
-	}
-
-	writeSafe(TREE_FILE, table.concat(treeLines, "\n"))
-	writeSafe(STRUCTURE_FILE, encoded.Structure)
-	writeSafe(INSTANCES_FILE, encoded.Instances)
-	writeSafe(REMOTES_FILE, encoded.Remotes)
-	writeSafe(SCRIPTS_FILE, encoded.Scripts)
-	writeSafe(INVENTORY_FILE, encoded.Inventory)
-	writeSafe(ATTRIBUTES_FILE, encoded.Attributes)
-	writeSafe(TOOLS_FILE, encoded.Tools)
-
-	local warningJSON = encodeJSON(warnings, "warnings.json")
-	writeSafe(WARNINGS_FILE, warningJSON)
+	writeTextDocument(
+		SUMMARY_FILE,
+		buildSummary(totalElapsed, pathStats),
+		writtenFiles,
+		true
+	)
 
 	meta.Stats.Errors = #errors
 	meta.Stats.Warnings = #warnings
-	meta.Stats.SanitizedInvalidUtf8Strings = invalidUtf8StringCount
-	meta.Stats.InvalidClassNames = invalidClassNameCount
-	writeSafe(SUMMARY_FILE, buildSummary(elapsed))
-	writeSafe(META_FILE, encodeJSON(meta, "meta.json"))
+	meta.Stats.ElapsedSeconds = os.clock() - started
+	writeJSONDocument(META_FILE, meta, "meta.json", writtenFiles, true)
 
-	local errorJSON = encodeJSON(errors, "errors.json")
-	writeSafe(ERRORS_FILE, errorJSON)
+	writeJSONDocument(ERRORS_FILE, errors, "errors.json", writtenFiles, true)
+
+	local complete = true
+	for _, file in ipairs(writtenFiles) do
+		if file.Required and not file.Success then
+			complete = false
+			break
+		end
+	end
+
+	local manifest = {
+		Schema = SCHEMA_NAME,
+		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
+		Complete = complete,
+		Status = complete and "Complete" or "Incomplete",
+		HasErrors = #errors > 0,
+		HasWarnings = #warnings > 0,
+		GeneratedAtUnix = os.time(),
+		IdSemantics = "Snapshot-local",
+		Files = writtenFiles,
+		Stats = {
+			Instances = nodeCount,
+			RegisteredIds = nextInstanceId,
+			Errors = #errors,
+			Warnings = #warnings
+		},
+		RuntimeTrace = {
+			Enabled = CONFIG.RuntimeTrace,
+			FilesAreAuxiliary = true
+		}
+	}
+
+	local manifestEncoded, manifestEncodeOk = encodeJSON(manifest, "manifest.json")
+	local manifestWriteOk = writeSafe(MANIFEST_FILE, manifestEncoded)
+	if not manifestEncodeOk or not manifestWriteOk then
+		warn("GameStructureDump: manifest.json could not be completed.")
+	end
 
 	print("dump finished")
+	print("DumpId:", currentDumpId)
 	print("Instances:", nodeCount)
 	print("Registered IDs:", nextInstanceId)
 	print("Remotes / Bindables:", totalRemoteCount())
 	print("Scripts:", totalScriptCount())
 	print("Attributes:", #attributeIndex)
+	print("Values:", #valueRecords)
+	print("Player references:", #playerReferences)
 	print("Tools:", #toolRecords)
+	print("Duplicate path groups:", pathStats.DuplicatePathGroups)
 	print("Errors:", #errors)
 	print("Warnings:", #warnings)
-	print("Sanitized invalid UTF-8 strings:", invalidUtf8StringCount)
-	print("Time:", string.format("%.2fs", elapsed))
+	print("Sanitized invalid UTF-8 unique strings:", invalidUtf8StringCount)
+	print("Time:", string.format("%.2fs", totalElapsed))
 	print("Folder:", OUTPUT_FOLDER)
+
+	if CONFIG.RuntimeTrace then
+		flushRuntimeTrace()
+
+		task.delay(CONFIG.RuntimeTraceSeconds, function()
+			stopRuntimeTrace()
+			print(
+				"runtime trace finished:",
+				#runtimeEventRecords,
+				"remote events,",
+				#runtimeValueRecords,
+				"value changes"
+			)
+		end)
+	end
 end
 
 run()
