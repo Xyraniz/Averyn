@@ -6,7 +6,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.1
+local SCHEMA_VERSION = 3.2
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -22,9 +22,19 @@ local VALUES_FILE = OUTPUT_FOLDER .. "/values.json"
 local PLAYERS_FILE = OUTPUT_FOLDER .. "/players.json"
 local PLAYER_REFERENCES_FILE = OUTPUT_FOLDER .. "/player_references.json"
 local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
-local RUNTIME_EVENTS_FILE = OUTPUT_FOLDER .. "/runtime_events.json"
-local RUNTIME_VALUES_FILE = OUTPUT_FOLDER .. "/runtime_values.json"
-local RUNTIME_ATTRIBUTES_FILE = OUTPUT_FOLDER .. "/runtime_attributes.json"
+local RUNTIME_FILES = {
+	Events = OUTPUT_FOLDER .. "/runtime_events.json",
+	EventsGame = OUTPUT_FOLDER .. "/runtime_events_game.json",
+	EventsReplicator = OUTPUT_FOLDER .. "/runtime_events_replicator.json",
+	EventsAnalytics = OUTPUT_FOLDER .. "/runtime_events_analytics.json",
+	EventsOther = OUTPUT_FOLDER .. "/runtime_events_other.json",
+	Values = OUTPUT_FOLDER .. "/runtime_values.json",
+	Attributes = OUTPUT_FOLDER .. "/runtime_attributes.json",
+	Character = OUTPUT_FOLDER .. "/runtime_character.json",
+	Logs = OUTPUT_FOLDER .. "/runtime_logs.json",
+	Timeline = OUTPUT_FOLDER .. "/runtime_timeline.json",
+	Disconnect = OUTPUT_FOLDER .. "/runtime_disconnect.json"
+}
 local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
 local WARNINGS_FILE = OUTPUT_FOLDER .. "/warnings.json"
@@ -36,21 +46,79 @@ local CONFIG = {
 	-- Runtime tracing starts before the snapshot walk, so calls that happen while
 	-- the dump is taking its normal ~seconds-long snapshot are captured too.
 	RuntimeTrace = true,
-	RuntimeTracePostSeconds = 5,
+
+	-- Keep the tracer alive long enough to reproduce a suspicious kick after the
+	-- normal structure snapshot has finished.
+	RuntimeTracePostSeconds = 45,
+
+	-- Runtime records are kept as a rolling window. This prevents noisy remotes
+	-- from consuming the whole capture before the interesting event happens.
+	RuntimeRingWindowSeconds = 30,
+
 	RuntimeTraceIncomingRemotes = true,
 	RuntimeTraceOutgoingRemotes = true,
 	RuntimeTraceDynamicRemotes = true,
 	RuntimeTraceToolAttributes = true,
 	RuntimeTraceInterestingAttributes = true,
 	RuntimeTraceAllValues = true,
+
 	RuntimeCaptureCaller = true,
 	RuntimeCaptureCallerStack = true,
-	RuntimeCallerStackDepth = 8,
+	RuntimeCallerStackDepth = 10,
 	RuntimeCaptureInvokeReturns = true,
-	RuntimeFlushEvery = 25,
-	RuntimeMaxEvents = 12000,
-	RuntimeMaxValueChanges = 12000,
-	RuntimeMaxAttributeChanges = 12000,
+
+	-- Capture real Luau buffer contents when possible. Small buffers are stored
+	-- completely; large buffers keep a prefix + suffix so a single huge payload
+	-- cannot explode the dump size.
+	RuntimeCaptureBuffers = true,
+	RuntimeMaxBufferBytes = 4096,
+
+	-- Character telemetry is intentionally separated from remote traffic.
+	RuntimeTraceCharacter = true,
+	RuntimeCharacterSampleInterval = 0.15,
+	RuntimeMaxCharacterRecords = 10000,
+
+	-- Console output can expose local detector warnings or errors immediately
+	-- before a disconnect. It is stored separately to keep the remote trace clean.
+	RuntimeCaptureLogs = true,
+	RuntimeMaxLogRecords = 5000,
+
+	-- Error/disconnect capture. Error 267 is normally visible through game:GetService("GuiService").
+	-- The trace freezes immediately when a kick/disconnect-like message appears,
+	-- preserving the rolling window that led up to it.
+	RuntimeFreezeOnDisconnectError = true,
+	RuntimeFreezeErrorKeywords = {
+		"267",
+		"kicked",
+		"kick",
+		"removed",
+		"expelled",
+		"expuls",
+		"moderation",
+		"cheat",
+		"desconect",
+		"disconnect"
+	},
+
+	-- Disk flushing is throttled because high-frequency replication traffic can
+	-- otherwise trigger hundreds of writefile calls per second.
+	RuntimeFlushEvery = 250,
+	RuntimeFlushMinSeconds = 1.0,
+
+	-- The combined timeline also behaves as a ring. Remote categories have
+	-- independent caps, so internal replication cannot starve ordinary game
+	-- remotes from the capture.
+	RuntimeMaxEvents = 40000,
+	RuntimeMaxEventsPerCategory = {
+		Game = 16000,
+		Replicator = 16000,
+		Analytics = 4000,
+		Other = 8000
+	},
+	RuntimeMaxTimelineRecords = 40000,
+	RuntimeMaxValueChanges = 16000,
+	RuntimeMaxAttributeChanges = 16000,
+
 	StateIndexMaxPerBucket = 1500
 }
 
@@ -64,7 +132,11 @@ local capabilities = {
 	checkcaller = type(checkcaller) == "function",
 	getcallingscript = type(getcallingscript) == "function",
 	getconnections = type(getconnections) == "function",
-	debug_info = debug ~= nil and type(debug.info) == "function"
+	debug_info = debug ~= nil and type(debug.info) == "function",
+	buffer = type(buffer) == "table",
+	buffer_len = type(buffer) == "table" and type(buffer.len) == "function",
+	buffer_readu8 = type(buffer) == "table" and type(buffer.readu8) == "function",
+	buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function"
 }
 
 local started = os.clock()
@@ -87,16 +159,41 @@ local invalidClassObjects = setmetatable({}, { __mode = "k" })
 local invalidClassWarned = setmetatable({}, { __mode = "k" })
 local invalidClassNameCount = 0
 local runtimeEventRecords = {}
+local runtimeEventCategoryRecords = {
+	Game = {},
+	Replicator = {},
+	Analytics = {},
+	Other = {}
+}
+local runtimeEventCategoryDropped = {
+	Game = 0,
+	Replicator = 0,
+	Analytics = 0,
+	Other = 0
+}
 local runtimeValueRecords = {}
 local runtimeAttributeRecords = {}
+local runtimeCharacterRecords = {}
+local runtimeLogRecords = {}
+local runtimeTimelineRecords = {}
+local runtimeErrorRecords = {}
 local runtimeConnections = {}
+local runtimeCharacterConnections = {}
 local runtimeObservedRemotes = setmetatable({}, { __mode = "k" })
 local runtimeObservedAttributes = setmetatable({}, { __mode = "k" })
 local runtimeObservedValues = setmetatable({}, { __mode = "k" })
 local runtimeAttributeLastValues = setmetatable({}, { __mode = "k" })
 local runtimeValueLastValues = setmetatable({}, { __mode = "k" })
 local runtimeTraceActive = false
-local runtimeHookState = { Active = false }
+local runtimeHookState = {
+	Active = false,
+	Frozen = false,
+	FreezeInfo = nil,
+	LastFlushAt = 0,
+	MutationsSinceFlush = 0,
+	LastPruneAt = 0,
+	LastGuiErrorMessage = nil
+}
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
 local snapshotFinalized = false
@@ -455,6 +552,122 @@ local function stableKey(value)
 	return valueType .. ":" .. tostring(value)
 end
 
+local function bytesToHex(value)
+	local output = table.create(math.ceil(#value / 32))
+
+	for index = 1, #value, 32 do
+		local stopIndex = math.min(index + 31, #value)
+		local chunk = table.create(stopIndex - index + 1)
+
+		for byteIndex = index, stopIndex do
+			chunk[#chunk + 1] = string.format("%02X", string.byte(value, byteIndex))
+		end
+
+		output[#output + 1] = table.concat(chunk)
+	end
+
+	return table.concat(output)
+end
+
+local function readBufferRange(value, offset, length)
+	if length <= 0 then
+		return ""
+	end
+
+	if capabilities.buffer_tostring then
+		local ok, raw = pcall(buffer.tostring, value)
+		if ok and type(raw) == "string" then
+			return string.sub(raw, offset + 1, offset + length)
+		end
+	end
+
+	if capabilities.buffer_readu8 then
+		local bytes = table.create(length)
+
+		for index = 0, length - 1 do
+			local ok, byte = pcall(buffer.readu8, value, offset + index)
+			if not ok then
+				return nil
+			end
+
+			bytes[index + 1] = string.char(byte)
+		end
+
+		return table.concat(bytes)
+	end
+
+	return nil
+end
+
+local function serializeBufferValue(value)
+	local result = {
+		__type = "buffer"
+	}
+
+	if not CONFIG.RuntimeCaptureBuffers then
+		result.Captured = false
+		result.Value = sanitizeString(tostring(value))
+		return result
+	end
+
+	if not capabilities.buffer_len then
+		result.Captured = false
+		result.Error = "buffer.len unavailable"
+		result.Value = sanitizeString(tostring(value))
+		return result
+	end
+
+	local lengthOk, length = pcall(buffer.len, value)
+	if not lengthOk or type(length) ~= "number" then
+		result.Captured = false
+		result.Error = sanitizeString(length)
+		result.Value = sanitizeString(tostring(value))
+		return result
+	end
+
+	result.Length = length
+
+	local maxBytes = math.max(0, tonumber(CONFIG.RuntimeMaxBufferBytes) or 0)
+	if maxBytes == 0 then
+		result.Captured = false
+		return result
+	end
+
+	if length <= maxBytes then
+		local raw = readBufferRange(value, 0, length)
+		if raw then
+			result.Captured = true
+			result.CapturedBytes = length
+			result.Truncated = false
+			result.Hex = bytesToHex(raw)
+		else
+			result.Captured = false
+			result.Error = "buffer bytes could not be read"
+		end
+
+		return result
+	end
+
+	local prefixLength = math.floor(maxBytes / 2)
+	local suffixLength = maxBytes - prefixLength
+	local prefix = readBufferRange(value, 0, prefixLength)
+	local suffix = readBufferRange(value, math.max(0, length - suffixLength), suffixLength)
+
+	if prefix and suffix then
+		result.Captured = true
+		result.CapturedBytes = prefixLength + suffixLength
+		result.Truncated = true
+		result.HexPrefix = bytesToHex(prefix)
+		result.HexSuffix = bytesToHex(suffix)
+		result.OmittedBytes = math.max(0, length - prefixLength - suffixLength)
+	else
+		result.Captured = false
+		result.Error = "buffer bytes could not be read"
+	end
+
+	return result
+end
+
 local serializeValue
 
 serializeValue = function(value, state)
@@ -478,6 +691,10 @@ serializeValue = function(value, state)
 
 	if valueType == "string" then
 		return sanitizeString(value)
+	end
+
+	if valueType == "buffer" then
+		return serializeBufferValue(value)
 	end
 
 	if valueType == "boolean" then
@@ -1286,10 +1503,19 @@ local RUNTIME_KEYWORDS = {
 	"weapon",
 	"tool",
 	"damage",
-	"projectile"
+	"projectile",
+	"velocity",
+	"speed",
+	"position",
+	"movement",
+	"security",
+	"detect",
+	"kick",
+	"ban"
 }
 
 local flushRuntimeTrace
+local freezeRuntimeTrace
 
 local function isRuntimeInteresting(name, path)
 	local haystack = string.lower((name or "") .. " " .. (path or ""))
@@ -1303,15 +1529,144 @@ local function isRuntimeInteresting(name, path)
 	return false
 end
 
+local function trimRuntimeArray(records, maxCount, cutoffTime)
+	local firstKeep = 1
+	local total = #records
+
+	if cutoffTime ~= nil then
+		while firstKeep <= total do
+			local record = records[firstKeep]
+			local recordTime = record and record.Time
+
+			if type(recordTime) ~= "number" or recordTime >= cutoffTime then
+				break
+			end
+
+			firstKeep = firstKeep + 1
+		end
+	end
+
+	local expired = firstKeep - 1
+	local remaining = total - expired
+	local overflow = 0
+
+	if maxCount and maxCount >= 0 and remaining > maxCount then
+		overflow = remaining - maxCount
+		firstKeep = firstKeep + overflow
+	end
+
+	local removeCount = firstKeep - 1
+	if removeCount > 0 then
+		local destination = 1
+
+		for source = firstKeep, total do
+			records[destination] = records[source]
+			destination = destination + 1
+		end
+
+		for index = destination, total do
+			records[index] = nil
+		end
+	end
+
+	return expired, overflow
+end
+
+local function pruneRuntimeCaches(force)
+	local now = os.clock()
+
+	if not force and now - runtimeHookState.LastPruneAt < 1 then
+		return
+	end
+
+	runtimeHookState.LastPruneAt = now
+
+	local elapsed = now - runtimeStartedAt
+	local window = math.max(0, tonumber(CONFIG.RuntimeRingWindowSeconds) or 0)
+	local cutoff = window > 0 and math.max(0, elapsed - window) or nil
+
+	trimRuntimeArray(runtimeEventRecords, CONFIG.RuntimeMaxEvents, cutoff)
+	trimRuntimeArray(runtimeValueRecords, CONFIG.RuntimeMaxValueChanges, cutoff)
+	trimRuntimeArray(runtimeAttributeRecords, CONFIG.RuntimeMaxAttributeChanges, cutoff)
+	trimRuntimeArray(runtimeCharacterRecords, CONFIG.RuntimeMaxCharacterRecords, cutoff)
+	trimRuntimeArray(runtimeLogRecords, CONFIG.RuntimeMaxLogRecords, cutoff)
+	trimRuntimeArray(runtimeTimelineRecords, CONFIG.RuntimeMaxTimelineRecords, cutoff)
+	trimRuntimeArray(runtimeErrorRecords, 256, cutoff)
+
+	for category, records in pairs(runtimeEventCategoryRecords) do
+		local maxCount = CONFIG.RuntimeMaxEventsPerCategory
+			and CONFIG.RuntimeMaxEventsPerCategory[category]
+			or CONFIG.RuntimeMaxEvents
+
+		local _, overflow = trimRuntimeArray(records, maxCount, cutoff)
+		if overflow > 0 then
+			runtimeEventCategoryDropped[category] =
+				(runtimeEventCategoryDropped[category] or 0) + overflow
+		end
+	end
+end
+
 local function maybeFlushRuntimeTrace()
+	runtimeHookState.MutationsSinceFlush = runtimeHookState.MutationsSinceFlush + 1
+	pruneRuntimeCaches(false)
+
 	if not flushRuntimeTrace then
 		return
 	end
 
-	local total = #runtimeEventRecords + #runtimeValueRecords + #runtimeAttributeRecords
-	if total > 0 and total % CONFIG.RuntimeFlushEvery == 0 then
+	local every = math.max(1, tonumber(CONFIG.RuntimeFlushEvery) or 250)
+	local minSeconds = math.max(0, tonumber(CONFIG.RuntimeFlushMinSeconds) or 0)
+	local now = os.clock()
+
+	if runtimeHookState.MutationsSinceFlush >= every
+		and now - runtimeHookState.LastFlushAt >= minSeconds
+	then
+		runtimeHookState.MutationsSinceFlush = 0
+		runtimeHookState.LastFlushAt = now
 		flushRuntimeTrace()
 	end
+end
+
+local function appendRuntimeTimeline(record)
+	if type(record) ~= "table" then
+		return
+	end
+
+	if record.Time == nil then
+		record.Time = os.clock() - runtimeStartedAt
+	end
+
+	table.insert(runtimeTimelineRecords, record)
+end
+
+local function classifyRuntimeRemote(remote, path)
+	local text = string.lower(
+		(path or safeFullName(remote) or "")
+			.. " "
+			.. safeName(remote)
+	)
+
+	if string.find(text, "__replicatorinternal", 1, true)
+		or string.find(text, "replicatorclient", 1, true)
+		or string.find(text, "replicator", 1, true)
+	then
+		return "Replicator"
+	end
+
+	if string.find(text, "analytics", 1, true)
+		or string.find(text, "telemetry", 1, true)
+		or string.find(text, "metrics", 1, true)
+	then
+		return "Analytics"
+	end
+
+	if string.find(text, "robloxreplicatedstorage", 1, true)
+		or string.find(text, "coregui", 1, true)
+	then
+		return "Other"
+	end
+
+	return "Game"
 end
 
 local function captureRuntimeCallerStack()
@@ -1323,7 +1678,7 @@ local function captureRuntimeCallerStack()
 	end
 
 	local frames = {}
-	local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 8)
+	local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 10)
 
 	for level = 4, 3 + maxDepth do
 		local ok, source, line, name = pcall(debug.info, level, "sln")
@@ -1382,21 +1737,26 @@ local function getRuntimeCallerInfo()
 end
 
 local function appendRuntimeRemoteRecord(remote, direction, method, packedArguments, extra)
-	if not runtimeTraceActive or #runtimeEventRecords >= CONFIG.RuntimeMaxEvents then
-		return
+	if not runtimeTraceActive then
+		return nil
 	end
 
 	extra = extra or {}
 	local className = safeClassName(remote)
+	local path = safeFullName(remote)
+	local category = extra.Category or classifyRuntimeRemote(remote, path)
 	local callerInfo = extra.Caller
+
 	local record = {
 		Time = os.clock() - runtimeStartedAt,
 		Direction = direction,
 		Method = method,
+		Category = category,
+		Phase = extra.Phase,
 		RemoteId = instanceIds[remote],
 		Name = safeName(remote),
 		ClassName = className,
-		Path = safeFullName(remote),
+		Path = path,
 		SnapshotPath = extra.SnapshotPath,
 		ArgumentCount = packedArguments.n,
 		Arguments = serializePackedRuntimeValues(packedArguments),
@@ -1414,7 +1774,31 @@ local function appendRuntimeRemoteRecord(remote, direction, method, packedArgume
 	end
 
 	table.insert(runtimeEventRecords, record)
+
+	local categoryRecords = runtimeEventCategoryRecords[category]
+	if not categoryRecords then
+		category = "Other"
+		record.Category = category
+		categoryRecords = runtimeEventCategoryRecords.Other
+	end
+
+	table.insert(categoryRecords, record)
+
+	appendRuntimeTimeline({
+		Time = record.Time,
+		Kind = "Remote",
+		Category = category,
+		Direction = direction,
+		Method = method,
+		Name = record.Name,
+		Path = record.Path,
+		ArgumentCount = record.ArgumentCount,
+		CallerIsExecutor = record.CallerIsExecutor,
+		CallerPath = callerInfo and callerInfo.Path or nil
+	})
+
 	maybeFlushRuntimeTrace()
+	return record
 end
 
 local function watchRuntimeRemote(object, id, name, className, path)
@@ -1486,6 +1870,7 @@ local function installOutgoingRemoteHook()
 	end
 
 	local oldNamecall
+
 	local function handler(self, ...)
 		local methodOk, method = pcall(getnamecallmethod)
 		if not methodOk then
@@ -1506,44 +1891,50 @@ local function installOutgoingRemoteHook()
 		local snapshotPath = safeFullName(self)
 		local callStarted = os.clock()
 
+		-- Record the request before calling the original method. If the call causes
+		-- an immediate disconnect, the request that triggered it is still present.
+		local record = appendRuntimeRemoteRecord(
+			self,
+			"ClientToServer",
+			isInvokeServer and "InvokeServer" or "FireServer",
+			packedArguments,
+			{
+				SnapshotPath = snapshotPath,
+				Caller = callerInfo,
+				CallerIsExecutor = callerIsExecutor,
+				CallerStack = callerStack,
+				Phase = "Request"
+			}
+		)
+
 		if isInvokeServer then
 			local returns = table.pack(oldNamecall(self, ...))
-			pcall(function()
-				appendRuntimeRemoteRecord(
-					self,
-					"ClientToServer",
-					"InvokeServer",
-					packedArguments,
-					{
-						SnapshotPath = snapshotPath,
-						Caller = callerInfo,
-						CallerIsExecutor = callerIsExecutor,
-						CallerStack = callerStack,
-						DurationSeconds = os.clock() - callStarted,
-						Returns = CONFIG.RuntimeCaptureInvokeReturns and returns or nil
-					}
-				)
-			end)
+
+			if record then
+				record.DurationSeconds = os.clock() - callStarted
+				if CONFIG.RuntimeCaptureInvokeReturns then
+					record.ReturnCount = returns.n
+					record.Returns = serializePackedRuntimeValues(returns)
+				end
+
+				appendRuntimeTimeline({
+					Time = os.clock() - runtimeStartedAt,
+					Kind = "RemoteReturn",
+					Category = record.Category,
+					Direction = "ServerToClient",
+					Method = "InvokeServerReturn",
+					Name = record.Name,
+					Path = record.Path,
+					ReturnCount = returns.n,
+					DurationSeconds = record.DurationSeconds
+				})
+				maybeFlushRuntimeTrace()
+			end
+
 			return table.unpack(returns, 1, returns.n)
 		end
 
-		local returns = table.pack(oldNamecall(self, ...))
-		pcall(function()
-			appendRuntimeRemoteRecord(
-				self,
-				"ClientToServer",
-				"FireServer",
-				packedArguments,
-				{
-					SnapshotPath = snapshotPath,
-					Caller = callerInfo,
-					CallerIsExecutor = callerIsExecutor,
-					CallerStack = callerStack,
-					DurationSeconds = os.clock() - callStarted
-				}
-			)
-		end)
-		return table.unpack(returns, 1, returns.n)
+		return oldNamecall(self, ...)
 	end
 
 	local wrappedHandler = capabilities.newcclosure and newcclosure(handler) or handler
@@ -1574,7 +1965,14 @@ local function shouldWatchRuntimeAttributes(object, name, path, attributes)
 		return false
 	end
 
-	return safeIsA(object, "Player") or isRuntimeInteresting(name, path)
+	if safeIsA(object, "Player")
+		or safeIsA(object, "Humanoid")
+		or safeIsA(object, "BasePart")
+	then
+		return true
+	end
+
+	return isRuntimeInteresting(name, path)
 end
 
 local function watchRuntimeAttributes(object, id, name, className, path, attributes)
@@ -1595,11 +1993,13 @@ local function watchRuntimeAttributes(object, id, name, className, path, attribu
 	local initialOk, initialAttributes = pcall(function()
 		return object:GetAttributes()
 	end)
+
 	if initialOk and type(initialAttributes) == "table" then
 		for attributeName, value in pairs(initialAttributes) do
 			initialValues[attributeName] = value
 		end
 	end
+
 	runtimeAttributeLastValues[object] = initialValues
 
 	local signalOk, signal = pcall(function()
@@ -1611,16 +2011,18 @@ local function watchRuntimeAttributes(object, id, name, className, path, attribu
 
 	local connectionOk, connection = pcall(function()
 		return signal:Connect(function(attributeName)
-			if not runtimeTraceActive or #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges then
+			if not runtimeTraceActive then
 				return
 			end
 
 			local oldValue = runtimeAttributeLastValues[object]
 				and runtimeAttributeLastValues[object][attributeName]
 				or nil
+
 			local newOk, newValue = pcall(function()
 				return object:GetAttribute(attributeName)
 			end)
+
 			if not newOk then
 				newValue = nil
 			end
@@ -1639,7 +2041,7 @@ local function watchRuntimeAttributes(object, id, name, className, path, attribu
 				newSerialized = serializeRuntimeValue(newValue)
 			end
 
-			table.insert(runtimeAttributeRecords, {
+			local record = {
 				Time = os.clock() - runtimeStartedAt,
 				Id = instanceIds[object] or id,
 				Name = safeName(object),
@@ -1651,6 +2053,16 @@ local function watchRuntimeAttributes(object, id, name, className, path, attribu
 				PreviousValue = previousSerialized,
 				ValueIsNil = newValue == nil,
 				Value = newSerialized
+			}
+
+			table.insert(runtimeAttributeRecords, record)
+
+			appendRuntimeTimeline({
+				Time = record.Time,
+				Kind = "Attribute",
+				Name = record.Name,
+				Path = record.Path,
+				Field = record.Attribute
 			})
 
 			maybeFlushRuntimeTrace()
@@ -1681,9 +2093,15 @@ local function watchRuntimeValue(object, id, name, className, path)
 	if runtimeValueLastValues[object] == nil then
 		local initialValue, initialReadable = safeGet(object, "Value")
 		if initialReadable then
-			runtimeValueLastValues[object] = { HasValue = initialValue ~= nil, Value = initialValue }
+			runtimeValueLastValues[object] = {
+				HasValue = initialValue ~= nil,
+				Value = initialValue
+			}
 		else
-			runtimeValueLastValues[object] = { HasValue = false, Value = nil }
+			runtimeValueLastValues[object] = {
+				HasValue = false,
+				Value = nil
+			}
 		end
 	end
 
@@ -1697,11 +2115,12 @@ local function watchRuntimeValue(object, id, name, className, path)
 
 	local connectionOk, connection = pcall(function()
 		return signal:Connect(function()
-			if not runtimeTraceActive or #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges then
+			if not runtimeTraceActive then
 				return
 			end
 
-			local previousState = runtimeValueLastValues[object] or { HasValue = false, Value = nil }
+			local previousState = runtimeValueLastValues[object]
+				or { HasValue = false, Value = nil }
 			local value, readable, readError = safeGet(object, "Value")
 			local serialized
 			local previousSerialized = previousState.HasValue
@@ -1709,8 +2128,14 @@ local function watchRuntimeValue(object, id, name, className, path)
 				or nil
 
 			if readable then
-				serialized = value == nil and { __type = "Nil" } or serializeRuntimeValue(value)
-				runtimeValueLastValues[object] = { HasValue = value ~= nil, Value = value }
+				serialized = value == nil
+					and { __type = "Nil" }
+					or serializeRuntimeValue(value)
+
+				runtimeValueLastValues[object] = {
+					HasValue = value ~= nil,
+					Value = value
+				}
 			else
 				serialized = {
 					__type = "ReadError",
@@ -1718,7 +2143,7 @@ local function watchRuntimeValue(object, id, name, className, path)
 				}
 			end
 
-			table.insert(runtimeValueRecords, {
+			local record = {
 				Time = os.clock() - runtimeStartedAt,
 				Id = instanceIds[object] or id,
 				Name = name,
@@ -1729,6 +2154,15 @@ local function watchRuntimeValue(object, id, name, className, path)
 				PreviousValue = previousSerialized,
 				ValueIsNil = readable and value == nil or nil,
 				Value = serialized
+			}
+
+			table.insert(runtimeValueRecords, record)
+
+			appendRuntimeTimeline({
+				Time = record.Time,
+				Kind = "Value",
+				Name = record.Name,
+				Path = record.Path
 			})
 
 			maybeFlushRuntimeTrace()
@@ -1740,6 +2174,443 @@ local function watchRuntimeValue(object, id, name, className, path)
 	else
 		recordWarning("RuntimeValueTrace", object, connection)
 	end
+end
+
+local function disconnectConnections(connections)
+	for _, connection in ipairs(connections) do
+		pcall(function()
+			connection:Disconnect()
+		end)
+	end
+
+	table.clear(connections)
+end
+
+local function appendRuntimeCharacterRecord(eventName, object, details)
+	if not runtimeTraceActive then
+		return nil
+	end
+
+	local record = {
+		Time = os.clock() - runtimeStartedAt,
+		Event = eventName,
+		Object = object and makeInstanceReference(object, false) or nil,
+		Details = details
+	}
+
+	table.insert(runtimeCharacterRecords, record)
+
+	appendRuntimeTimeline({
+		Time = record.Time,
+		Kind = "Character",
+		Event = eventName,
+		Name = record.Object and record.Object.Name or nil,
+		Path = record.Object and record.Object.Path or nil
+	})
+
+	maybeFlushRuntimeTrace()
+	return record
+end
+
+local function readRuntimeProperty(object, property)
+	local value, readable, readError = safeGet(object, property)
+
+	if not readable then
+		return {
+			__type = "ReadError",
+			value = sanitizeString(readError)
+		}
+	end
+
+	if value == nil then
+		return {
+			__type = "Nil"
+		}
+	end
+
+	return serializeRuntimeValue(value)
+end
+
+local function watchCharacterObject(object)
+	if not object or not runtimeTraceActive then
+		return
+	end
+
+	if safeIsA(object, "Humanoid") then
+		local humanoidProperties = {
+			"Health",
+			"MaxHealth",
+			"WalkSpeed",
+			"JumpPower",
+			"JumpHeight",
+			"HipHeight",
+			"UseJumpPower",
+			"AutoRotate",
+			"PlatformStand",
+			"Sit"
+		}
+
+		for _, property in ipairs(humanoidProperties) do
+			local ok, signal = pcall(function()
+				return object:GetPropertyChangedSignal(property)
+			end)
+
+			if ok and signal then
+				local connected, connection = pcall(function()
+					return signal:Connect(function()
+						if not runtimeTraceActive then
+							return
+						end
+
+						appendRuntimeCharacterRecord(
+							"HumanoidPropertyChanged",
+							object,
+							{
+								Property = property,
+								Value = readRuntimeProperty(object, property)
+							}
+						)
+					end)
+				end)
+
+				if connected and connection then
+					table.insert(runtimeCharacterConnections, connection)
+				end
+			end
+		end
+
+		local stateOk, stateConnection = pcall(function()
+			return object.StateChanged:Connect(function(oldState, newState)
+				if not runtimeTraceActive then
+					return
+				end
+
+				appendRuntimeCharacterRecord(
+					"HumanoidStateChanged",
+					object,
+					{
+						OldState = serializeRuntimeValue(oldState),
+						NewState = serializeRuntimeValue(newState)
+					}
+				)
+			end)
+		end)
+
+		if stateOk and stateConnection then
+			table.insert(runtimeCharacterConnections, stateConnection)
+		end
+	elseif safeIsA(object, "BasePart") and safeName(object) == "HumanoidRootPart" then
+		for _, property in ipairs({ "Anchored", "CanCollide", "Massless" }) do
+			local ok, signal = pcall(function()
+				return object:GetPropertyChangedSignal(property)
+			end)
+
+			if ok and signal then
+				local connected, connection = pcall(function()
+					return signal:Connect(function()
+						if not runtimeTraceActive then
+							return
+						end
+
+						appendRuntimeCharacterRecord(
+							"RootPropertyChanged",
+							object,
+							{
+								Property = property,
+								Value = readRuntimeProperty(object, property)
+							}
+						)
+					end)
+				end)
+
+				if connected and connection then
+					table.insert(runtimeCharacterConnections, connection)
+				end
+			end
+		end
+	end
+end
+
+local function watchLocalCharacter(character)
+	if not CONFIG.RuntimeTraceCharacter then
+		return
+	end
+
+	disconnectConnections(runtimeCharacterConnections)
+
+	if not character then
+		appendRuntimeCharacterRecord("CharacterMissing", nil, nil)
+		return
+	end
+
+	appendRuntimeCharacterRecord(
+		"CharacterAttached",
+		character,
+		{
+			CharacterId = instanceIds[character]
+		}
+	)
+
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if safeIsA(descendant, "Humanoid")
+			or (safeIsA(descendant, "BasePart") and safeName(descendant) == "HumanoidRootPart")
+		then
+			watchCharacterObject(descendant)
+		end
+	end
+
+	local addedOk, addedConnection = pcall(function()
+		return character.DescendantAdded:Connect(function(object)
+			if not runtimeTraceActive then
+				return
+			end
+
+			appendRuntimeCharacterRecord(
+				"DescendantAdded",
+				object,
+				{
+					Parent = makeInstanceReference(object.Parent, false)
+				}
+			)
+
+			if safeIsA(object, "Humanoid")
+				or (safeIsA(object, "BasePart") and safeName(object) == "HumanoidRootPart")
+			then
+				watchCharacterObject(object)
+			end
+		end)
+	end)
+
+	if addedOk and addedConnection then
+		table.insert(runtimeCharacterConnections, addedConnection)
+	end
+
+	local removingOk, removingConnection = pcall(function()
+		return character.DescendantRemoving:Connect(function(object)
+			if not runtimeTraceActive then
+				return
+			end
+
+			appendRuntimeCharacterRecord(
+				"DescendantRemoving",
+				object,
+				{
+					Parent = makeInstanceReference(object.Parent, false)
+				}
+			)
+		end)
+	end)
+
+	if removingOk and removingConnection then
+		table.insert(runtimeCharacterConnections, removingConnection)
+	end
+end
+
+local function sampleLocalCharacter()
+	if not CONFIG.RuntimeTraceCharacter or not runtimeTraceActive or not LocalPlayer then
+		return
+	end
+
+	local character = LocalPlayer.Character
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+
+	local record = {
+		Time = os.clock() - runtimeStartedAt,
+		Event = "Sample",
+		Character = makeInstanceReference(character, false)
+	}
+
+	if humanoid then
+		local stateOk, humanoidState = pcall(function()
+			return humanoid:GetState()
+		end)
+
+		record.Humanoid = {
+			Id = instanceIds[humanoid],
+			Path = safeFullName(humanoid),
+			Health = readRuntimeProperty(humanoid, "Health"),
+			MaxHealth = readRuntimeProperty(humanoid, "MaxHealth"),
+			WalkSpeed = readRuntimeProperty(humanoid, "WalkSpeed"),
+			JumpPower = readRuntimeProperty(humanoid, "JumpPower"),
+			JumpHeight = readRuntimeProperty(humanoid, "JumpHeight"),
+			HipHeight = readRuntimeProperty(humanoid, "HipHeight"),
+			MoveDirection = readRuntimeProperty(humanoid, "MoveDirection"),
+			FloorMaterial = readRuntimeProperty(humanoid, "FloorMaterial"),
+			State = stateOk and serializeRuntimeValue(humanoidState) or nil
+		}
+	end
+
+	if root and safeIsA(root, "BasePart") then
+		record.Root = {
+			Id = instanceIds[root],
+			Path = safeFullName(root),
+			CFrame = readRuntimeProperty(root, "CFrame"),
+			Position = readRuntimeProperty(root, "Position"),
+			AssemblyLinearVelocity = readRuntimeProperty(root, "AssemblyLinearVelocity"),
+			AssemblyAngularVelocity = readRuntimeProperty(root, "AssemblyAngularVelocity"),
+			Anchored = readRuntimeProperty(root, "Anchored"),
+			CanCollide = readRuntimeProperty(root, "CanCollide")
+		}
+	end
+
+	table.insert(runtimeCharacterRecords, record)
+
+	appendRuntimeTimeline({
+		Time = record.Time,
+		Kind = "CharacterSample",
+		Path = record.Character and record.Character.Path or nil
+	})
+
+	maybeFlushRuntimeTrace()
+end
+
+local function appendRuntimeLog(message, messageType)
+	if not runtimeTraceActive or not CONFIG.RuntimeCaptureLogs then
+		return
+	end
+
+	local record = {
+		Time = os.clock() - runtimeStartedAt,
+		Message = sanitizeString(message),
+		MessageType = serializeRuntimeValue(messageType)
+	}
+
+	table.insert(runtimeLogRecords, record)
+
+	if isRuntimeInteresting(record.Message, "") then
+		appendRuntimeTimeline({
+			Time = record.Time,
+			Kind = "Log",
+			Message = record.Message,
+			MessageType = record.MessageType
+		})
+	end
+
+	maybeFlushRuntimeTrace()
+end
+
+local function getCurrentGuiErrorMessage()
+	local ok, message = pcall(function()
+		return game:GetService("GuiService"):GetErrorMessage()
+	end)
+
+	if ok and type(message) == "string" then
+		return sanitizeString(message)
+	end
+
+	return nil
+end
+
+local function shouldFreezeForErrorMessage(message)
+	if not CONFIG.RuntimeFreezeOnDisconnectError or type(message) ~= "string" then
+		return false
+	end
+
+	local lowered = string.lower(message)
+
+	for _, keyword in ipairs(CONFIG.RuntimeFreezeErrorKeywords or {}) do
+		if string.find(lowered, string.lower(keyword), 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function handleGuiErrorMessage(message, source)
+	if type(message) ~= "string" or message == "" then
+		return
+	end
+
+	message = sanitizeString(message)
+
+	if message == runtimeHookState.LastGuiErrorMessage then
+		return
+	end
+
+	runtimeHookState.LastGuiErrorMessage = message
+
+	local code = string.match(message, "[Ee]rror%s*[Cc]ode[^%d]*(%d+)")
+		or string.match(message, "Código%s+de%s+error[^%d]*(%d+)")
+		or string.match(message, "codigo%s+de%s+error[^%d]*(%d+)")
+		or string.match(message, "%f[%d]267%f[%D]")
+
+	local record = {
+		Time = os.clock() - runtimeStartedAt,
+		Source = source,
+		Message = message,
+		ErrorCode = code
+	}
+
+	table.insert(runtimeErrorRecords, record)
+
+	appendRuntimeTimeline({
+		Time = record.Time,
+		Kind = "GuiError",
+		Source = source,
+		Message = message,
+		ErrorCode = code
+	})
+
+	maybeFlushRuntimeTrace()
+
+	if shouldFreezeForErrorMessage(message) and freezeRuntimeTrace then
+		freezeRuntimeTrace(
+			"DisconnectError",
+			{
+				Source = source,
+				Message = message,
+				ErrorCode = code
+			}
+		)
+	end
+end
+
+freezeRuntimeTrace = function(reason, details)
+	if runtimeHookState.Frozen then
+		return false
+	end
+
+	local freezeTime = os.clock() - runtimeStartedAt
+
+	runtimeHookState.Frozen = true
+	runtimeTraceActive = false
+	runtimeHookState.Active = false
+	runtimeHookState.FreezeInfo = {
+		Time = freezeTime,
+		Reason = sanitizeString(reason or "Unknown"),
+		Details = details
+	}
+
+	appendRuntimeTimeline({
+		Time = freezeTime,
+		Kind = "TraceFrozen",
+		Reason = runtimeHookState.FreezeInfo.Reason
+	})
+
+	pruneRuntimeCaches(true)
+
+	for _, record in ipairs(runtimeTimelineRecords) do
+		if type(record.Time) == "number" then
+			record.SecondsBeforeFreeze = freezeTime - record.Time
+		end
+	end
+
+	if flushRuntimeTrace then
+		pcall(flushRuntimeTrace)
+	end
+
+	task.defer(function()
+		disconnectConnections(runtimeCharacterConnections)
+		disconnectConnections(runtimeConnections)
+	end)
+
+	return true
 end
 
 local function primeRuntimeObservers()
@@ -1769,11 +2640,20 @@ local function primeRuntimeObservers()
 		then
 			local shouldPrimeAttributes = safeIsA(object, "Tool")
 				or safeIsA(object, "Player")
+				or safeIsA(object, "Humanoid")
+				or safeIsA(object, "BasePart")
 				or isRuntimeInteresting(name, path)
 
 			if shouldPrimeAttributes then
 				local attributes = getAttributes(object)
-				watchRuntimeAttributes(object, instanceIds[object], name, className, path, attributes)
+				watchRuntimeAttributes(
+					object,
+					instanceIds[object],
+					name,
+					className,
+					path,
+					attributes
+				)
 			end
 		end
 
@@ -1793,7 +2673,12 @@ local function startRuntimeTrace()
 	end
 
 	runtimeTraceActive = true
+	runtimeHookState.Frozen = false
 	runtimeHookState.Active = true
+	runtimeHookState.LastFlushAt = os.clock()
+	runtimeHookState.MutationsSinceFlush = 0
+	runtimeHookState.LastPruneAt = 0
+
 	installOutgoingRemoteHook()
 	primeRuntimeObservers()
 
@@ -1817,7 +2702,9 @@ local function startRuntimeTrace()
 						watchRuntimeRemote(object, instanceIds[object], name, className, path)
 					end
 
-					if CONFIG.RuntimeTraceToolAttributes or CONFIG.RuntimeTraceInterestingAttributes then
+					if CONFIG.RuntimeTraceToolAttributes
+						or CONFIG.RuntimeTraceInterestingAttributes
+					then
 						watchRuntimeAttributes(
 							object,
 							instanceIds[object],
@@ -1840,6 +2727,131 @@ local function startRuntimeTrace()
 		else
 			recordWarning("RuntimeDynamicTrace", nil, connection)
 		end
+	end
+
+	if LocalPlayer then
+		watchLocalCharacter(LocalPlayer.Character)
+
+		local addedOk, addedConnection = pcall(function()
+			return LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+				if not runtimeTraceActive then
+					return
+				end
+
+				watchLocalCharacter(newCharacter)
+			end)
+		end)
+
+		if addedOk and addedConnection then
+			table.insert(runtimeConnections, addedConnection)
+		end
+
+		local removingOk, removingConnection = pcall(function()
+			return LocalPlayer.CharacterRemoving:Connect(function(oldCharacter)
+				if not runtimeTraceActive then
+					return
+				end
+
+				appendRuntimeCharacterRecord(
+					"CharacterRemoving",
+					oldCharacter,
+					nil
+				)
+			end)
+		end)
+
+		if removingOk and removingConnection then
+			table.insert(runtimeConnections, removingConnection)
+		end
+	end
+
+	if CONFIG.RuntimeCaptureLogs then
+		local logOk, logConnection = pcall(function()
+			return game:GetService("LogService").MessageOut:Connect(function(message, messageType)
+				if not runtimeTraceActive then
+					return
+				end
+
+				appendRuntimeLog(message, messageType)
+			end)
+		end)
+
+		if logOk and logConnection then
+			table.insert(runtimeConnections, logConnection)
+		else
+			recordWarning("RuntimeLogTrace", nil, logConnection)
+		end
+	end
+
+	local errorSignalOk, errorSignal = pcall(function()
+		return game:GetService("GuiService").ErrorMessageChanged
+	end)
+
+	if errorSignalOk and errorSignal then
+		local connectionOk, connection = pcall(function()
+			return errorSignal:Connect(function(message)
+				if runtimeHookState.Frozen then
+					return
+				end
+
+				local current = getCurrentGuiErrorMessage()
+				if (not current or current == "") and type(message) == "string" then
+					current = message
+				end
+
+				handleGuiErrorMessage(current, "GuiService.ErrorMessageChanged")
+			end)
+		end)
+
+		if connectionOk and connection then
+			table.insert(runtimeConnections, connection)
+		else
+			recordWarning("RuntimeDisconnectTrace", nil, connection)
+		end
+	else
+		recordWarning(
+			"RuntimeDisconnectTrace",
+			nil,
+			"GuiService.ErrorMessageChanged unavailable; polling fallback will be used"
+		)
+	end
+
+	local sampleAccumulator = 0
+	local errorAccumulator = 0
+
+	local heartbeatOk, heartbeatConnection = pcall(function()
+		return game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+			if not runtimeTraceActive then
+				return
+			end
+
+			sampleAccumulator = sampleAccumulator + deltaTime
+			errorAccumulator = errorAccumulator + deltaTime
+
+			local sampleInterval = math.max(
+				0.03,
+				tonumber(CONFIG.RuntimeCharacterSampleInterval) or 0.15
+			)
+
+			if CONFIG.RuntimeTraceCharacter and sampleAccumulator >= sampleInterval then
+				sampleAccumulator = 0
+				sampleLocalCharacter()
+			end
+
+			if errorAccumulator >= 0.25 then
+				errorAccumulator = 0
+				local message = getCurrentGuiErrorMessage()
+				if message and message ~= "" then
+					handleGuiErrorMessage(message, "GuiServicePoll")
+				end
+			end
+		end)
+	end)
+
+	if heartbeatOk and heartbeatConnection then
+		table.insert(runtimeConnections, heartbeatConnection)
+	else
+		recordWarning("RuntimeHeartbeatTrace", nil, heartbeatConnection)
 	end
 end
 
@@ -2447,9 +3459,20 @@ local function buildSummary(elapsed, pathStats)
 		"Invalid / empty class names: " .. tostring(invalidClassNameCount),
 		"Time: " .. string.format("%.2fs", elapsed),
 		"Runtime Trace: " .. tostring(CONFIG.RuntimeTrace),
+		"Runtime Trace Frozen: " .. tostring(runtimeHookState.Frozen),
+		"Runtime Ring Window: " .. tostring(CONFIG.RuntimeRingWindowSeconds) .. "s",
 		"Runtime Remote Events: " .. tostring(#runtimeEventRecords),
+		"  Game: " .. tostring(#runtimeEventCategoryRecords.Game),
+		"  Replicator: " .. tostring(#runtimeEventCategoryRecords.Replicator),
+		"  Analytics: " .. tostring(#runtimeEventCategoryRecords.Analytics),
+		"  Other: " .. tostring(#runtimeEventCategoryRecords.Other),
 		"Runtime Value Changes: " .. tostring(#runtimeValueRecords),
 		"Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
+		"Runtime Character Records: " .. tostring(#runtimeCharacterRecords),
+		"Runtime Log Records: " .. tostring(#runtimeLogRecords),
+		"Runtime Timeline Records: " .. tostring(#runtimeTimelineRecords),
+		"Runtime Error Messages: " .. tostring(#runtimeErrorRecords),
+		"Buffer Capture: " .. tostring(CONFIG.RuntimeCaptureBuffers and capabilities.buffer_len),
 		"Outgoing Remote Hook: " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod and capabilities.getnamecallmethod),
 		"",
 		"Top Duplicate Paths:"
@@ -2591,6 +3614,7 @@ local function backfillRuntimeIds()
 
 	local pathToId = {}
 	local duplicatePaths = {}
+
 	for id, meta in pairs(instanceMetaById) do
 		local path = meta and meta.Path
 		if path then
@@ -2603,6 +3627,17 @@ local function backfillRuntimeIds()
 		end
 	end
 
+	local function backfillReference(reference)
+		if type(reference) ~= "table" or reference.Id ~= nil then
+			return
+		end
+
+		local path = reference.Path
+		if path and not duplicatePaths[path] then
+			reference.Id = pathToId[path]
+		end
+	end
+
 	for _, record in ipairs(runtimeEventRecords) do
 		if record.RemoteId == nil then
 			local path = record.Path or record.SnapshotPath
@@ -2610,6 +3645,8 @@ local function backfillRuntimeIds()
 				record.RemoteId = pathToId[path]
 			end
 		end
+
+		backfillReference(record.Caller)
 	end
 
 	for _, record in ipairs(runtimeAttributeRecords) do
@@ -2629,6 +3666,44 @@ local function backfillRuntimeIds()
 			end
 		end
 	end
+
+	for _, record in ipairs(runtimeCharacterRecords) do
+		backfillReference(record.Object)
+		backfillReference(record.Character)
+
+		if record.Humanoid and record.Humanoid.Id == nil then
+			local path = record.Humanoid.Path
+			if path and not duplicatePaths[path] then
+				record.Humanoid.Id = pathToId[path]
+			end
+		end
+
+		if record.Root and record.Root.Id == nil then
+			local path = record.Root.Path
+			if path and not duplicatePaths[path] then
+				record.Root.Id = pathToId[path]
+			end
+		end
+	end
+end
+
+local function makeRuntimeEventDocument(records, category)
+	return {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		Category = category,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #records,
+		DroppedDueToCategoryCap = category
+			and runtimeEventCategoryDropped[category]
+			or nil,
+		Events = records
+	}
 end
 
 flushRuntimeTrace = function()
@@ -2636,25 +3711,28 @@ flushRuntimeTrace = function()
 		return
 	end
 
+	pruneRuntimeCaches(true)
 	backfillRuntimeIds()
 
-	local eventsDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeEventRecords,
-		Truncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
-		Events = runtimeEventRecords
+	local eventsDocument = makeRuntimeEventDocument(runtimeEventRecords, nil)
+	eventsDocument.CategoryTotals = {
+		Game = #runtimeEventCategoryRecords.Game,
+		Replicator = #runtimeEventCategoryRecords.Replicator,
+		Analytics = #runtimeEventCategoryRecords.Analytics,
+		Other = #runtimeEventCategoryRecords.Other
 	}
+	eventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
 
 	local valuesDocument = {
 		DumpId = currentDumpId,
 		Enabled = CONFIG.RuntimeTrace,
 		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeValueRecords,
-		Truncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
 		Changes = runtimeValueRecords
 	}
 
@@ -2662,29 +3740,108 @@ flushRuntimeTrace = function()
 		DumpId = currentDumpId,
 		Enabled = CONFIG.RuntimeTrace,
 		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeAttributeRecords,
-		Truncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges,
 		Changes = runtimeAttributeRecords
 	}
 
-	eventsDocument.Active = runtimeTraceActive
-	writeSafe(RUNTIME_EVENTS_FILE, encodeJSON(eventsDocument, "runtime_events.json"))
-	writeSafe(RUNTIME_VALUES_FILE, encodeJSON(valuesDocument, "runtime_values.json"))
-	writeSafe(RUNTIME_ATTRIBUTES_FILE, encodeJSON(attributesDocument, "runtime_attributes.json"))
+	local characterDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTraceCharacter,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeCharacterRecords,
+		Records = runtimeCharacterRecords
+	}
+
+	local logsDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeCaptureLogs,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeLogRecords,
+		Records = runtimeLogRecords
+	}
+
+	local timelineDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeTimelineRecords,
+		Timeline = runtimeTimelineRecords
+	}
+
+	local disconnectDocument = {
+		DumpId = currentDumpId,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		ErrorMessages = runtimeErrorRecords
+	}
+
+	writeSafe(RUNTIME_FILES.Events, encodeJSON(eventsDocument, "runtime_events.json"))
+	writeSafe(
+		RUNTIME_FILES.EventsGame,
+		encodeJSON(
+			makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
+			"runtime_events_game.json"
+		)
+	)
+	writeSafe(
+		RUNTIME_FILES.EventsReplicator,
+		encodeJSON(
+			makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
+			"runtime_events_replicator.json"
+		)
+	)
+	writeSafe(
+		RUNTIME_FILES.EventsAnalytics,
+		encodeJSON(
+			makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
+			"runtime_events_analytics.json"
+		)
+	)
+	writeSafe(
+		RUNTIME_FILES.EventsOther,
+		encodeJSON(
+			makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
+			"runtime_events_other.json"
+		)
+	)
+	writeSafe(RUNTIME_FILES.Values, encodeJSON(valuesDocument, "runtime_values.json"))
+	writeSafe(RUNTIME_FILES.Attributes, encodeJSON(attributesDocument, "runtime_attributes.json"))
+	writeSafe(RUNTIME_FILES.Character, encodeJSON(characterDocument, "runtime_character.json"))
+	writeSafe(RUNTIME_FILES.Logs, encodeJSON(logsDocument, "runtime_logs.json"))
+	writeSafe(RUNTIME_FILES.Timeline, encodeJSON(timelineDocument, "runtime_timeline.json"))
+	writeSafe(RUNTIME_FILES.Disconnect, encodeJSON(disconnectDocument, "runtime_disconnect.json"))
+
+	runtimeHookState.LastFlushAt = os.clock()
+	runtimeHookState.MutationsSinceFlush = 0
 end
 
 local function stopRuntimeTrace()
 	runtimeTraceActive = false
 	runtimeHookState.Active = false
 
-	for _, connection in ipairs(runtimeConnections) do
-		pcall(function()
-			connection:Disconnect()
-		end)
-	end
+	disconnectConnections(runtimeCharacterConnections)
+	disconnectConnections(runtimeConnections)
 
-	runtimeConnections = {}
 	flushRuntimeTrace()
 end
 
@@ -2696,12 +3853,31 @@ local function finishRuntimeTraceAfterSnapshot()
 	flushRuntimeTrace()
 
 	local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
-	if postSeconds > 0 then
-		print("snapshot finished; runtime trace remains active for", postSeconds, "more seconds")
-		task.wait(postSeconds)
+	if postSeconds > 0 and not runtimeHookState.Frozen then
+		print(
+			"snapshot finished; runtime trace remains active for up to",
+			postSeconds,
+			"more seconds"
+		)
+
+		local waitStarted = os.clock()
+		while runtimeTraceActive
+			and not runtimeHookState.Frozen
+			and os.clock() - waitStarted < postSeconds
+		do
+			task.wait(0.1)
+		end
 	end
 
 	stopRuntimeTrace()
+
+	if runtimeHookState.Frozen then
+		print(
+			"runtime trace frozen:",
+			runtimeHookState.FreezeInfo and runtimeHookState.FreezeInfo.Reason or "unknown reason"
+		)
+	end
+
 	print(
 		"runtime trace finished:",
 		#runtimeEventRecords,
@@ -2709,7 +3885,9 @@ local function finishRuntimeTraceAfterSnapshot()
 		#runtimeValueRecords,
 		"value changes,",
 		#runtimeAttributeRecords,
-		"attribute changes"
+		"attribute changes,",
+		#runtimeCharacterRecords,
+		"character records"
 	)
 end
 
@@ -2856,23 +4034,25 @@ local function run()
 	)
 	writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
 
-	local runtimeEventsDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeEventRecords,
-		Truncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
-		Events = runtimeEventRecords
+	local runtimeEventsDocument = makeRuntimeEventDocument(runtimeEventRecords, nil)
+	runtimeEventsDocument.CategoryTotals = {
+		Game = #runtimeEventCategoryRecords.Game,
+		Replicator = #runtimeEventCategoryRecords.Replicator,
+		Analytics = #runtimeEventCategoryRecords.Analytics,
+		Other = #runtimeEventCategoryRecords.Other
 	}
+	runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
 
 	local runtimeValuesDocument = {
 		DumpId = currentDumpId,
 		Enabled = CONFIG.RuntimeTrace,
 		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeValueRecords,
-		Truncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
 		Changes = runtimeValueRecords
 	}
 
@@ -2880,30 +4060,135 @@ local function run()
 		DumpId = currentDumpId,
 		Enabled = CONFIG.RuntimeTrace,
 		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeAttributeRecords,
-		Truncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges,
 		Changes = runtimeAttributeRecords
 	}
 
+	local runtimeCharacterDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTraceCharacter,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeCharacterRecords,
+		Records = runtimeCharacterRecords
+	}
+
+	local runtimeLogsDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeCaptureLogs,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeLogRecords,
+		Records = runtimeLogRecords
+	}
+
+	local runtimeTimelineDocument = {
+		DumpId = currentDumpId,
+		Enabled = CONFIG.RuntimeTrace,
+		Active = runtimeTraceActive,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		RollingWindow = true,
+		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		ElapsedSeconds = os.clock() - runtimeStartedAt,
+		Total = #runtimeTimelineRecords,
+		Timeline = runtimeTimelineRecords
+	}
+
+	local runtimeDisconnectDocument = {
+		DumpId = currentDumpId,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		ErrorMessages = runtimeErrorRecords
+	}
+
 	writeJSONDocument(
-		RUNTIME_EVENTS_FILE,
+		RUNTIME_FILES.Events,
 		runtimeEventsDocument,
 		"runtime_events.json",
 		writtenFiles,
 		false
 	)
 	writeJSONDocument(
-		RUNTIME_VALUES_FILE,
+		RUNTIME_FILES.EventsGame,
+		makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
+		"runtime_events_game.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.EventsReplicator,
+		makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
+		"runtime_events_replicator.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.EventsAnalytics,
+		makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
+		"runtime_events_analytics.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.EventsOther,
+		makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
+		"runtime_events_other.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.Values,
 		runtimeValuesDocument,
 		"runtime_values.json",
 		writtenFiles,
 		false
 	)
 	writeJSONDocument(
-		RUNTIME_ATTRIBUTES_FILE,
+		RUNTIME_FILES.Attributes,
 		runtimeAttributesDocument,
 		"runtime_attributes.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.Character,
+		runtimeCharacterDocument,
+		"runtime_character.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.Logs,
+		runtimeLogsDocument,
+		"runtime_logs.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.Timeline,
+		runtimeTimelineDocument,
+		"runtime_timeline.json",
+		writtenFiles,
+		false
+	)
+	writeJSONDocument(
+		RUNTIME_FILES.Disconnect,
+		runtimeDisconnectDocument,
+		"runtime_disconnect.json",
 		writtenFiles,
 		false
 	)
@@ -2949,7 +4234,10 @@ local function run()
 		},
 		RuntimeTrace = {
 			Enabled = CONFIG.RuntimeTrace,
+			Frozen = runtimeHookState.Frozen,
+			FreezeInfo = runtimeHookState.FreezeInfo,
 			PostSeconds = CONFIG.RuntimeTracePostSeconds,
+			RingWindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 			IncomingRemotes = CONFIG.RuntimeTraceIncomingRemotes,
 			OutgoingRemotes = CONFIG.RuntimeTraceOutgoingRemotes,
 			DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
@@ -2960,9 +4248,33 @@ local function run()
 			CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
 			CallerStackDepth = CONFIG.RuntimeCallerStackDepth,
 			CaptureInvokeReturns = CONFIG.RuntimeCaptureInvokeReturns,
+			CaptureBuffers = CONFIG.RuntimeCaptureBuffers,
+			MaxBufferBytes = CONFIG.RuntimeMaxBufferBytes,
+			TraceCharacter = CONFIG.RuntimeTraceCharacter,
+			CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+			CaptureLogs = CONFIG.RuntimeCaptureLogs,
+			MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
+			FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
 			MaxEvents = CONFIG.RuntimeMaxEvents,
+			MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
 			MaxValueChanges = CONFIG.RuntimeMaxValueChanges,
-			MaxAttributeChanges = CONFIG.RuntimeMaxAttributeChanges
+			MaxAttributeChanges = CONFIG.RuntimeMaxAttributeChanges,
+			MaxCharacterRecords = CONFIG.RuntimeMaxCharacterRecords,
+			MaxTimelineRecords = CONFIG.RuntimeMaxTimelineRecords,
+			Recorded = {
+				Events = #runtimeEventRecords,
+				GameEvents = #runtimeEventCategoryRecords.Game,
+				ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
+				AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+				OtherEvents = #runtimeEventCategoryRecords.Other,
+				ValueChanges = #runtimeValueRecords,
+				AttributeChanges = #runtimeAttributeRecords,
+				CharacterRecords = #runtimeCharacterRecords,
+				LogRecords = #runtimeLogRecords,
+				TimelineRecords = #runtimeTimelineRecords,
+				ErrorMessages = #runtimeErrorRecords
+			},
+			CategoryDroppedDueToCap = runtimeEventCategoryDropped
 		},
 		Capabilities = capabilities
 	}
@@ -3010,12 +4322,22 @@ local function run()
 		RuntimeTrace = {
 			Enabled = CONFIG.RuntimeTrace,
 			FilesAreAuxiliary = true,
+			RollingWindow = true,
+			WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+			Frozen = runtimeHookState.Frozen,
+			FreezeInfo = runtimeHookState.FreezeInfo,
 			Events = #runtimeEventRecords,
+			GameEvents = #runtimeEventCategoryRecords.Game,
+			ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
+			AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+			OtherEvents = #runtimeEventCategoryRecords.Other,
 			ValueChanges = #runtimeValueRecords,
 			AttributeChanges = #runtimeAttributeRecords,
-			EventsTruncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
-			ValueChangesTruncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
-			AttributeChangesTruncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges
+			CharacterRecords = #runtimeCharacterRecords,
+			LogRecords = #runtimeLogRecords,
+			TimelineRecords = #runtimeTimelineRecords,
+			ErrorMessages = #runtimeErrorRecords,
+			CategoryDroppedDueToCap = runtimeEventCategoryDropped
 		}
 	}
 
