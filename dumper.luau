@@ -6,7 +6,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3
+local SCHEMA_VERSION = 3.1
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -42,13 +42,15 @@ local CONFIG = {
 	RuntimeTraceDynamicRemotes = true,
 	RuntimeTraceToolAttributes = true,
 	RuntimeTraceInterestingAttributes = true,
-	RuntimeTraceAllValues = false,
+	RuntimeTraceAllValues = true,
 	RuntimeCaptureCaller = true,
+	RuntimeCaptureCallerStack = true,
+	RuntimeCallerStackDepth = 8,
 	RuntimeCaptureInvokeReturns = true,
 	RuntimeFlushEvery = 25,
-	RuntimeMaxEvents = 6000,
-	RuntimeMaxValueChanges = 4000,
-	RuntimeMaxAttributeChanges = 6000,
+	RuntimeMaxEvents = 12000,
+	RuntimeMaxValueChanges = 12000,
+	RuntimeMaxAttributeChanges = 12000,
 	StateIndexMaxPerBucket = 1500
 }
 
@@ -61,7 +63,8 @@ local capabilities = {
 	newcclosure = type(newcclosure) == "function",
 	checkcaller = type(checkcaller) == "function",
 	getcallingscript = type(getcallingscript) == "function",
-	getconnections = type(getconnections) == "function"
+	getconnections = type(getconnections) == "function",
+	debug_info = debug ~= nil and type(debug.info) == "function"
 }
 
 local started = os.clock()
@@ -89,7 +92,9 @@ local runtimeAttributeRecords = {}
 local runtimeConnections = {}
 local runtimeObservedRemotes = setmetatable({}, { __mode = "k" })
 local runtimeObservedAttributes = setmetatable({}, { __mode = "k" })
+local runtimeObservedValues = setmetatable({}, { __mode = "k" })
 local runtimeAttributeLastValues = setmetatable({}, { __mode = "k" })
+local runtimeValueLastValues = setmetatable({}, { __mode = "k" })
 local runtimeTraceActive = false
 local runtimeHookState = { Active = false }
 local runtimeOutgoingHookInstalled = false
@@ -1309,6 +1314,34 @@ local function maybeFlushRuntimeTrace()
 	end
 end
 
+local function captureRuntimeCallerStack()
+	if not CONFIG.RuntimeCaptureCaller
+		or not CONFIG.RuntimeCaptureCallerStack
+		or not capabilities.debug_info
+	then
+		return nil
+	end
+
+	local frames = {}
+	local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 8)
+
+	for level = 4, 3 + maxDepth do
+		local ok, source, line, name = pcall(debug.info, level, "sln")
+		if not ok or source == nil then
+			break
+		end
+
+		table.insert(frames, {
+			Level = level,
+			Source = sanitizeString(source),
+			Line = line,
+			Name = name and sanitizeString(name) or nil
+		})
+	end
+
+	return #frames > 0 and frames or nil
+end
+
 local function getRuntimeCallerInfo()
 	local callerInfo = nil
 	local callerScript = nil
@@ -1318,6 +1351,15 @@ local function getRuntimeCallerInfo()
 		if ok and typeof(result) == "Instance" then
 			callerScript = result
 			callerInfo = makeInstanceReference(result, false)
+
+			if callerInfo then
+				if not callerInfo.Name or callerInfo.Name == "" then
+					callerInfo.Name = safeName(result)
+				end
+				if not callerInfo.Path or callerInfo.Path == "" then
+					callerInfo.Path = safeFullName(result)
+				end
+			end
 		end
 	end
 
@@ -1329,7 +1371,14 @@ local function getRuntimeCallerInfo()
 		end
 	end
 
-	return callerInfo, callerScript, isExecutor
+	local stack = captureRuntimeCallerStack()
+	if callerInfo and stack and stack[1] then
+		callerInfo.DebugSource = stack[1].Source
+		callerInfo.DebugLine = stack[1].Line
+		callerInfo.DebugName = stack[1].Name
+	end
+
+	return callerInfo, callerScript, isExecutor, stack
 end
 
 local function appendRuntimeRemoteRecord(remote, direction, method, packedArguments, extra)
@@ -1352,7 +1401,10 @@ local function appendRuntimeRemoteRecord(remote, direction, method, packedArgume
 		ArgumentCount = packedArguments.n,
 		Arguments = serializePackedRuntimeValues(packedArguments),
 		Caller = callerInfo,
-		CallerIsExecutor = extra.CallerIsExecutor,
+		CallerIsExecutor = direction == "ClientToServer" and extra.CallerIsExecutor or nil,
+		CallerStack = extra.CallerStack,
+		ObservedByExecutor = extra.ObservedByExecutor,
+		Observer = extra.Observer,
 		DurationSeconds = extra.DurationSeconds
 	}
 
@@ -1393,7 +1445,6 @@ local function watchRuntimeRemote(object, id, name, className, path)
 				return
 			end
 
-			local callerInfo, _, callerIsExecutor = getRuntimeCallerInfo()
 			appendRuntimeRemoteRecord(
 				object,
 				"ServerToClient",
@@ -1401,8 +1452,8 @@ local function watchRuntimeRemote(object, id, name, className, path)
 				table.pack(...),
 				{
 					SnapshotPath = path,
-					Caller = callerInfo,
-					CallerIsExecutor = callerIsExecutor
+					ObservedByExecutor = true,
+					Observer = "DumperOnClientEventConnection"
 				}
 			)
 		end)
@@ -1451,7 +1502,7 @@ local function installOutgoingRemoteHook()
 		end
 
 		local packedArguments = table.pack(...)
-		local callerInfo, _, callerIsExecutor = getRuntimeCallerInfo()
+		local callerInfo, _, callerIsExecutor, callerStack = getRuntimeCallerInfo()
 		local snapshotPath = safeFullName(self)
 		local callStarted = os.clock()
 
@@ -1467,6 +1518,7 @@ local function installOutgoingRemoteHook()
 						SnapshotPath = snapshotPath,
 						Caller = callerInfo,
 						CallerIsExecutor = callerIsExecutor,
+						CallerStack = callerStack,
 						DurationSeconds = os.clock() - callStarted,
 						Returns = CONFIG.RuntimeCaptureInvokeReturns and returns or nil
 					}
@@ -1486,6 +1538,7 @@ local function installOutgoingRemoteHook()
 					SnapshotPath = snapshotPath,
 					Caller = callerInfo,
 					CallerIsExecutor = callerIsExecutor,
+					CallerStack = callerStack,
 					DurationSeconds = os.clock() - callStarted
 				}
 			)
@@ -1620,6 +1673,20 @@ local function watchRuntimeValue(object, id, name, className, path)
 		return
 	end
 
+	if runtimeObservedValues[object] then
+		return
+	end
+	runtimeObservedValues[object] = true
+
+	if runtimeValueLastValues[object] == nil then
+		local initialValue, initialReadable = safeGet(object, "Value")
+		if initialReadable then
+			runtimeValueLastValues[object] = { HasValue = initialValue ~= nil, Value = initialValue }
+		else
+			runtimeValueLastValues[object] = { HasValue = false, Value = nil }
+		end
+	end
+
 	local signalOk, signal = pcall(function()
 		return object:GetPropertyChangedSignal("Value")
 	end)
@@ -1634,11 +1701,16 @@ local function watchRuntimeValue(object, id, name, className, path)
 				return
 			end
 
+			local previousState = runtimeValueLastValues[object] or { HasValue = false, Value = nil }
 			local value, readable, readError = safeGet(object, "Value")
 			local serialized
+			local previousSerialized = previousState.HasValue
+				and serializeRuntimeValue(previousState.Value)
+				or nil
 
 			if readable then
 				serialized = value == nil and { __type = "Nil" } or serializeRuntimeValue(value)
+				runtimeValueLastValues[object] = { HasValue = value ~= nil, Value = value }
 			else
 				serialized = {
 					__type = "ReadError",
@@ -1653,6 +1725,9 @@ local function watchRuntimeValue(object, id, name, className, path)
 				ClassName = className,
 				Path = safeFullName(object),
 				SnapshotPath = path,
+				PreviousIsNil = not previousState.HasValue,
+				PreviousValue = previousSerialized,
+				ValueIsNil = readable and value == nil or nil,
 				Value = serialized
 			})
 
@@ -1689,9 +1764,21 @@ local function primeRuntimeObservers()
 			watchRuntimeRemote(object, instanceIds[object], name, className, path)
 		end
 
-		if CONFIG.RuntimeTraceToolAttributes and safeIsA(object, "Tool") then
-			local attributes = getAttributes(object)
-			watchRuntimeAttributes(object, instanceIds[object], name, className, path, attributes)
+		if CONFIG.RuntimeTraceToolAttributes
+			or CONFIG.RuntimeTraceInterestingAttributes
+		then
+			local shouldPrimeAttributes = safeIsA(object, "Tool")
+				or safeIsA(object, "Player")
+				or isRuntimeInteresting(name, path)
+
+			if shouldPrimeAttributes then
+				local attributes = getAttributes(object)
+				watchRuntimeAttributes(object, instanceIds[object], name, className, path, attributes)
+			end
+		end
+
+		if safeIsA(object, "ValueBase") then
+			watchRuntimeValue(object, instanceIds[object], name, className, path)
 		end
 
 		if index % 1000 == 0 then
@@ -1730,7 +1817,7 @@ local function startRuntimeTrace()
 						watchRuntimeRemote(object, instanceIds[object], name, className, path)
 					end
 
-					if CONFIG.RuntimeTraceToolAttributes and safeIsA(object, "Tool") then
+					if CONFIG.RuntimeTraceToolAttributes or CONFIG.RuntimeTraceInterestingAttributes then
 						watchRuntimeAttributes(
 							object,
 							instanceIds[object],
@@ -1739,6 +1826,10 @@ local function startRuntimeTrace()
 							path,
 							getAttributes(object)
 						)
+					end
+
+					if safeIsA(object, "ValueBase") then
+						watchRuntimeValue(object, instanceIds[object], name, className, path)
 					end
 				end)
 			end)
@@ -2339,7 +2430,8 @@ local function buildSummary(elapsed, pathStats)
 		"PlaceId: " .. tostring(game.PlaceId),
 		"GameId: " .. tostring(game.GameId),
 		"JobId: " .. sanitizeString(game.JobId),
-		"Total Instances: " .. tostring(nodeCount),
+		"Serialized Instance Records: " .. tostring(nextInstanceId),
+		"Traversed Descendants: " .. tostring(nodeCount),
 		"Registered IDs: " .. tostring(nextInstanceId),
 		"Remotes / Bindables: " .. tostring(totalRemoteCount()),
 		"Scripts: " .. tostring(totalScriptCount()),
@@ -2355,6 +2447,9 @@ local function buildSummary(elapsed, pathStats)
 		"Invalid / empty class names: " .. tostring(invalidClassNameCount),
 		"Time: " .. string.format("%.2fs", elapsed),
 		"Runtime Trace: " .. tostring(CONFIG.RuntimeTrace),
+		"Runtime Remote Events: " .. tostring(#runtimeEventRecords),
+		"Runtime Value Changes: " .. tostring(#runtimeValueRecords),
+		"Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
 		"Outgoing Remote Hook: " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod and capabilities.getnamecallmethod),
 		"",
 		"Top Duplicate Paths:"
@@ -2549,6 +2644,7 @@ flushRuntimeTrace = function()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeEventRecords,
+		Truncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
 		Events = runtimeEventRecords
 	}
 
@@ -2558,6 +2654,7 @@ flushRuntimeTrace = function()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeValueRecords,
+		Truncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
 		Changes = runtimeValueRecords
 	}
 
@@ -2567,6 +2664,7 @@ flushRuntimeTrace = function()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeAttributeRecords,
+		Truncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges,
 		Changes = runtimeAttributeRecords
 	}
 
@@ -2588,6 +2686,31 @@ local function stopRuntimeTrace()
 
 	runtimeConnections = {}
 	flushRuntimeTrace()
+end
+
+local function finishRuntimeTraceAfterSnapshot()
+	if not CONFIG.RuntimeTrace then
+		return
+	end
+
+	flushRuntimeTrace()
+
+	local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
+	if postSeconds > 0 then
+		print("snapshot finished; runtime trace remains active for", postSeconds, "more seconds")
+		task.wait(postSeconds)
+	end
+
+	stopRuntimeTrace()
+	print(
+		"runtime trace finished:",
+		#runtimeEventRecords,
+		"remote calls/events,",
+		#runtimeValueRecords,
+		"value changes,",
+		#runtimeAttributeRecords,
+		"attribute changes"
+	)
 end
 
 local function run()
@@ -2667,13 +2790,15 @@ local function run()
 	snapshotFinalized = true
 	finalizeIndexes()
 
+	local snapshotElapsed = os.clock() - started
+	finishRuntimeTraceAfterSnapshot()
+
 	local inventory = buildInventory()
 	local instanceIndex = buildInstanceIndex()
 	local playerIndex = buildPlayerIndex()
 	local pathStats = buildPathStats(instanceIndex)
 	local stateDocument = buildStateIndex(instanceIndex)
 	local treeLines = makeTree(root)
-	local snapshotElapsed = os.clock() - started
 
 	stateDocument.PathCollisions = pathStats
 	stateDocument.PlayerReferenceCount = #playerReferences
@@ -2737,6 +2862,7 @@ local function run()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeEventRecords,
+		Truncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
 		Events = runtimeEventRecords
 	}
 
@@ -2746,6 +2872,7 @@ local function run()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeValueRecords,
+		Truncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
 		Changes = runtimeValueRecords
 	}
 
@@ -2755,6 +2882,7 @@ local function run()
 		Active = runtimeTraceActive,
 		ElapsedSeconds = os.clock() - runtimeStartedAt,
 		Total = #runtimeAttributeRecords,
+		Truncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges,
 		Changes = runtimeAttributeRecords
 	}
 
@@ -2801,7 +2929,8 @@ local function run()
 			UserId = LocalPlayer.UserId
 		} or nil,
 		Stats = {
-			Instances = nodeCount,
+			Instances = #instanceIndex,
+			DescendantInstances = nodeCount,
 			RegisteredIds = nextInstanceId,
 			RemotesAndBindables = totalRemoteCount(),
 			Scripts = totalScriptCount(),
@@ -2828,6 +2957,8 @@ local function run()
 			InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
 			AllValues = CONFIG.RuntimeTraceAllValues,
 			CaptureCaller = CONFIG.RuntimeCaptureCaller,
+			CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
+			CallerStackDepth = CONFIG.RuntimeCallerStackDepth,
 			CaptureInvokeReturns = CONFIG.RuntimeCaptureInvokeReturns,
 			MaxEvents = CONFIG.RuntimeMaxEvents,
 			MaxValueChanges = CONFIG.RuntimeMaxValueChanges,
@@ -2870,7 +3001,8 @@ local function run()
 		IdSemantics = "Snapshot-local",
 		Files = writtenFiles,
 		Stats = {
-			Instances = nodeCount,
+			Instances = #instanceIndex,
+			DescendantInstances = nodeCount,
 			RegisteredIds = nextInstanceId,
 			Errors = #errors,
 			Warnings = #warnings
@@ -2880,7 +3012,10 @@ local function run()
 			FilesAreAuxiliary = true,
 			Events = #runtimeEventRecords,
 			ValueChanges = #runtimeValueRecords,
-			AttributeChanges = #runtimeAttributeRecords
+			AttributeChanges = #runtimeAttributeRecords,
+			EventsTruncated = #runtimeEventRecords >= CONFIG.RuntimeMaxEvents,
+			ValueChangesTruncated = #runtimeValueRecords >= CONFIG.RuntimeMaxValueChanges,
+			AttributeChangesTruncated = #runtimeAttributeRecords >= CONFIG.RuntimeMaxAttributeChanges
 		}
 	}
 
@@ -2892,7 +3027,8 @@ local function run()
 
 	print("dump finished")
 	print("DumpId:", currentDumpId)
-	print("Instances:", nodeCount)
+	print("Serialized instance records:", #instanceIndex)
+	print("Traversed descendants:", nodeCount)
 	print("Registered IDs:", nextInstanceId)
 	print("Remotes / Bindables:", totalRemoteCount())
 	print("Scripts:", totalScriptCount())
@@ -2907,28 +3043,6 @@ local function run()
 	print("Time:", string.format("%.2fs", totalElapsed))
 	print("Folder:", OUTPUT_FOLDER)
 
-	if CONFIG.RuntimeTrace then
-		flushRuntimeTrace()
-
-		local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
-		if postSeconds > 0 then
-			print("runtime trace remains active for", postSeconds, "more seconds")
-			task.delay(postSeconds, function()
-				stopRuntimeTrace()
-				print(
-					"runtime trace finished:",
-					#runtimeEventRecords,
-					"remote calls/events,",
-					#runtimeValueRecords,
-					"value changes,",
-					#runtimeAttributeRecords,
-					"attribute changes"
-				)
-			end)
-		else
-			stopRuntimeTrace()
-		end
-	end
 end
 
 run()
