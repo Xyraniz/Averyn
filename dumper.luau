@@ -41,7 +41,7 @@ local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
 local WARNINGS_FILE = OUTPUT_FOLDER .. "/warnings.json"
 
-local YIELD_EVERY = 250
+local YIELD_EVERY = 100
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
@@ -124,6 +124,10 @@ local CONFIG = {
 	-- otherwise trigger hundreds of writefile calls per second.
 	RuntimeFlushEvery = 250,
 	RuntimeFlushMinSeconds = 1.0,
+
+	-- Stability only: observer priming still scans every existing Instance, but
+	-- yields cooperatively instead of materializing game:GetDescendants() at once.
+	RuntimePrimeYieldEvery = 150,
 
 	-- The combined timeline also behaves as a ring. Remote categories have
 	-- independent caps, so internal replication cannot starve ordinary game
@@ -223,7 +227,8 @@ local runtimeHookState = {
 	HookIntegrityBaseline = nil,
 	HookIntegrityLast = nil,
 	HookIntegrityLastCheckAt = 0,
-	LastNormalRayObservationAt = 0
+	LastNormalRayObservationAt = 0,
+	FlushScheduled = false
 }
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
@@ -1588,14 +1593,17 @@ local function trimRuntimeArray(records, maxCount, cutoffTime)
 
 	local removeCount = firstKeep - 1
 	if removeCount > 0 then
-		local destination = 1
+		local kept = total - firstKeep + 1
 
-		for source = firstKeep, total do
-			records[destination] = records[source]
-			destination = destination + 1
+		if kept > 0 and type(table.move) == "function" then
+			table.move(records, firstKeep, total, 1, records)
+		elseif kept > 0 then
+			for source = firstKeep, total do
+				records[source - firstKeep + 1] = records[source]
+			end
 		end
 
-		for index = destination, total do
+		for index = kept + 1, total do
 			records[index] = nil
 		end
 	end
@@ -1647,6 +1655,26 @@ local function pruneRuntimeCaches(force)
 	end
 end
 
+local function scheduleRuntimeFlush()
+	if not flushRuntimeTrace or runtimeHookState.FlushScheduled then
+		return
+	end
+
+	runtimeHookState.FlushScheduled = true
+	task.defer(function()
+		runtimeHookState.FlushScheduled = false
+
+		if not flushRuntimeTrace then
+			return
+		end
+
+		local ok, flushError = pcall(flushRuntimeTrace)
+		if not ok then
+			recordError("RuntimeFlush", nil, flushError)
+		end
+	end)
+end
+
 local function maybeFlushRuntimeTrace()
 	runtimeHookState.MutationsSinceFlush = runtimeHookState.MutationsSinceFlush + 1
 	pruneRuntimeCaches(false)
@@ -1664,7 +1692,7 @@ local function maybeFlushRuntimeTrace()
 	then
 		runtimeHookState.MutationsSinceFlush = 0
 		runtimeHookState.LastFlushAt = now
-		flushRuntimeTrace()
+		scheduleRuntimeFlush()
 	end
 end
 
@@ -3148,50 +3176,79 @@ local function primeRuntimeObservers()
 		return
 	end
 
-	local descendantsOk, descendants = pcall(function()
-		return game:GetDescendants()
+	local childrenOk, rootChildren = pcall(function()
+		return game:GetChildren()
 	end)
-	if not descendantsOk then
-		recordWarning("RuntimePrime", nil, descendants)
+	if not childrenOk then
+		recordWarning("RuntimePrime", nil, rootChildren)
 		return
 	end
 
-	for index, object in ipairs(descendants) do
-		local className = safeClassName(object)
-		local name = safeName(object)
-		local path = safeFullName(object)
+	-- DFS stack keeps memory proportional to the active frontier instead of
+	-- retaining one giant GetDescendants() array for the entire DataModel.
+	local stack = {}
+	for index = #rootChildren, 1, -1 do
+		stack[#stack + 1] = rootChildren[index]
+	end
+	rootChildren = nil
 
-		if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
-			watchRuntimeRemote(object, instanceIds[object], name, className, path)
-		end
+	local processed = 0
+	local yieldEvery = math.max(25, tonumber(CONFIG.RuntimePrimeYieldEvery) or 150)
 
-		if CONFIG.RuntimeTraceToolAttributes
-			or CONFIG.RuntimeTraceInterestingAttributes
-		then
-			local shouldPrimeAttributes = safeIsA(object, "Tool")
-				or safeIsA(object, "Player")
-				or safeIsA(object, "Humanoid")
-				or safeIsA(object, "BasePart")
-				or isRuntimeInteresting(name, path)
+	while #stack > 0 and runtimeTraceActive do
+		local object = stack[#stack]
+		stack[#stack] = nil
 
-			if shouldPrimeAttributes then
-				local attributes = getAttributes(object)
-				watchRuntimeAttributes(
-					object,
-					instanceIds[object],
-					name,
-					className,
-					path,
-					attributes
-				)
+		if object then
+			local className = safeClassName(object)
+			local name = safeName(object)
+			local path = safeFullName(object)
+
+			if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
+				watchRuntimeRemote(object, instanceIds[object], name, className, path)
+			end
+
+			if CONFIG.RuntimeTraceToolAttributes
+				or CONFIG.RuntimeTraceInterestingAttributes
+			then
+				local shouldPrimeAttributes = safeIsA(object, "Tool")
+					or safeIsA(object, "Player")
+					or safeIsA(object, "Humanoid")
+					or safeIsA(object, "BasePart")
+					or isRuntimeInteresting(name, path)
+
+				if shouldPrimeAttributes then
+					local attributes = getAttributes(object)
+					watchRuntimeAttributes(
+						object,
+						instanceIds[object],
+						name,
+						className,
+						path,
+						attributes
+					)
+				end
+			end
+
+			if safeIsA(object, "ValueBase") then
+				watchRuntimeValue(object, instanceIds[object], name, className, path)
+			end
+
+			local descendantsOk, children = pcall(function()
+				return object:GetChildren()
+			end)
+
+			if descendantsOk and type(children) == "table" then
+				for index = #children, 1, -1 do
+					stack[#stack + 1] = children[index]
+				end
+			elseif not descendantsOk then
+				recordWarning("RuntimePrimeGetChildren", object, children)
 			end
 		end
 
-		if safeIsA(object, "ValueBase") then
-			watchRuntimeValue(object, instanceIds[object], name, className, path)
-		end
-
-		if index % 1000 == 0 then
+		processed = processed + 1
+		if processed % yieldEvery == 0 then
 			task.wait()
 		end
 	end
@@ -3212,6 +3269,7 @@ local function startRuntimeTrace()
 	runtimeHookState.HookIntegrityBaseline = nil
 	runtimeHookState.HookIntegrityLast = nil
 	runtimeHookState.LastNormalRayObservationAt = 0
+	runtimeHookState.FlushScheduled = false
 
 	if CONFIG.RuntimeTraceHookDiagnostics then
 		checkRuntimeHookIntegrity(true, "BeforeDumperNamecallHook")
@@ -3222,8 +3280,6 @@ local function startRuntimeTrace()
 	if CONFIG.RuntimeTraceHookDiagnostics then
 		checkRuntimeHookIntegrity(true, "AfterDumperNamecallHook")
 	end
-
-	primeRuntimeObservers()
 
 	if CONFIG.RuntimeTraceDynamicRemotes then
 		local ok, connection = pcall(function()
@@ -3271,6 +3327,8 @@ local function startRuntimeTrace()
 			recordWarning("RuntimeDynamicTrace", nil, connection)
 		end
 	end
+
+	primeRuntimeObservers()
 
 	if LocalPlayer then
 		watchLocalCharacter(LocalPlayer.Character)
@@ -4147,6 +4205,12 @@ local function writeJSONDocument(path, data, label, writtenFiles, required)
 	return success, bytes
 end
 
+local function releaseTemporaryMemory()
+	if type(collectgarbage) == "function" then
+		pcall(collectgarbage, "collect")
+	end
+end
+
 local function writeTextDocument(path, contents, writtenFiles, required)
 	local bytes = #contents
 	local success = writeSafe(path, contents)
@@ -4561,11 +4625,16 @@ local function run()
 	snapshotFinalized = true
 	finalizeIndexes()
 
+	-- Traversal bookkeeping is no longer needed after the snapshot. Releasing it
+	-- here lowers the peak during JSON encoding without dropping exported data.
+	table.clear(traversedInstances)
+
 	local snapshotElapsed = os.clock() - started
 	finishRuntimeTraceAfterSnapshot()
 
 	local inventory = buildInventory()
 	local instanceIndex = buildInstanceIndex()
+	local instanceCount = #instanceIndex
 	local playerIndex = buildPlayerIndex()
 	local pathStats = buildPathStats(instanceIndex)
 	local stateDocument = buildStateIndex(instanceIndex)
@@ -4610,14 +4679,24 @@ local function run()
 	treeLines = nil
 
 	writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
+	root = nil
+	releaseTemporaryMemory()
+
 	writeJSONDocument(INSTANCES_FILE, instanceIndex, "instances.json", writtenFiles, true)
+	instanceIndex = nil
+	table.clear(instanceMetaById)
+	releaseTemporaryMemory()
+
 	writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true)
 	writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
 	writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
+	inventory = nil
 	writeJSONDocument(ATTRIBUTES_FILE, attributeIndex, "attributes.json", writtenFiles, true)
 	writeJSONDocument(TOOLS_FILE, toolRecords, "tools.json", writtenFiles, true)
 	writeJSONDocument(VALUES_FILE, valuesDocument, "values.json", writtenFiles, true)
 	writeJSONDocument(PLAYERS_FILE, playerIndex, "players.json", writtenFiles, true)
+	playerIndex = nil
+	playerDescriptors = {}
 	writeJSONDocument(
 		PLAYER_REFERENCES_FILE,
 		playerReferencesDocument,
@@ -4626,6 +4705,7 @@ local function run()
 		true
 	)
 	writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
+	stateDocument = nil
 
 	local runtimeEventsDocument = makeRuntimeEventDocument(runtimeEventRecords, nil)
 	runtimeEventsDocument.CategoryTotals = {
@@ -4849,7 +4929,7 @@ local function run()
 			UserId = LocalPlayer.UserId
 		} or nil,
 		Stats = {
-			Instances = #instanceIndex,
+			Instances = instanceCount,
 			DescendantInstances = nodeCount,
 			RegisteredIds = nextInstanceId,
 			RemotesAndBindables = totalRemoteCount(),
@@ -4959,7 +5039,7 @@ local function run()
 		IdSemantics = "Snapshot-local",
 		Files = writtenFiles,
 		Stats = {
-			Instances = #instanceIndex,
+			Instances = instanceCount,
 			DescendantInstances = nodeCount,
 			RegisteredIds = nextInstanceId,
 			Errors = #errors,
@@ -4997,7 +5077,7 @@ local function run()
 
 	print("dump finished")
 	print("DumpId:", currentDumpId)
-	print("Serialized instance records:", #instanceIndex)
+	print("Serialized instance records:", instanceCount)
 	print("Traversed descendants:", nodeCount)
 	print("Registered IDs:", nextInstanceId)
 	print("Remotes / Bindables:", totalRemoteCount())
