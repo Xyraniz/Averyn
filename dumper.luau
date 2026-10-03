@@ -33,9 +33,7 @@ local RUNTIME_FILES = {
 	Character = OUTPUT_FOLDER .. "/runtime_character.json",
 	Logs = OUTPUT_FOLDER .. "/runtime_logs.json",
 	Timeline = OUTPUT_FOLDER .. "/runtime_timeline.json",
-	Disconnect = OUTPUT_FOLDER .. "/runtime_disconnect.json",
-	Hooks = OUTPUT_FOLDER .. "/runtime_hooks.json",
-	HookIntegrity = OUTPUT_FOLDER .. "/runtime_hook_integrity.json"
+	Disconnect = OUTPUT_FOLDER .. "/runtime_disconnect.json"
 }
 local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
@@ -49,15 +47,10 @@ local CONFIG = {
 	RuntimeTracePostSeconds = 45,
 	RuntimeRingWindowSeconds = 30,
 	RuntimeTraceIncomingRemotes = true,
-	RuntimeTraceOutgoingRemotes = true,
 	RuntimeTraceDynamicRemotes = true,
 	RuntimeTraceToolAttributes = true,
 	RuntimeTraceInterestingAttributes = true,
 	RuntimeTraceAllValues = true,
-	RuntimeCaptureCaller = true,
-	RuntimeCaptureCallerStack = true,
-	RuntimeCallerStackDepth = 10,
-	RuntimeCaptureInvokeReturns = true,
 	RuntimeCaptureBuffers = true,
 	RuntimeMaxBufferBytes = 4096,
 	RuntimeTraceCharacter = true,
@@ -65,14 +58,6 @@ local CONFIG = {
 	RuntimeMaxCharacterRecords = 10000,
 	RuntimeCaptureLogs = true,
 	RuntimeMaxLogRecords = 5000,
-	RuntimeTraceHookDiagnostics = true,
-	RuntimeHookIntegrityInterval = 0.20,
-	RuntimeMaxHookRecords = 12000,
-	RuntimeMaxHookIntegrityRecords = 4000,
-	RuntimeHookRaySignatureMagnitude = 5000,
-	RuntimeHookRaySignatureTolerance = 3,
-	RuntimeHookTargetMaxMissStuds = 12,
-	RuntimeHookNormalRaySampleInterval = 0.25,
 	RuntimeFreezeOnDisconnectError = true,
 	RuntimeFreezeErrorKeywords = {
 		"267",
@@ -106,22 +91,12 @@ local capabilities = {
 	writefile = type(writefile) == "function",
 	makefolder = type(makefolder) == "function",
 	isfolder = type(isfolder) == "function",
-	hookmetamethod = type(hookmetamethod) == "function",
-	getnamecallmethod = type(getnamecallmethod) == "function",
-	newcclosure = type(newcclosure) == "function",
-	checkcaller = type(checkcaller) == "function",
-	getcallingscript = type(getcallingscript) == "function",
 	getconnections = type(getconnections) == "function",
 	debug_info = debug ~= nil and type(debug.info) == "function",
 	buffer = type(buffer) == "table",
 	buffer_len = type(buffer) == "table" and type(buffer.len) == "function",
 	buffer_readu8 = type(buffer) == "table" and type(buffer.readu8) == "function",
-	buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function",
-	getrawmetatable = type(getrawmetatable) == "function",
-	isreadonly = type(isreadonly) == "function",
-	getgenv = type(getgenv) == "function",
-	isexecutorclosure = type(isexecutorclosure) == "function",
-	iscclosure = type(iscclosure) == "function"
+	buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function"
 }
 
 local started = os.clock()
@@ -178,15 +153,8 @@ local runtimeHookState = {
 	MutationsSinceFlush = 0,
 	LastPruneAt = 0,
 	LastGuiErrorMessage = nil,
-	HookRecords = {},
-	HookIntegrityRecords = {},
-	HookIntegrityBaseline = nil,
-	HookIntegrityLast = nil,
-	HookIntegrityLastCheckAt = 0,
-	LastNormalRayObservationAt = 0,
 	FlushScheduled = false
 }
-local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
 local snapshotFinalized = false
 local currentDumpId = nil
@@ -1587,16 +1555,6 @@ local function pruneRuntimeCaches(force)
 	trimRuntimeArray(runtimeLogRecords, CONFIG.RuntimeMaxLogRecords, cutoff)
 	trimRuntimeArray(runtimeTimelineRecords, CONFIG.RuntimeMaxTimelineRecords, cutoff)
 	trimRuntimeArray(runtimeErrorRecords, 256, cutoff)
-	trimRuntimeArray(
-		runtimeHookState.HookRecords,
-		CONFIG.RuntimeMaxHookRecords,
-		cutoff
-	)
-	trimRuntimeArray(
-		runtimeHookState.HookIntegrityRecords,
-		CONFIG.RuntimeMaxHookIntegrityRecords,
-		cutoff
-	)
 
 	for category, records in pairs(runtimeEventCategoryRecords) do
 		local maxCount = CONFIG.RuntimeMaxEventsPerCategory
@@ -1694,511 +1652,6 @@ local function classifyRuntimeRemote(remote, path)
 	return "Game"
 end
 
-local function captureRuntimeCallerStack()
-	if not CONFIG.RuntimeCaptureCaller
-		or not CONFIG.RuntimeCaptureCallerStack
-		or not capabilities.debug_info
-	then
-		return nil
-	end
-
-	local frames = {}
-	local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 10)
-
-	for level = 4, 3 + maxDepth do
-		local ok, source, line, name = pcall(debug.info, level, "sln")
-		if not ok or source == nil then
-			break
-		end
-
-		table.insert(frames, {
-			Level = level,
-			Source = sanitizeString(source),
-			Line = line,
-			Name = name and sanitizeString(name) or nil
-		})
-	end
-
-	return #frames > 0 and frames or nil
-end
-
-local function getRuntimeCallerInfo()
-	local callerInfo = nil
-	local callerScript = nil
-
-	if CONFIG.RuntimeCaptureCaller and capabilities.getcallingscript then
-		local ok, result = pcall(getcallingscript)
-		if ok and typeof(result) == "Instance" then
-			callerScript = result
-			callerInfo = makeInstanceReference(result, false)
-
-			if callerInfo then
-				if not callerInfo.Name or callerInfo.Name == "" then
-					callerInfo.Name = safeName(result)
-				end
-				if not callerInfo.Path or callerInfo.Path == "" then
-					callerInfo.Path = safeFullName(result)
-				end
-			end
-		end
-	end
-
-	local isExecutor = nil
-	if capabilities.checkcaller then
-		local ok, result = pcall(checkcaller)
-		if ok then
-			isExecutor = result and true or false
-		end
-	end
-
-	local stack = captureRuntimeCallerStack()
-	if callerInfo and stack and stack[1] then
-		callerInfo.DebugSource = stack[1].Source
-		callerInfo.DebugLine = stack[1].Line
-		callerInfo.DebugName = stack[1].Name
-	end
-
-	return callerInfo, callerScript, isExecutor, stack
-end
-
-local function describeRuntimeHookValue(value)
-	local description = {
-		Type = typeof(value),
-		Text = sanitizeString(tostring(value))
-	}
-
-	local fingerprintParts = {
-		description.Type,
-		description.Text
-	}
-
-	if type(value) == "function" and capabilities.debug_info then
-		local ok, source, line, name = pcall(debug.info, value, "sln")
-		if ok then
-			description.Source = source and sanitizeString(source) or nil
-			description.Line = line
-			description.Name = name and sanitizeString(name) or nil
-
-			table.insert(fingerprintParts, description.Source or "")
-			table.insert(fingerprintParts, tostring(description.Line or ""))
-			table.insert(fingerprintParts, description.Name or "")
-		end
-	end
-
-	if type(value) == "function" and capabilities.isexecutorclosure then
-		local ok, result = pcall(isexecutorclosure, value)
-		if ok then
-			description.IsExecutorClosure = result and true or false
-			table.insert(
-				fingerprintParts,
-				"executor=" .. tostring(description.IsExecutorClosure)
-			)
-		end
-	end
-
-	if type(value) == "function" and capabilities.iscclosure then
-		local ok, result = pcall(iscclosure, value)
-		if ok then
-			description.IsCClosure = result and true or false
-			table.insert(
-				fingerprintParts,
-				"cclosure=" .. tostring(description.IsCClosure)
-			)
-		end
-	end
-
-	description.Fingerprint = table.concat(fingerprintParts, "|")
-	return description
-end
-
-local function getRuntimeHookSnapshot(source)
-	local snapshot = {
-		Time = os.clock() - runtimeStartedAt,
-		Source = source
-	}
-
-	local function describeMetatable(object)
-		if not object or not capabilities.getrawmetatable then
-			return nil
-		end
-
-		local ok, metatableValue = pcall(getrawmetatable, object)
-		if not ok or type(metatableValue) ~= "table" then
-			return {
-				Available = false,
-				Error = not ok and sanitizeString(metatableValue) or "not a table"
-			}
-		end
-
-		local result = {
-			Available = true,
-			Index = describeRuntimeHookValue(rawget(metatableValue, "__index")),
-			Namecall = describeRuntimeHookValue(rawget(metatableValue, "__namecall")),
-			NewIndex = describeRuntimeHookValue(rawget(metatableValue, "__newindex"))
-		}
-
-		if capabilities.isreadonly then
-			local readonlyOk, readonlyValue = pcall(isreadonly, metatableValue)
-			if readonlyOk then
-				result.ReadOnly = readonlyValue and true or false
-			end
-		end
-
-		return result
-	end
-
-	snapshot.Game = describeMetatable(game)
-
-	if LocalPlayer then
-		local mouseOk, mouseObject = pcall(function()
-			return LocalPlayer:GetMouse()
-		end)
-
-		if mouseOk and mouseObject then
-			snapshot.Mouse = describeMetatable(mouseObject)
-		else
-			snapshot.Mouse = {
-				Available = false,
-				Error = sanitizeString(mouseObject)
-			}
-		end
-	end
-
-	if capabilities.getgenv then
-		local envOk, environment = pcall(getgenv)
-		if envOk and type(environment) == "table" then
-			local target = rawget(environment, "AimTarget")
-			if typeof(target) == "Instance" then
-				snapshot.AimTarget = makeInstanceReference(target, false)
-				snapshot.AimTargetFingerprint =
-					safeFullName(target) .. "|" .. sanitizeString(tostring(target))
-			elseif target == nil then
-				snapshot.AimTargetFingerprint = "nil"
-			else
-				snapshot.AimTarget = serializeRuntimeValue(target)
-				snapshot.AimTargetFingerprint =
-					typeof(target) .. "|" .. sanitizeString(tostring(target))
-			end
-		end
-	end
-
-	return snapshot
-end
-
-local function appendRuntimeHookRecord(record)
-	if not runtimeTraceActive
-		or not CONFIG.RuntimeTraceHookDiagnostics
-		or type(record) ~= "table"
-	then
-		return nil
-	end
-
-	if record.Time == nil then
-		record.Time = os.clock() - runtimeStartedAt
-	end
-
-	table.insert(runtimeHookState.HookRecords, record)
-
-	appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "HookObservation",
-		HookKind = record.HookKind,
-		Metamethod = record.Metamethod,
-		Method = record.Method,
-		CallerIsExecutor = record.CallerIsExecutor,
-		CallerPath = record.Caller and record.Caller.Path or nil,
-		DirectionMagnitude = record.Ray and record.Ray.DirectionMagnitude or nil,
-		Matches5000MagnitudeSignature = record.Matches5000MagnitudeSignature,
-		CandidatePath = record.TargetCandidate
-			and record.TargetCandidate.Part
-			and record.TargetCandidate.Part.Path
-			or nil,
-		AimTargetPath = record.GlobalAimTarget
-			and record.GlobalAimTarget.Path
-			or nil
-	})
-
-	maybeFlushRuntimeTrace()
-	return record
-end
-
-local function findRuntimeRayCandidate(origin, direction)
-	if typeof(origin) ~= "Vector3"
-		or typeof(direction) ~= "Vector3"
-		or direction.Magnitude <= 0
-	then
-		return nil
-	end
-
-	local directionUnit = direction.Unit
-	local bestPart = nil
-	local bestPlayer = nil
-	local bestMiss = math.huge
-	local bestAlong = nil
-
-	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= LocalPlayer then
-			local otherCharacter = otherPlayer.Character
-			local humanoid = otherCharacter
-				and otherCharacter:FindFirstChildOfClass("Humanoid")
-				or nil
-			local part = otherCharacter
-				and (
-					otherCharacter:FindFirstChild("Head")
-					or otherCharacter:FindFirstChild("HumanoidRootPart")
-				)
-				or nil
-
-			if humanoid
-				and humanoid.Health > 0
-				and part
-				and safeIsA(part, "BasePart")
-			then
-				local offset = part.Position - origin
-				local along = offset.X * directionUnit.X
-					+ offset.Y * directionUnit.Y
-					+ offset.Z * directionUnit.Z
-
-				if along > 0 then
-					local nearestPoint = origin + directionUnit * along
-					local miss = (part.Position - nearestPoint).Magnitude
-
-					if miss < bestMiss then
-						bestMiss = miss
-						bestAlong = along
-						bestPart = part
-						bestPlayer = otherPlayer
-					end
-				end
-			end
-		end
-	end
-
-	if not bestPart
-		or bestMiss > math.max(
-			0,
-			tonumber(CONFIG.RuntimeHookTargetMaxMissStuds) or 12
-		)
-	then
-		return nil
-	end
-
-	return {
-		Player = makeInstanceReference(bestPlayer, false),
-		Part = makeInstanceReference(bestPart, false),
-		MissDistance = bestMiss,
-		DistanceAlongRay = bestAlong
-	}
-end
-
-local function appendRuntimeRayObservation(self, method, packedArguments)
-	if not runtimeTraceActive
-		or not CONFIG.RuntimeTraceHookDiagnostics
-		or self ~= workspace
-	then
-		return
-	end
-
-	local origin = nil
-	local direction = nil
-	local ray = nil
-
-	if method == "Raycast" then
-		origin = packedArguments[1]
-		direction = packedArguments[2]
-	elseif string.find(method or "", "FindPartOnRay", 1, true) then
-		ray = packedArguments[1]
-		if typeof(ray) == "Ray" then
-			origin = ray.Origin
-			direction = ray.Direction
-		end
-	end
-
-	if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" then
-		return
-	end
-
-	local magnitude = direction.Magnitude
-	local signatureMagnitude =
-		tonumber(CONFIG.RuntimeHookRaySignatureMagnitude) or 5000
-	local signatureTolerance =
-		math.max(0, tonumber(CONFIG.RuntimeHookRaySignatureTolerance) or 3)
-	local matchesSignature =
-		math.abs(magnitude - signatureMagnitude) <= signatureTolerance
-
-	if not matchesSignature then
-		local now = os.clock()
-		local sampleInterval = math.max(
-			0,
-			tonumber(CONFIG.RuntimeHookNormalRaySampleInterval) or 0.25
-		)
-
-		if sampleInterval > 0
-			and now - (runtimeHookState.LastNormalRayObservationAt or 0) < sampleInterval
-		then
-			return
-		end
-
-		runtimeHookState.LastNormalRayObservationAt = now
-	end
-
-	local callerInfo, _, callerIsExecutor, callerStack = getRuntimeCallerInfo()
-
-	local cameraOrigin = nil
-	local cameraDistance = nil
-	local camera = workspace.CurrentCamera
-
-	if camera then
-		local cameraOk, cameraCFrame = pcall(function()
-			return camera.CFrame
-		end)
-
-		if cameraOk and typeof(cameraCFrame) == "CFrame" then
-			cameraOrigin = cameraCFrame.Position
-			cameraDistance = (origin - cameraOrigin).Magnitude
-		end
-	end
-
-	local globalAimTarget = nil
-	if capabilities.getgenv then
-		local envOk, environment = pcall(getgenv)
-		if envOk and type(environment) == "table" then
-			local target = rawget(environment, "AimTarget")
-			if typeof(target) == "Instance" then
-				globalAimTarget = makeInstanceReference(target, false)
-			end
-		end
-	end
-
-	appendRuntimeHookRecord({
-		HookKind = "NamecallRayObservation",
-		Metamethod = "__namecall",
-		Method = method,
-		Object = makeInstanceReference(self, false),
-		Arguments = serializePackedRuntimeValues(packedArguments),
-		Caller = callerInfo,
-		CallerIsExecutor = callerIsExecutor,
-		CallerStack = callerStack,
-		Ray = {
-			Origin = serializeRuntimeValue(origin),
-			Direction = serializeRuntimeValue(direction),
-			DirectionMagnitude = magnitude,
-			EndPoint = serializeRuntimeValue(origin + direction),
-			CameraOrigin = cameraOrigin and serializeRuntimeValue(cameraOrigin) or nil,
-			OriginDistanceFromCamera = cameraDistance
-		},
-		Matches5000MagnitudeSignature = matchesSignature,
-		TargetCandidate = findRuntimeRayCandidate(origin, direction),
-		GlobalAimTarget = globalAimTarget
-	})
-end
-
-local function checkRuntimeHookIntegrity(force, source)
-	if not CONFIG.RuntimeTraceHookDiagnostics or not runtimeTraceActive then
-		return
-	end
-
-	local now = os.clock()
-	local interval =
-		math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
-
-	if not force
-		and now - (runtimeHookState.HookIntegrityLastCheckAt or 0) < interval
-	then
-		return
-	end
-
-	runtimeHookState.HookIntegrityLastCheckAt = now
-
-	local current = getRuntimeHookSnapshot(source)
-	local previous = runtimeHookState.HookIntegrityLast
-	local changes = {}
-
-	local function compareDescription(label, previousValue, currentValue)
-		local previousFingerprint =
-			previousValue and previousValue.Fingerprint or "<nil>"
-		local currentFingerprint =
-			currentValue and currentValue.Fingerprint or "<nil>"
-
-		if previousFingerprint ~= currentFingerprint then
-			table.insert(changes, {
-				Field = label,
-				Previous = previousValue,
-				Current = currentValue
-			})
-		end
-	end
-
-	if previous then
-		compareDescription(
-			"Game.__namecall",
-			previous.Game and previous.Game.Namecall or nil,
-			current.Game and current.Game.Namecall or nil
-		)
-		compareDescription(
-			"Game.__index",
-			previous.Game and previous.Game.Index or nil,
-			current.Game and current.Game.Index or nil
-		)
-		compareDescription(
-			"Mouse.__namecall",
-			previous.Mouse and previous.Mouse.Namecall or nil,
-			current.Mouse and current.Mouse.Namecall or nil
-		)
-		compareDescription(
-			"Mouse.__index",
-			previous.Mouse and previous.Mouse.Index or nil,
-			current.Mouse and current.Mouse.Index or nil
-		)
-
-		if previous.AimTargetFingerprint ~= current.AimTargetFingerprint then
-			table.insert(changes, {
-				Field = "getgenv().AimTarget",
-				Previous = previous.AimTarget,
-				PreviousFingerprint = previous.AimTargetFingerprint,
-				Current = current.AimTarget,
-				CurrentFingerprint = current.AimTargetFingerprint
-			})
-		end
-	end
-
-	local shouldRecord = previous == nil or #changes > 0 or force
-	if shouldRecord then
-		local record = {
-			Time = current.Time,
-			Source = source,
-			Event = previous == nil
-				and "Baseline"
-				or (#changes > 0 and "Changed" or "Snapshot"),
-			Changes = #changes > 0 and changes or nil,
-			Snapshot = current
-		}
-
-		table.insert(runtimeHookState.HookIntegrityRecords, record)
-
-		local fields = {}
-		for _, change in ipairs(changes) do
-			table.insert(fields, change.Field)
-		end
-
-		appendRuntimeTimeline({
-			Time = current.Time,
-			Kind = "HookIntegrity",
-			Source = source,
-			Event = record.Event,
-			ChangedFields = #fields > 0 and fields or nil
-		})
-
-		maybeFlushRuntimeTrace()
-	end
-
-	if runtimeHookState.HookIntegrityBaseline == nil then
-		runtimeHookState.HookIntegrityBaseline = current
-	end
-
-	runtimeHookState.HookIntegrityLast = current
-end
-
 local function appendRuntimeRemoteRecord(remote, direction, method, packedArguments, extra)
 	if not runtimeTraceActive then
 		return nil
@@ -2208,14 +1661,12 @@ local function appendRuntimeRemoteRecord(remote, direction, method, packedArgume
 	local className = safeClassName(remote)
 	local path = safeFullName(remote)
 	local category = extra.Category or classifyRuntimeRemote(remote, path)
-	local callerInfo = extra.Caller
 
 	local record = {
 		Time = os.clock() - runtimeStartedAt,
 		Direction = direction,
 		Method = method,
 		Category = category,
-		Phase = extra.Phase,
 		RemoteId = instanceIds[remote],
 		Name = safeName(remote),
 		ClassName = className,
@@ -2223,18 +1674,9 @@ local function appendRuntimeRemoteRecord(remote, direction, method, packedArgume
 		SnapshotPath = extra.SnapshotPath,
 		ArgumentCount = packedArguments.n,
 		Arguments = serializePackedRuntimeValues(packedArguments),
-		Caller = callerInfo,
-		CallerIsExecutor = direction == "ClientToServer" and extra.CallerIsExecutor or nil,
-		CallerStack = extra.CallerStack,
 		ObservedByExecutor = extra.ObservedByExecutor,
-		Observer = extra.Observer,
-		DurationSeconds = extra.DurationSeconds
+		Observer = extra.Observer
 	}
-
-	if extra.Returns then
-		record.ReturnCount = extra.Returns.n
-		record.Returns = serializePackedRuntimeValues(extra.Returns)
-	end
 
 	table.insert(runtimeEventRecords, record)
 
@@ -2255,9 +1697,7 @@ local function appendRuntimeRemoteRecord(remote, direction, method, packedArgume
 		Method = method,
 		Name = record.Name,
 		Path = record.Path,
-		ArgumentCount = record.ArgumentCount,
-		CallerIsExecutor = record.CallerIsExecutor,
-		CallerPath = callerInfo and callerInfo.Path or nil
+		ArgumentCount = record.ArgumentCount
 	})
 
 	maybeFlushRuntimeTrace()
@@ -2311,127 +1751,6 @@ local function watchRuntimeRemote(object, id, name, className, path)
 	else
 		recordWarning("RuntimeRemoteTrace", object, connection)
 	end
-end
-
-local function installOutgoingRemoteHook()
-	if not CONFIG.RuntimeTrace or not CONFIG.RuntimeTraceOutgoingRemotes then
-		return false
-	end
-
-	if runtimeOutgoingHookInstalled then
-		runtimeHookState.Active = true
-		return true
-	end
-
-	if not capabilities.hookmetamethod or not capabilities.getnamecallmethod then
-		recordWarning(
-			"RuntimeOutgoingRemoteTrace",
-			nil,
-			"hookmetamethod/getnamecallmethod unavailable; outgoing FireServer/InvokeServer calls cannot be observed"
-		)
-		return false
-	end
-
-	local oldNamecall
-
-	local function handler(self, ...)
-		local methodOk, method = pcall(getnamecallmethod)
-		if not methodOk then
-			return oldNamecall(self, ...)
-		end
-
-		local traceActive = runtimeHookState.Active
-		local observeRay = traceActive
-			and CONFIG.RuntimeTraceHookDiagnostics
-			and self == workspace
-			and (
-				method == "Raycast"
-				or string.find(method or "", "FindPartOnRay", 1, true) ~= nil
-			)
-		local observeRemote = traceActive
-			and (method == "FireServer" or method == "InvokeServer")
-
-		if not observeRay and not observeRemote then
-			return oldNamecall(self, ...)
-		end
-
-		local packedArguments = table.pack(...)
-		local callStarted = os.clock()
-
-		local returns = table.pack(oldNamecall(self, ...))
-		local duration = os.clock() - callStarted
-
-		if observeRay then
-			pcall(
-				appendRuntimeRayObservation,
-				self,
-				method,
-				packedArguments
-			)
-		end
-
-		if observeRemote then
-			local className = typeof(self) == "Instance" and safeClassName(self) or nil
-			local isFireServer = method == "FireServer"
-				and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
-			local isInvokeServer = method == "InvokeServer"
-				and className == "RemoteFunction"
-
-			if isFireServer or isInvokeServer then
-				local callerInfo, _, callerIsExecutor, callerStack = getRuntimeCallerInfo()
-				local snapshotPath = safeFullName(self)
-				local record = appendRuntimeRemoteRecord(
-					self,
-					"ClientToServer",
-					isInvokeServer and "InvokeServer" or "FireServer",
-					packedArguments,
-					{
-						SnapshotPath = snapshotPath,
-						Caller = callerInfo,
-						CallerIsExecutor = callerIsExecutor,
-						CallerStack = callerStack,
-						Phase = "PostCall",
-						DurationSeconds = duration,
-						Returns = isInvokeServer
-							and CONFIG.RuntimeCaptureInvokeReturns
-							and returns
-							or nil
-					}
-				)
-
-				if isInvokeServer and record then
-					appendRuntimeTimeline({
-						Time = os.clock() - runtimeStartedAt,
-						Kind = "RemoteReturn",
-						Category = record.Category,
-						Direction = "ServerToClient",
-						Method = "InvokeServerReturn",
-						Name = record.Name,
-						Path = record.Path,
-						ReturnCount = returns.n,
-						DurationSeconds = duration
-					})
-					maybeFlushRuntimeTrace()
-				end
-			end
-		end
-
-		return table.unpack(returns, 1, returns.n)
-	end
-
-	local wrappedHandler = capabilities.newcclosure and newcclosure(handler) or handler
-	local hookOk, hookResult = pcall(function()
-		oldNamecall = hookmetamethod(game, "__namecall", wrappedHandler)
-	end)
-
-	if not hookOk or type(oldNamecall) ~= "function" then
-		recordWarning("RuntimeOutgoingRemoteTrace", nil, hookResult or "failed to install __namecall hook")
-		return false
-	end
-
-	runtimeOutgoingHookInstalled = true
-	runtimeHookState.Active = true
-	return true
 end
 
 local function shouldWatchRuntimeAttributes(object, name, path, attributes)
@@ -3058,10 +2377,6 @@ freezeRuntimeTrace = function(reason, details)
 		return false
 	end
 
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		pcall(checkRuntimeHookIntegrity, true, "BeforeFreeze")
-	end
-
 	local freezeTime = os.clock() - runtimeStartedAt
 
 	runtimeHookState.Frozen = true
@@ -3082,18 +2397,6 @@ freezeRuntimeTrace = function(reason, details)
 	pruneRuntimeCaches(true)
 
 	for _, record in ipairs(runtimeTimelineRecords) do
-		if type(record.Time) == "number" then
-			record.SecondsBeforeFreeze = freezeTime - record.Time
-		end
-	end
-
-	for _, record in ipairs(runtimeHookState.HookRecords) do
-		if type(record.Time) == "number" then
-			record.SecondsBeforeFreeze = freezeTime - record.Time
-		end
-	end
-
-	for _, record in ipairs(runtimeHookState.HookIntegrityRecords) do
 		if type(record.Time) == "number" then
 			record.SecondsBeforeFreeze = freezeTime - record.Time
 		end
@@ -3203,21 +2506,7 @@ local function startRuntimeTrace()
 	runtimeHookState.LastFlushAt = os.clock()
 	runtimeHookState.MutationsSinceFlush = 0
 	runtimeHookState.LastPruneAt = 0
-	runtimeHookState.HookIntegrityLastCheckAt = 0
-	runtimeHookState.HookIntegrityBaseline = nil
-	runtimeHookState.HookIntegrityLast = nil
-	runtimeHookState.LastNormalRayObservationAt = 0
 	runtimeHookState.FlushScheduled = false
-
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		checkRuntimeHookIntegrity(true, "BeforeDumperNamecallHook")
-	end
-
-	installOutgoingRemoteHook()
-
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		checkRuntimeHookIntegrity(true, "AfterDumperNamecallHook")
-	end
 
 	if CONFIG.RuntimeTraceDynamicRemotes then
 		local ok, connection = pcall(function()
@@ -3357,7 +2646,6 @@ local function startRuntimeTrace()
 
 	local sampleAccumulator = 0
 	local errorAccumulator = 0
-	local hookIntegrityAccumulator = 0
 
 	local heartbeatOk, heartbeatConnection = pcall(function()
 		return game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
@@ -3367,7 +2655,6 @@ local function startRuntimeTrace()
 
 			sampleAccumulator = sampleAccumulator + deltaTime
 			errorAccumulator = errorAccumulator + deltaTime
-			hookIntegrityAccumulator = hookIntegrityAccumulator + deltaTime
 
 			local sampleInterval = math.max(
 				0.03,
@@ -3379,21 +2666,12 @@ local function startRuntimeTrace()
 				sampleLocalCharacter()
 			end
 
-			if errorAccumulator >= 0.25 then
+			if errorAccumulator >= 0.5 then
 				errorAccumulator = 0
 				local message = getCurrentGuiErrorMessage()
 				if message and message ~= "" then
 					handleGuiErrorMessage(message, "GuiServicePoll")
 				end
-			end
-
-			local hookInterval =
-				math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
-			if CONFIG.RuntimeTraceHookDiagnostics
-				and hookIntegrityAccumulator >= hookInterval
-			then
-				hookIntegrityAccumulator = 0
-				checkRuntimeHookIntegrity(false, "Heartbeat")
 			end
 		end)
 	end)
@@ -4022,10 +3300,7 @@ local function buildSummary(elapsed, pathStats)
 		"Runtime Log Records: " .. tostring(#runtimeLogRecords),
 		"Runtime Timeline Records: " .. tostring(#runtimeTimelineRecords),
 		"Runtime Error Messages: " .. tostring(#runtimeErrorRecords),
-		"Runtime Hook Observations: " .. tostring(#runtimeHookState.HookRecords),
-		"Runtime Hook Integrity Records: " .. tostring(#runtimeHookState.HookIntegrityRecords),
 		"Buffer Capture: " .. tostring(CONFIG.RuntimeCaptureBuffers and capabilities.buffer_len),
-		"Outgoing Remote Hook: " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod and capabilities.getnamecallmethod),
 		"",
 		"Top Duplicate Paths:"
 	}
@@ -4185,17 +3460,6 @@ local function backfillRuntimeIds()
 		end
 	end
 
-	local function backfillReference(reference)
-		if type(reference) ~= "table" or reference.Id ~= nil then
-			return
-		end
-
-		local path = reference.Path
-		if path and not duplicatePaths[path] then
-			reference.Id = pathToId[path]
-		end
-	end
-
 	for _, record in ipairs(runtimeEventRecords) do
 		if record.RemoteId == nil then
 			local path = record.Path or record.SnapshotPath
@@ -4203,8 +3467,6 @@ local function backfillRuntimeIds()
 				record.RemoteId = pathToId[path]
 			end
 		end
-
-		backfillReference(record.Caller)
 	end
 
 	for _, record in ipairs(runtimeAttributeRecords) do
@@ -4226,9 +3488,6 @@ local function backfillRuntimeIds()
 	end
 
 	for _, record in ipairs(runtimeCharacterRecords) do
-		backfillReference(record.Object)
-		backfillReference(record.Character)
-
 		if record.Humanoid and record.Humanoid.Id == nil then
 			local path = record.Humanoid.Path
 			if path and not duplicatePaths[path] then
@@ -4353,34 +3612,6 @@ flushRuntimeTrace = function()
 		ErrorMessages = runtimeErrorRecords
 	}
 
-	local hooksDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeHookState.HookRecords,
-		Records = runtimeHookState.HookRecords
-	}
-
-	local hookIntegrityDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Baseline = runtimeHookState.HookIntegrityBaseline,
-		LastSnapshot = runtimeHookState.HookIntegrityLast,
-		Total = #runtimeHookState.HookIntegrityRecords,
-		Records = runtimeHookState.HookIntegrityRecords
-	}
-
 	writeSafe(RUNTIME_FILES.Events, encodeJSON(eventsDocument, "runtime_events.json"))
 	writeSafe(
 		RUNTIME_FILES.EventsGame,
@@ -4416,11 +3647,6 @@ flushRuntimeTrace = function()
 	writeSafe(RUNTIME_FILES.Logs, encodeJSON(logsDocument, "runtime_logs.json"))
 	writeSafe(RUNTIME_FILES.Timeline, encodeJSON(timelineDocument, "runtime_timeline.json"))
 	writeSafe(RUNTIME_FILES.Disconnect, encodeJSON(disconnectDocument, "runtime_disconnect.json"))
-	writeSafe(RUNTIME_FILES.Hooks, encodeJSON(hooksDocument, "runtime_hooks.json"))
-	writeSafe(
-		RUNTIME_FILES.HookIntegrity,
-		encodeJSON(hookIntegrityDocument, "runtime_hook_integrity.json")
-	)
 
 	runtimeHookState.LastFlushAt = os.clock()
 	runtimeHookState.MutationsSinceFlush = 0
@@ -4478,11 +3704,7 @@ local function finishRuntimeTraceAfterSnapshot()
 		#runtimeAttributeRecords,
 		"attribute changes,",
 		#runtimeCharacterRecords,
-		"character records,",
-		#runtimeHookState.HookRecords,
-		"hook observations,",
-		#runtimeHookState.HookIntegrityRecords,
-		"hook integrity records"
+		"character records"
 	)
 end
 
@@ -4566,7 +3788,6 @@ local function run()
 	table.clear(traversedInstances)
 
 	local snapshotElapsed = os.clock() - started
-	finishRuntimeTraceAfterSnapshot()
 
 	local inventory = buildInventory()
 	local instanceIndex = buildInstanceIndex()
@@ -4643,215 +3864,17 @@ local function run()
 	writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
 	stateDocument = nil
 
-	local runtimeEventsDocument = makeRuntimeEventDocument(runtimeEventRecords, nil)
-	runtimeEventsDocument.CategoryTotals = {
-		Game = #runtimeEventCategoryRecords.Game,
-		Replicator = #runtimeEventCategoryRecords.Replicator,
-		Analytics = #runtimeEventCategoryRecords.Analytics,
-		Other = #runtimeEventCategoryRecords.Other
-	}
-	runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
+	local totalElapsedBeforeTrace = os.clock() - started
+	local summaryBeforeTrace = buildSummary(totalElapsedBeforeTrace, pathStats)
 
-	local runtimeValuesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeValueRecords,
-		Changes = runtimeValueRecords
-	}
+	writeTextDocument(SUMMARY_FILE, summaryBeforeTrace, writtenFiles, true)
 
-	local runtimeAttributesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeAttributeRecords,
-		Changes = runtimeAttributeRecords
-	}
-
-	local runtimeCharacterDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceCharacter,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeCharacterRecords,
-		Records = runtimeCharacterRecords
-	}
-
-	local runtimeLogsDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeCaptureLogs,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeLogRecords,
-		Records = runtimeLogRecords
-	}
-
-	local runtimeTimelineDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeTimelineRecords,
-		Timeline = runtimeTimelineRecords
-	}
-
-	local runtimeDisconnectDocument = {
-		DumpId = currentDumpId,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		ErrorMessages = runtimeErrorRecords
-	}
-
-	local runtimeHooksDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeHookState.HookRecords,
-		Records = runtimeHookState.HookRecords
-	}
-
-	local runtimeHookIntegrityDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Baseline = runtimeHookState.HookIntegrityBaseline,
-		LastSnapshot = runtimeHookState.HookIntegrityLast,
-		Total = #runtimeHookState.HookIntegrityRecords,
-		Records = runtimeHookState.HookIntegrityRecords
-	}
-
-	writeJSONDocument(
-		RUNTIME_FILES.Events,
-		runtimeEventsDocument,
-		"runtime_events.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.EventsGame,
-		makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
-		"runtime_events_game.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.EventsReplicator,
-		makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
-		"runtime_events_replicator.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.EventsAnalytics,
-		makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
-		"runtime_events_analytics.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.EventsOther,
-		makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
-		"runtime_events_other.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Values,
-		runtimeValuesDocument,
-		"runtime_values.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Attributes,
-		runtimeAttributesDocument,
-		"runtime_attributes.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Character,
-		runtimeCharacterDocument,
-		"runtime_character.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Logs,
-		runtimeLogsDocument,
-		"runtime_logs.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Timeline,
-		runtimeTimelineDocument,
-		"runtime_timeline.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Disconnect,
-		runtimeDisconnectDocument,
-		"runtime_disconnect.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.Hooks,
-		runtimeHooksDocument,
-		"runtime_hooks.json",
-		writtenFiles,
-		false
-	)
-	writeJSONDocument(
-		RUNTIME_FILES.HookIntegrity,
-		runtimeHookIntegrityDocument,
-		"runtime_hook_integrity.json",
-		writtenFiles,
-		false
-	)
-
-	writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
-
-	local totalElapsed = os.clock() - started
-	local meta = {
+	local metaBeforeTrace = {
 		Schema = SCHEMA_NAME,
 		SchemaVersion = SCHEMA_VERSION,
 		DumpId = currentDumpId,
 		GeneratedAtUnix = os.time(),
+		Phase = "MainDumpComplete",
 		IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
 		PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
 		Game = {
@@ -4881,7 +3904,7 @@ local function run()
 			SanitizedInvalidUtf8UniqueStrings = invalidUtf8StringCount,
 			InvalidClassNames = invalidClassNameCount,
 			SnapshotSeconds = snapshotElapsed,
-			ElapsedSeconds = totalElapsed
+			ElapsedSeconds = totalElapsedBeforeTrace
 		},
 		RuntimeTrace = {
 			Enabled = CONFIG.RuntimeTrace,
@@ -4890,30 +3913,16 @@ local function run()
 			PostSeconds = CONFIG.RuntimeTracePostSeconds,
 			RingWindowSeconds = CONFIG.RuntimeRingWindowSeconds,
 			IncomingRemotes = CONFIG.RuntimeTraceIncomingRemotes,
-			OutgoingRemotes = CONFIG.RuntimeTraceOutgoingRemotes,
-			OutgoingRemoteObservationMode = "PostCallPassive",
 			DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
 			ToolAttributes = CONFIG.RuntimeTraceToolAttributes,
 			InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
 			AllValues = CONFIG.RuntimeTraceAllValues,
-			CaptureCaller = CONFIG.RuntimeCaptureCaller,
-			CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
-			CallerStackDepth = CONFIG.RuntimeCallerStackDepth,
-			CaptureInvokeReturns = CONFIG.RuntimeCaptureInvokeReturns,
 			CaptureBuffers = CONFIG.RuntimeCaptureBuffers,
 			MaxBufferBytes = CONFIG.RuntimeMaxBufferBytes,
 			TraceCharacter = CONFIG.RuntimeTraceCharacter,
 			CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
 			CaptureLogs = CONFIG.RuntimeCaptureLogs,
 			MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
-			TraceHookDiagnostics = CONFIG.RuntimeTraceHookDiagnostics,
-			HookIntegrityInterval = CONFIG.RuntimeHookIntegrityInterval,
-			MaxHookRecords = CONFIG.RuntimeMaxHookRecords,
-			MaxHookIntegrityRecords = CONFIG.RuntimeMaxHookIntegrityRecords,
-			HookRaySignatureMagnitude = CONFIG.RuntimeHookRaySignatureMagnitude,
-			HookRaySignatureTolerance = CONFIG.RuntimeHookRaySignatureTolerance,
-			HookTargetMaxMissStuds = CONFIG.RuntimeHookTargetMaxMissStuds,
-			HookNormalRaySampleInterval = CONFIG.RuntimeHookNormalRaySampleInterval,
 			FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
 			MaxEvents = CONFIG.RuntimeMaxEvents,
 			MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
@@ -4932,43 +3941,154 @@ local function run()
 				CharacterRecords = #runtimeCharacterRecords,
 				LogRecords = #runtimeLogRecords,
 				TimelineRecords = #runtimeTimelineRecords,
-				ErrorMessages = #runtimeErrorRecords,
-				HookObservations = #runtimeHookState.HookRecords,
-				HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords
+				ErrorMessages = #runtimeErrorRecords
 			},
 			CategoryDroppedDueToCap = runtimeEventCategoryDropped
 		},
 		Capabilities = capabilities
 	}
 
+	writeJSONDocument(META_FILE, metaBeforeTrace, "meta.json", writtenFiles, true)
+	writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
+	writeJSONDocument(ERRORS_FILE, errors, "errors.json", writtenFiles, true)
+
+	local mainDumpManifest = {
+		Schema = SCHEMA_NAME,
+		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
+		Complete = true,
+		Status = "MainDumpComplete",
+		MainDumpComplete = true,
+		RuntimeTraceComplete = false,
+		HasErrors = #errors > 0,
+		HasWarnings = #warnings > 0,
+		GeneratedAtUnix = os.time(),
+		IdSemantics = "Snapshot-local",
+		Files = writtenFiles,
+		Stats = {
+			Instances = instanceCount,
+			DescendantInstances = nodeCount,
+			RegisteredIds = nextInstanceId,
+			Errors = #errors,
+			Warnings = #warnings
+		}
+	}
+
+	writeSafe(MANIFEST_FILE, encodeJSON(mainDumpManifest, "manifest.json"))
+
+	print("main dump written; entering post-snapshot trace window")
+
+	finishRuntimeTraceAfterSnapshot()
+
+	local totalElapsed = os.clock() - started
+	local finalStats = {
+		Instances = instanceCount,
+		DescendantInstances = nodeCount,
+		RegisteredIds = nextInstanceId,
+		RemotesAndBindables = totalRemoteCount(),
+		Scripts = totalScriptCount(),
+		ObjectsWithAttributes = #attributeIndex,
+		ValueBaseRecords = #valueRecords,
+		PlayerReferences = #playerReferences,
+		Tools = #toolRecords,
+		DuplicatePathGroups = pathStats.DuplicatePathGroups,
+		InstancesInDuplicatePaths = pathStats.InstancesInDuplicatePaths,
+		Errors = #errors,
+		Warnings = #warnings,
+		SanitizedInvalidUtf8UniqueStrings = invalidUtf8StringCount,
+		InvalidClassNames = invalidClassNameCount,
+		SnapshotSeconds = snapshotElapsed,
+		ElapsedSeconds = totalElapsed
+	}
+
+	local finalRuntimeTrace = {
+		Enabled = CONFIG.RuntimeTrace,
+		Frozen = runtimeHookState.Frozen,
+		FreezeInfo = runtimeHookState.FreezeInfo,
+		PostSeconds = CONFIG.RuntimeTracePostSeconds,
+		RingWindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+		IncomingRemotes = CONFIG.RuntimeTraceIncomingRemotes,
+		DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
+		ToolAttributes = CONFIG.RuntimeTraceToolAttributes,
+		InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
+		AllValues = CONFIG.RuntimeTraceAllValues,
+		CaptureBuffers = CONFIG.RuntimeCaptureBuffers,
+		MaxBufferBytes = CONFIG.RuntimeMaxBufferBytes,
+		TraceCharacter = CONFIG.RuntimeTraceCharacter,
+		CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+		CaptureLogs = CONFIG.RuntimeCaptureLogs,
+		MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
+		FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
+		MaxEvents = CONFIG.RuntimeMaxEvents,
+		MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
+		MaxValueChanges = CONFIG.RuntimeMaxValueChanges,
+		MaxAttributeChanges = CONFIG.RuntimeMaxAttributeChanges,
+		MaxCharacterRecords = CONFIG.RuntimeMaxCharacterRecords,
+		MaxTimelineRecords = CONFIG.RuntimeMaxTimelineRecords,
+		Recorded = {
+			Events = #runtimeEventRecords,
+			GameEvents = #runtimeEventCategoryRecords.Game,
+			ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
+			AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+			OtherEvents = #runtimeEventCategoryRecords.Other,
+			ValueChanges = #runtimeValueRecords,
+			AttributeChanges = #runtimeAttributeRecords,
+			CharacterRecords = #runtimeCharacterRecords,
+			LogRecords = #runtimeLogRecords,
+			TimelineRecords = #runtimeTimelineRecords,
+			ErrorMessages = #runtimeErrorRecords
+		},
+		CategoryDroppedDueToCap = runtimeEventCategoryDropped
+	}
+
+	local finalMeta = {
+		Schema = SCHEMA_NAME,
+		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
+		GeneratedAtUnix = os.time(),
+		Phase = "Complete",
+		IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
+		PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
+		Game = {
+			Name = sanitizeString(game.Name),
+			PlaceId = game.PlaceId,
+			GameId = game.GameId,
+			JobId = sanitizeString(game.JobId)
+		},
+		Player = LocalPlayer and {
+			Name = safeName(LocalPlayer),
+			UserId = LocalPlayer.UserId
+		} or nil,
+		Stats = finalStats,
+		RuntimeTrace = finalRuntimeTrace,
+		Capabilities = capabilities
+	}
+
+	writeJSONDocument(META_FILE, finalMeta, "meta.json", writtenFiles, false)
+
 	writeTextDocument(
 		SUMMARY_FILE,
 		buildSummary(totalElapsed, pathStats),
 		writtenFiles,
-		true
+		false
 	)
 
-	meta.Stats.Errors = #errors
-	meta.Stats.Warnings = #warnings
-	meta.Stats.ElapsedSeconds = os.clock() - started
-	writeJSONDocument(META_FILE, meta, "meta.json", writtenFiles, true)
-
-	writeJSONDocument(ERRORS_FILE, errors, "errors.json", writtenFiles, true)
-
-	local complete = true
+	local finalComplete = true
 	for _, file in ipairs(writtenFiles) do
 		if file.Required and not file.Success then
-			complete = false
+			finalComplete = false
 			break
 		end
 	end
 
-	local manifest = {
+	local finalManifest = {
 		Schema = SCHEMA_NAME,
 		SchemaVersion = SCHEMA_VERSION,
 		DumpId = currentDumpId,
-		Complete = complete,
-		Status = complete and "Complete" or "Incomplete",
+		Complete = finalComplete,
+		Status = finalComplete and "Complete" or "Incomplete",
+		MainDumpComplete = true,
+		RuntimeTraceComplete = true,
 		HasErrors = #errors > 0,
 		HasWarnings = #warnings > 0,
 		GeneratedAtUnix = os.time(),
@@ -4999,13 +4119,11 @@ local function run()
 			LogRecords = #runtimeLogRecords,
 			TimelineRecords = #runtimeTimelineRecords,
 			ErrorMessages = #runtimeErrorRecords,
-			HookObservations = #runtimeHookState.HookRecords,
-			HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords,
 			CategoryDroppedDueToCap = runtimeEventCategoryDropped
 		}
 	}
 
-	local manifestEncoded, manifestEncodeOk = encodeJSON(manifest, "manifest.json")
+	local manifestEncoded, manifestEncodeOk = encodeJSON(finalManifest, "manifest.json")
 	local manifestWriteOk = writeSafe(MANIFEST_FILE, manifestEncoded)
 	if not manifestEncodeOk or not manifestWriteOk then
 		warn("GameStructureDump: manifest.json could not be completed.")
@@ -5025,12 +4143,9 @@ local function run()
 	print("Duplicate path groups:", pathStats.DuplicatePathGroups)
 	print("Errors:", #errors)
 	print("Warnings:", #warnings)
-	print("Hook observations:", #runtimeHookState.HookRecords)
-	print("Hook integrity records:", #runtimeHookState.HookIntegrityRecords)
 	print("Sanitized invalid UTF-8 unique strings:", invalidUtf8StringCount)
 	print("Time:", string.format("%.2fs", totalElapsed))
 	print("Folder:", OUTPUT_FOLDER)
-
 end
 
 run()
