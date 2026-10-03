@@ -45,51 +45,26 @@ local YIELD_EVERY = 100
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
-	-- Runtime tracing starts before the snapshot walk, so calls that happen while
-	-- the dump is taking its normal ~seconds-long snapshot are captured too.
 	RuntimeTrace = true,
-
-	-- Keep the tracer alive long enough to reproduce a suspicious kick after the
-	-- normal structure snapshot has finished.
 	RuntimeTracePostSeconds = 45,
-
-	-- Runtime records are kept as a rolling window. This prevents noisy remotes
-	-- from consuming the whole capture before the interesting event happens.
 	RuntimeRingWindowSeconds = 30,
-
 	RuntimeTraceIncomingRemotes = true,
 	RuntimeTraceOutgoingRemotes = true,
 	RuntimeTraceDynamicRemotes = true,
 	RuntimeTraceToolAttributes = true,
 	RuntimeTraceInterestingAttributes = true,
 	RuntimeTraceAllValues = true,
-
 	RuntimeCaptureCaller = true,
 	RuntimeCaptureCallerStack = true,
 	RuntimeCallerStackDepth = 10,
 	RuntimeCaptureInvokeReturns = true,
-
-	-- Capture real Luau buffer contents when possible. Small buffers are stored
-	-- completely; large buffers keep a prefix + suffix so a single huge payload
-	-- cannot explode the dump size.
 	RuntimeCaptureBuffers = true,
 	RuntimeMaxBufferBytes = 4096,
-
-	-- Character telemetry is intentionally separated from remote traffic.
 	RuntimeTraceCharacter = true,
 	RuntimeCharacterSampleInterval = 0.15,
 	RuntimeMaxCharacterRecords = 10000,
-
-	-- Console output can expose local detector warnings or errors immediately
-	-- before a disconnect. It is stored separately to keep the remote trace clean.
 	RuntimeCaptureLogs = true,
 	RuntimeMaxLogRecords = 5000,
-
-	-- Hook diagnostics are passive where possible. The dumper already needs one
-	-- __namecall hook for outgoing remote tracing, so that same hook also observes
-	-- Workspace ray calls. It intentionally does NOT install an __index hook,
-	-- because doing so would contaminate a test whose purpose is to discover
-	-- whether another script's __index hook is what triggers a detector.
 	RuntimeTraceHookDiagnostics = true,
 	RuntimeHookIntegrityInterval = 0.20,
 	RuntimeMaxHookRecords = 12000,
@@ -97,15 +72,7 @@ local CONFIG = {
 	RuntimeHookRaySignatureMagnitude = 5000,
 	RuntimeHookRaySignatureTolerance = 3,
 	RuntimeHookTargetMaxMissStuds = 12,
-
-	-- Suspicious rays that match the configured signature are recorded every time.
-	-- Ordinary rays are sampled so diagnostics do not add hundreds of heavy
-	-- observations per second to camera code.
 	RuntimeHookNormalRaySampleInterval = 0.25,
-
-	-- Error/disconnect capture. Error 267 is normally visible through game:GetService("GuiService").
-	-- The trace freezes immediately when a kick/disconnect-like message appears,
-	-- preserving the rolling window that led up to it.
 	RuntimeFreezeOnDisconnectError = true,
 	RuntimeFreezeErrorKeywords = {
 		"267",
@@ -119,19 +86,9 @@ local CONFIG = {
 		"desconect",
 		"disconnect"
 	},
-
-	-- Disk flushing is throttled because high-frequency replication traffic can
-	-- otherwise trigger hundreds of writefile calls per second.
 	RuntimeFlushEvery = 250,
 	RuntimeFlushMinSeconds = 1.0,
-
-	-- Stability only: observer priming still scans every existing Instance, but
-	-- yields cooperatively instead of materializing game:GetDescendants() at once.
 	RuntimePrimeYieldEvery = 150,
-
-	-- The combined timeline also behaves as a ring. Remote categories have
-	-- independent caps, so internal replication cannot starve ordinary game
-	-- remotes from the capture.
 	RuntimeMaxEvents = 40000,
 	RuntimeMaxEventsPerCategory = {
 		Game = 16000,
@@ -142,7 +99,6 @@ local CONFIG = {
 	RuntimeMaxTimelineRecords = 40000,
 	RuntimeMaxValueChanges = 16000,
 	RuntimeMaxAttributeChanges = 16000,
-
 	StateIndexMaxPerBucket = 1500
 }
 
@@ -2070,9 +2026,6 @@ local function appendRuntimeRayObservation(self, method, packedArguments)
 	local matchesSignature =
 		math.abs(magnitude - signatureMagnitude) <= signatureTolerance
 
-	-- Keep every suspicious ray, but sample ordinary camera/game rays. This
-	-- makes hook diagnostics much less invasive while preserving the signal we
-	-- care about for this capture.
 	if not matchesSignature then
 		local now = os.clock()
 		local sampleInterval = math.max(
@@ -2382,10 +2335,6 @@ local function installOutgoingRemoteHook()
 	local oldNamecall
 
 	local function handler(self, ...)
-		-- getnamecallmethod() must be read before anything else. More importantly,
-		-- no diagnostic code is allowed to perform another namecall before the
-		-- original call is dispatched. Doing that can overwrite the active method
-		-- and accidentally turn Workspace:Raycast(...) into Workspace:<other>(...).
 		local methodOk, method = pcall(getnamecallmethod)
 		if not methodOk then
 			return oldNamecall(self, ...)
@@ -2406,15 +2355,9 @@ local function installOutgoingRemoteHook()
 			return oldNamecall(self, ...)
 		end
 
-		-- Only pure Lua/executor-safe work happens before oldNamecall. In
-		-- particular: no GetFullName, FindFirstChild, IsA, Vector3:Dot, logging,
-		-- serialization, or other ':' calls are made here.
 		local packedArguments = table.pack(...)
 		local callStarted = os.clock()
 
-		-- PASSIVE DISPATCH: run the real call first. All heavy inspection happens
-		-- only after it has completed, so the dumper cannot change which namecall
-		-- method Roblox receives.
 		local returns = table.pack(oldNamecall(self, ...))
 		local duration = os.clock() - callStarted
 
@@ -2428,9 +2371,6 @@ local function installOutgoingRemoteHook()
 		end
 
 		if observeRemote then
-			-- Validate the object only now, after the original namecall has already
-			-- completed. Property/method reads in the logger therefore cannot corrupt
-			-- the call we are observing.
 			local className = typeof(self) == "Instance" and safeClassName(self) or nil
 			local isFireServer = method == "FireServer"
 				and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
@@ -3184,8 +3124,6 @@ local function primeRuntimeObservers()
 		return
 	end
 
-	-- DFS stack keeps memory proportional to the active frontier instead of
-	-- retaining one giant GetDescendants() array for the entire DataModel.
 	local stack = {}
 	for index = #rootChildren, 1, -1 do
 		stack[#stack + 1] = rootChildren[index]
@@ -4625,8 +4563,6 @@ local function run()
 	snapshotFinalized = true
 	finalizeIndexes()
 
-	-- Traversal bookkeeping is no longer needed after the snapshot. Releasing it
-	-- here lowers the peak during JSON encoding without dropping exported data.
 	table.clear(traversedInstances)
 
 	local snapshotElapsed = os.clock() - started
