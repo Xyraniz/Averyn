@@ -6,12 +6,14 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.3
+local SCHEMA_VERSION = 3.4
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
 local STRUCTURE_FILE = OUTPUT_FOLDER .. "/structure.json"
 local INSTANCES_FILE = OUTPUT_FOLDER .. "/instances.json"
+local VISUAL_ASSETS_FILE = OUTPUT_FOLDER .. "/visual_assets.json"
+local RUNTIME_VISUAL_ASSETS_FILE = OUTPUT_FOLDER .. "/runtime_visual_assets.json"
 local REMOTES_FILE = OUTPUT_FOLDER .. "/remotes.json"
 local SCRIPTS_FILE = OUTPUT_FOLDER .. "/scripts.json"
 local SUMMARY_FILE = OUTPUT_FOLDER .. "/summary.txt"
@@ -47,7 +49,11 @@ local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
 	RuntimeTrace = true,
-	RuntimeTracePostSeconds = 45,
+	RuntimeTracePostSeconds = 90,
+	VisualCapture = true,
+	VisualMaxSnapshotEntries = 60000,
+	VisualMaxDynamicEntries = 16000,
+	VisualSecondPassDelay = 0.35,
 	RuntimeRingWindowSeconds = 30,
 	RuntimeTraceIncomingRemotes = true,
 	RuntimeTraceOutgoingRemotes = true,
@@ -240,6 +246,13 @@ local runtimeHookState = {
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
 local snapshotFinalized = false
+local visualSnapshotRecords = {}
+local visualDynamicRecords = {}
+local visualDynamicByInstance = setmetatable({}, { __mode = "k" })
+local visualSnapshotSaved = 0
+local visualSnapshotOmitted = 0
+local visualDynamicOmitted = 0
+local visualCaptureErrors = 0
 local snapshotBusy = false
 local currentStage = "init"
 local currentDumpId = nil
@@ -1177,6 +1190,229 @@ local PROPERTY_GROUPS = {
 	}
 }
 
+-- Resource catalog based exclusively on Roblox class types. No names, effect
+-- folders, asset IDs or game-specific paths are hardcoded.
+local VISUAL_CLASSES = {
+    ParticleEmitter = true, Beam = true, Trail = true,
+    Fire = true, Smoke = true, Sparkles = true, Explosion = true,
+    Attachment = true, Bone = true, WrapLayer = true, WrapTarget = true,
+    PointLight = true, SpotLight = true, SurfaceLight = true,
+    Highlight = true, SelectionBox = true, BoxHandleAdornment = true,
+    SphereHandleAdornment = true, CylinderHandleAdornment = true,
+    Decal = true, Texture = true, SurfaceAppearance = true,
+    SpecialMesh = true, BlockMesh = true, CylinderMesh = true, FileMesh = true,
+    Sound = true, SoundGroup = true, EqualizerSoundEffect = true,
+    ReverbSoundEffect = true, EchoSoundEffect = true, ChorusSoundEffect = true,
+    DistortionSoundEffect = true, FlangeSoundEffect = true,
+    CompressorSoundEffect = true, PitchShiftSoundEffect = true,
+    TremoloSoundEffect = true,
+    Model = true, Folder = true, Tool = true, Accessory = true,
+    BillboardGui = true, SurfaceGui = true, ScreenGui = true,
+    ImageLabel = true, ImageButton = true, UIGradient = true,
+    UICorner = true, UIStroke = true,
+    Animation = true, Animator = true
+}
+
+local VISUAL_PROPERTIES = {
+    ParticleEmitter = {
+        "Texture", "Enabled", "Rate", "Lifetime", "Speed", "Drag", "Acceleration",
+        "SpreadAngle", "EmissionDirection", "LockedToPart", "VelocityInheritance",
+        "Rotation", "RotSpeed", "Size", "Color", "Transparency", "ZOffset",
+        "LightEmission", "LightInfluence", "Brightness", "Orientation", "Squash",
+        "TimeScale", "WindAffectsDrag", "Shape", "ShapeInOut", "ShapeStyle",
+        "ShapePartial", "FlipbookLayout", "FlipbookMode", "FlipbookFramerate",
+        "FlipbookStartRandom"
+    },
+    Beam = {
+        "Attachment0", "Attachment1", "Texture", "TextureLength", "TextureMode",
+        "TextureSpeed", "Color", "Transparency", "Width0", "Width1", "CurveSize0",
+        "CurveSize1", "Segments", "FaceCamera", "Enabled", "ZOffset",
+        "LightEmission", "LightInfluence", "Brightness"
+    },
+    Trail = {
+        "Attachment0", "Attachment1", "Texture", "TextureLength", "TextureMode",
+        "Color", "Transparency", "WidthScale", "Lifetime", "MinLength", "MaxLength",
+        "FaceCamera", "Enabled", "LightEmission", "LightInfluence", "Brightness"
+    },
+    Attachment = { "CFrame", "Position", "Orientation", "Axis", "SecondaryAxis", "Visible", "WorldCFrame" },
+    Bone = { "CFrame", "Position", "Orientation", "Transform", "TransformedWorldCFrame" },
+    Fire = { "Color", "SecondaryColor", "Heat", "Size", "Enabled", "TimeScale" },
+    Smoke = { "Color", "Opacity", "RiseVelocity", "Size", "Enabled", "TimeScale" },
+    Sparkles = { "SparkleColor", "Enabled", "TimeScale" },
+    Explosion = { "Position", "BlastRadius", "BlastPressure", "DestroyJointRadiusPercent", "ExplosionType", "Visible" },
+    PointLight = { "Color", "Brightness", "Range", "Shadows", "Enabled" },
+    SpotLight = { "Color", "Brightness", "Range", "Shadows", "Enabled", "Angle", "Face" },
+    SurfaceLight = { "Color", "Brightness", "Range", "Shadows", "Enabled", "Angle", "Face" },
+    Highlight = { "Adornee", "Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency", "DepthMode" },
+    SelectionBox = { "Adornee", "Color3", "Transparency", "SurfaceColor3", "SurfaceTransparency", "LineThickness", "Visible" },
+    Decal = { "Texture", "Color3", "Transparency", "Face", "ZIndex" },
+    Texture = { "Texture", "Color3", "Transparency", "Face", "StudsPerTileU", "StudsPerTileV", "OffsetStudsU", "OffsetStudsV" },
+    SurfaceAppearance = { "ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap", "AlphaMode", "AlphaCutoff", "Color" },
+    SpecialMesh = { "MeshId", "TextureId", "MeshType", "Scale", "Offset", "VertexColor" },
+    BlockMesh = { "Scale", "Offset", "VertexColor" },
+    CylinderMesh = { "Scale", "Offset", "VertexColor" },
+    Sound = {
+        "SoundId", "Volume", "PlaybackSpeed", "Looped", "PlayOnRemove", "TimePosition",
+        "RollOffMaxDistance", "RollOffMinDistance", "RollOffMode", "EmitterSize",
+        "SoundGroup", "PlaybackRegionsEnabled", "PlaybackRegion", "LoopRegion"
+    },
+    SoundGroup = { "Volume" },
+    EqualizerSoundEffect = { "Enabled", "LowGain", "MidGain", "HighGain", "Priority" },
+    ReverbSoundEffect = { "Enabled", "DecayTime", "Density", "Diffusion", "DryLevel", "WetLevel", "Priority" },
+    EchoSoundEffect = { "Enabled", "Delay", "DryLevel", "Feedback", "WetLevel", "Priority" },
+    ChorusSoundEffect = { "Enabled", "Depth", "Mix", "Rate", "Priority" },
+    DistortionSoundEffect = { "Enabled", "Level", "Priority" },
+    FlangeSoundEffect = { "Enabled", "Depth", "Mix", "Rate", "Priority" },
+    CompressorSoundEffect = { "Enabled", "Attack", "GainMakeup", "Ratio", "Release", "SideChain", "Threshold", "Priority" },
+    PitchShiftSoundEffect = { "Enabled", "Octave", "Priority" },
+    TremoloSoundEffect = { "Enabled", "Depth", "Duty", "Frequency", "Priority" },
+    Animation = { "AnimationId" },
+    BillboardGui = { "Adornee", "AlwaysOnTop", "Brightness", "ClipsDescendants", "Enabled", "LightInfluence", "MaxDistance", "Size", "SizeOffset", "StudsOffset", "StudsOffsetWorldSpace" },
+    SurfaceGui = { "Adornee", "AlwaysOnTop", "Brightness", "CanvasSize", "Enabled", "Face", "LightInfluence", "PixelsPerStuds", "SizingMode", "ZOffset" },
+    ScreenGui = { "Enabled", "DisplayOrder", "IgnoreGuiInset", "ResetOnSpawn", "ZIndexBehavior" },
+    ImageLabel = { "Image", "ImageColor3", "ImageTransparency", "ImageRectOffset", "ImageRectSize", "ScaleType", "SliceCenter", "SliceScale", "ResampleMode", "Size", "Position", "Rotation", "BackgroundTransparency" },
+    ImageButton = { "Image", "ImageColor3", "ImageTransparency", "ImageRectOffset", "ImageRectSize", "ScaleType", "SliceCenter", "SliceScale", "ResampleMode", "Size", "Position", "Rotation", "BackgroundTransparency" },
+    UIGradient = { "Color", "Transparency", "Rotation", "Offset", "Enabled" },
+    UICorner = { "CornerRadius" },
+    UIStroke = { "Color", "Transparency", "Thickness", "ApplyStrokeMode", "LineJoinMode", "Enabled" },
+    Model = { "PrimaryPart", "WorldPivot", "LevelOfDetail", "ModelStreamingMode" },
+    Tool = { "Grip", "TextureId", "Enabled" }
+}
+
+local VISUAL_PART_PROPERTIES = {
+    "CFrame", "Size", "Position", "Color", "Material", "MaterialVariant",
+    "Transparency", "Reflectance", "CastShadow", "Anchored", "CanCollide",
+    "CanQuery", "CanTouch", "CollisionGroup", "Massless", "Shape", "PivotOffset"
+}
+
+local VISUAL_PART_CLASSES = {
+    Part = true, MeshPart = true, UnionOperation = true, WedgePart = true,
+    CornerWedgePart = true, TrussPart = true, Seat = true, VehicleSeat = true,
+    SpawnLocation = true, NegateOperation = true, IntersectOperation = true
+}
+
+local VISUAL_MESH_PROPERTIES = {
+    "MeshId", "TextureID", "DoubleSided", "RenderFidelity", "CollisionFidelity"
+}
+
+function F.isVisualAsset(object, className)
+    className = className or F.safeClassName(object)
+    return VISUAL_CLASSES[className] == true or VISUAL_PART_CLASSES[className] == true
+end
+
+function F.captureOptionalVisualProperty(object, output, property)
+    if output[property] ~= nil then return end
+    local ok, value = pcall(function() return object[property] end)
+    if not ok or value == nil then return end
+    local serializedOk, serialized = pcall(serializeValue, value, {
+        seen = {}, depth = 0, noAssignInstanceId = true
+    })
+    if serializedOk then
+        output[property] = serialized
+    else
+        visualCaptureErrors = visualCaptureErrors + 1
+    end
+end
+
+function F.addVisualProperties(object, output, className)
+    if not CONFIG.VisualCapture or not F.isVisualAsset(object, className) then return end
+    if VISUAL_PART_CLASSES[className] then
+        for _, property in ipairs(VISUAL_PART_PROPERTIES) do
+            F.captureOptionalVisualProperty(object, output, property)
+        end
+    end
+    if className == "MeshPart" then
+        for _, property in ipairs(VISUAL_MESH_PROPERTIES) do
+            F.captureOptionalVisualProperty(object, output, property)
+        end
+    end
+    local visualProperties = VISUAL_PROPERTIES[className]
+    if visualProperties then
+        for _, property in ipairs(visualProperties) do
+            F.captureOptionalVisualProperty(object, output, property)
+        end
+    end
+end
+
+function F.getVisualAncestors(object)
+    local result = {}
+    local cursor, depth = object.Parent, 0
+    while cursor and depth < 64 do
+        table.insert(result, 1, {
+            Name = F.safeName(cursor),
+            ClassName = F.safeClassName(cursor),
+            Path = F.safeFullName(cursor)
+        })
+        cursor = cursor.Parent
+        depth = depth + 1
+    end
+    return result
+end
+
+function F.makeVisualRecord(object, id, parentId, name, className, path, attributes, tags, properties, withAncestors)
+    local parent = object.Parent
+    return {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId,
+        ParentPath = parent and F.safeFullName(parent) or nil,
+        Ancestors = withAncestors and F.getVisualAncestors(object) or nil,
+        Attributes = F.optionalMap(attributes),
+        Tags = tags,
+        Properties = F.optionalMap(properties)
+    }
+end
+
+function F.captureDynamicVisual(object, pass)
+    if not runtimeTraceActive or not CONFIG.VisualCapture then return end
+    local className = F.safeClassName(object)
+    if not F.isVisualAsset(object, className) then return end
+
+    local existing = visualDynamicByInstance[object]
+    if not existing and #visualDynamicRecords >= math.max(0, CONFIG.VisualMaxDynamicEntries) then
+        visualDynamicOmitted = visualDynamicOmitted + 1
+        return
+    end
+
+    local name = F.safeName(object)
+    local path = F.safeFullName(object)
+    local properties = F.getUsefulProperties(object, className)
+    local attributes = F.getAttributes(object)
+    local tags = F.getTags(object)
+    local record = F.makeVisualRecord(
+        object, instanceIds[object],
+        object.Parent and instanceIds[object.Parent] or nil,
+        name, className, path, attributes, tags, properties, true
+    )
+    record.DynamicId = existing and existing.DynamicId or (#visualDynamicRecords + 1)
+    record.FirstObservedSeconds = existing and existing.FirstObservedSeconds or (os.clock() - runtimeStartedAt)
+    record.LastObservedSeconds = os.clock() - runtimeStartedAt
+    record.CapturePass = pass
+    record.Observations = (existing and existing.Observations or 0) + 1
+    if existing then
+        for key, value in pairs(record) do existing[key] = value end
+    else
+        visualDynamicByInstance[object] = record
+        visualDynamicRecords[#visualDynamicRecords + 1] = record
+    end
+end
+
+function F.buildVisualDocument(records, dynamic)
+    return {
+        DumpId = currentDumpId,
+        Scope = dynamic and "ObservedWhileRunning" or "Snapshot",
+        CaptureAllNames = true,
+        ClassBasedSelection = true,
+        Description = "Visual instances visible to this client. No access to server-only/unreplicated assets.",
+        Total = #records,
+        OmittedByCap = dynamic and visualDynamicOmitted or visualSnapshotOmitted,
+        SerializationErrors = visualCaptureErrors,
+        Assets = records
+    }
+end
+
 local REMOTE_BUCKETS = {
 	RemoteEvent = "RemoteEvents",
 	UnreliableRemoteEvent = "UnreliableRemoteEvents",
@@ -1223,6 +1459,8 @@ function F.getUsefulProperties(object, className)
 			end
 		end
 	end
+
+	F.addVisualProperties(object, data, className)
 
 	if REMOTE_BUCKETS[className] then
 		data.RemoteType = className
@@ -3468,6 +3706,29 @@ function F.startRuntimeTrace()
 		end
 	end
 
+	if CONFIG.VisualCapture then
+		local visualOk, visualConnection = pcall(function()
+			return game.DescendantAdded:Connect(function(object)
+				if not runtimeTraceActive or not F.isVisualAsset(object) then return end
+				-- Capture immediately: short-lived effects may be destroyed next frame.
+				F.captureDynamicVisual(object, "OnAdded")
+				local delaySeconds = math.max(0, tonumber(CONFIG.VisualSecondPassDelay) or 0)
+				if delaySeconds > 0 then
+					task.delay(delaySeconds, function()
+						if runtimeTraceActive and object.Parent then
+							F.captureDynamicVisual(object, "AfterInitialization")
+						end
+					end)
+				end
+			end)
+		end)
+		if visualOk and visualConnection then
+			table.insert(runtimeConnections, visualConnection)
+		else
+			F.recordWarning("RuntimeVisualCapture", nil, visualConnection)
+		end
+	end
+
 	if CONFIG.RuntimePrimeBeforeSnapshot then
 		F.primeRuntimeObservers()
 	end
@@ -3728,6 +3989,17 @@ dumpNode = function(object, parentId, context)
 	local attributes = F.getAttributes(object)
 	local tags = F.getTags(object)
 	local properties = F.getUsefulProperties(object, className)
+
+	if CONFIG.VisualCapture and F.isVisualAsset(object, className) then
+		if #visualSnapshotRecords < math.max(0, CONFIG.VisualMaxSnapshotEntries) then
+			visualSnapshotSaved = visualSnapshotSaved + 1
+			visualSnapshotRecords[#visualSnapshotRecords + 1] = F.makeVisualRecord(
+				object, id, parentId, name, className, path, attributes, tags, properties
+			)
+		else
+			visualSnapshotOmitted = visualSnapshotOmitted + 1
+		end
+	end
 
 	F.registerAttributes(id, name, className, path, attributes)
 	F.registerRemote(object, id, name, className, parentId, path, attributes, tags)
@@ -5125,6 +5397,12 @@ flushRuntimeTrace = function()
 			"runtime_events_other.json"
 		)
 	)
+	if CONFIG.VisualCapture then
+		F.writeSafe(
+			RUNTIME_VISUAL_ASSETS_FILE,
+			F.encodeJSON(F.buildVisualDocument(visualDynamicRecords, true), "runtime_visual_assets.json")
+		)
+	end
 	F.writeSafe(RUNTIME_FILES.Values, F.encodeJSON(valuesDocument, "runtime_values.json"))
 	F.writeSafe(RUNTIME_FILES.Attributes, F.encodeJSON(attributesDocument, "runtime_attributes.json"))
 	F.writeSafe(RUNTIME_FILES.Character, F.encodeJSON(characterDocument, "runtime_character.json"))
@@ -5286,6 +5564,14 @@ function F.run()
 	treeLines = nil
 	F.releaseTemporaryMemory()
 
+	checkpointStage("write_visual_assets")
+	F.writeJSONDocument(
+		VISUAL_ASSETS_FILE,
+		F.buildVisualDocument(visualSnapshotRecords, false),
+		"visual_assets.json", writtenFiles, false
+	)
+	table.clear(visualSnapshotRecords)
+
 	checkpointStage("write_structure_json")
 	F.writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
 	root = nil
@@ -5374,6 +5660,12 @@ function F.run()
 	checkpointStage("decompile_modules")
 	F.decompileQueuedModules(scriptsDocument)
 	F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+
+	F.writeJSONDocument(
+		RUNTIME_VISUAL_ASSETS_FILE,
+		F.buildVisualDocument(visualDynamicRecords, true),
+		"runtime_visual_assets.json", writtenFiles, false
+	)
 
 	local runtimeEventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
 	runtimeEventsDocument.CategoryTotals = {
@@ -5630,6 +5922,14 @@ function F.run()
 			OutputFolder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER,
 			Stats = moduleDecompileStats
 		},
+		VisualCapture = {
+			Enabled = CONFIG.VisualCapture,
+			SnapshotCount = visualSnapshotSaved,
+			DynamicCount = #visualDynamicRecords,
+			SnapshotOmitted = visualSnapshotOmitted,
+			DynamicOmitted = visualDynamicOmitted,
+			Files = { VISUAL_ASSETS_FILE, RUNTIME_VISUAL_ASSETS_FILE }
+		},
 		RuntimeTrace = {
 			Enabled = CONFIG.RuntimeTrace,
 			Frozen = runtimeHookState.Frozen,
@@ -5787,6 +6087,9 @@ function F.run()
 	print("Attributes:", #attributeIndex)
 	print("Values:", #valueRecords)
 	print("Player references:", #playerReferences)
+	print("Visual assets in snapshot:", visualSnapshotSaved)
+	print("Visual assets seen during runtime:", #visualDynamicRecords)
+	print("Visual assets omitted by cap:", visualSnapshotOmitted + visualDynamicOmitted)
 	print("Tools:", #toolRecords)
 	print("Duplicate path groups:", pathStats.DuplicatePathGroups)
 	print("Errors:", #errors)
