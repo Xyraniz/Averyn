@@ -52,7 +52,12 @@ local CONFIG = {
 	RuntimeTracePostSeconds = 90,
 	VisualCapture = true,
 	VisualMaxSnapshotEntries = 60000,
-	VisualMaxDynamicEntries = 16000,
+	VisualMaxDynamicEntries = 24000,
+	VisualEssentialOverflowEntries = 6000,
+	VisualMaxAnimationPlaybackEntries = 3500,
+	VisualAnimatorSampleInterval = 0.6,
+	VisualAnimatorKeepaliveInterval = 3,
+	VisualMaxTrackedAnimators = 200,
 	VisualSecondPassDelay = 0.35,
 	RuntimeRingWindowSeconds = 30,
 	RuntimeTraceIncomingRemotes = true,
@@ -252,6 +257,14 @@ local visualDynamicByInstance = setmetatable({}, { __mode = "k" })
 local visualSnapshotSaved = 0
 local visualSnapshotOmitted = 0
 local visualDynamicOmitted = 0
+local visualEssentialOverflowSaved = 0
+local visualAnimationPlaybackRecords = {}
+local visualAnimationPlaybackOmitted = 0
+local visualAnimatorInstances = setmetatable({}, { __mode = "k" })
+local visualAnimatorStates = setmetatable({}, { __mode = "k" })
+local visualTrackedAnimatorCount = 0
+local visualRuntimeIdentityIds = setmetatable({}, { __mode = "k" })
+local nextVisualRuntimeIdentity = 0
 local visualCaptureErrors = 0
 local snapshotBusy = false
 local currentStage = "init"
@@ -1210,7 +1223,22 @@ local VISUAL_CLASSES = {
     BillboardGui = true, SurfaceGui = true, ScreenGui = true,
     ImageLabel = true, ImageButton = true, UIGradient = true,
     UICorner = true, UIStroke = true,
-    Animation = true, Animator = true
+    Animation = true, Animator = true, AnimationController = true,
+    AnimationConstraint = true, KeyframeSequence = true, Keyframe = true,
+    KeyframeMarker = true, Pose = true, NumberPose = true,
+    CurveAnimation = true, EulerRotationCurve = true,
+    RotationCurve = true, Vector3Curve = true, FloatCurve = true,
+    Humanoid = true,
+    Motor6D = true, Motor = true, Weld = true, ManualWeld = true,
+    ManualGlue = true, Glue = true, Snap = true, WeldConstraint = true,
+    RigidConstraint = true, NoCollisionConstraint = true,
+    BallSocketConstraint = true, HingeConstraint = true,
+    PrismaticConstraint = true, CylindricalConstraint = true,
+    SpringConstraint = true, RodConstraint = true, RopeConstraint = true,
+    AlignPosition = true, AlignOrientation = true,
+    UniversalConstraint = true, PlaneConstraint = true,
+    TorsionSpringConstraint = true, AngularVelocity = true,
+    LinearVelocity = true, VectorForce = true, Torque = true
 }
 
 local VISUAL_PROPERTIES = {
@@ -1276,7 +1304,45 @@ local VISUAL_PROPERTIES = {
     UICorner = { "CornerRadius" },
     UIStroke = { "Color", "Transparency", "Thickness", "ApplyStrokeMode", "LineJoinMode", "Enabled" },
     Model = { "PrimaryPart", "WorldPivot", "LevelOfDetail", "ModelStreamingMode" },
-    Tool = { "Grip", "TextureId", "Enabled" }
+    Tool = { "Grip", "TextureId", "Enabled" },
+    Humanoid = { "RigType", "HipHeight", "Health", "MaxHealth", "AutoRotate", "BreakJointsOnDeath", "RequiresNeck" },
+    Motor6D = { "Part0", "Part1", "C0", "C1", "Enabled", "Transform", "CurrentAngle", "DesiredAngle", "MaxVelocity" },
+    Motor = { "Part0", "Part1", "C0", "C1", "Enabled", "CurrentAngle", "DesiredAngle", "MaxVelocity" },
+    Weld = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    ManualWeld = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    ManualGlue = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    Glue = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    Snap = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    WeldConstraint = { "Part0", "Part1", "Enabled", "Active" },
+    RigidConstraint = { "Attachment0", "Attachment1", "Enabled", "Active" },
+    NoCollisionConstraint = { "Part0", "Part1", "Enabled" },
+    AnimationConstraint = { "Attachment0", "Attachment1", "Enabled", "Transform", "IsKinematic", "C0", "C1", "Part0", "Part1" },
+    BallSocketConstraint = { "Attachment0", "Attachment1", "Enabled", "LimitsEnabled", "UpperAngle", "TwistLimitsEnabled", "TwistLowerAngle", "TwistUpperAngle", "MaxFrictionTorque", "Restitution" },
+    HingeConstraint = { "Attachment0", "Attachment1", "Enabled", "ActuatorType", "AngularSpeed", "AngularVelocity", "TargetAngle", "MotorMaxTorque", "ServoMaxTorque", "LimitsEnabled", "LowerAngle", "UpperAngle" },
+    PrismaticConstraint = { "Attachment0", "Attachment1", "Enabled", "ActuatorType", "Speed", "Velocity", "TargetPosition", "LowerLimit", "UpperLimit", "LimitsEnabled", "MotorMaxForce", "ServoMaxForce" },
+    CylindricalConstraint = { "Attachment0", "Attachment1", "Enabled", "ActuatorType", "AngularActuatorType", "AngularVelocity", "AngularSpeed", "TargetAngle", "TargetPosition", "LimitsEnabled" },
+    SpringConstraint = { "Attachment0", "Attachment1", "Enabled", "FreeLength", "Stiffness", "Damping", "MaxLength", "MinLength", "LimitsEnabled" },
+    RodConstraint = { "Attachment0", "Attachment1", "Enabled", "Length", "Thickness", "LimitsEnabled", "MinLength", "MaxLength" },
+    RopeConstraint = { "Attachment0", "Attachment1", "Enabled", "Length", "Thickness", "Restitution", "WinchEnabled", "WinchTarget" },
+    AlignPosition = { "Attachment0", "Attachment1", "Enabled", "Mode", "Position", "MaxForce", "Responsiveness", "RigidityEnabled", "ApplyAtCenterOfMass", "ReactionForceEnabled" },
+    AlignOrientation = { "Attachment0", "Attachment1", "Enabled", "Mode", "CFrame", "MaxTorque", "Responsiveness", "RigidityEnabled", "ReactionTorqueEnabled" },
+    UniversalConstraint = { "Attachment0", "Attachment1", "Enabled", "LimitsEnabled", "MaxAngle" },
+    PlaneConstraint = { "Attachment0", "Attachment1", "Enabled" },
+    TorsionSpringConstraint = { "Attachment0", "Attachment1", "Enabled", "Stiffness", "Damping", "MaxAngle", "LimitsEnabled" },
+    AngularVelocity = { "Attachment0", "Attachment1", "Enabled", "AngularVelocity", "MaxTorque", "RelativeTo", "ReactionTorqueEnabled" },
+    LinearVelocity = { "Attachment0", "Attachment1", "Enabled", "VectorVelocity", "LineVelocity", "PlaneVelocity", "RelativeTo", "MaxForce", "ForceLimitsEnabled" },
+    VectorForce = { "Attachment0", "Enabled", "Force", "RelativeTo", "ApplyAtCenterOfMass" },
+    Torque = { "Attachment0", "Enabled", "Torque", "RelativeTo" },
+    KeyframeSequence = { "Priority", "Loop" },
+    Keyframe = { "Time" },
+    KeyframeMarker = { "Value" },
+    Pose = { "CFrame", "Weight", "EasingStyle", "EasingDirection", "MaskWeight" },
+    NumberPose = { "Value", "Weight", "EasingStyle", "EasingDirection" },
+    CurveAnimation = { "Priority", "Loop" },
+    FloatCurve = { "Length" },
+    Vector3Curve = { "Length" },
+    RotationCurve = { "Length" },
+    EulerRotationCurve = { "Length" }
 }
 
 local VISUAL_PART_PROPERTIES = {
@@ -1293,6 +1359,15 @@ local VISUAL_PART_CLASSES = {
 
 local VISUAL_MESH_PROPERTIES = {
     "MeshId", "TextureID", "DoubleSided", "RenderFidelity", "CollisionFidelity"
+}
+
+local VISUAL_ESSENTIAL_CLASSES = {
+    Motor6D = true, Motor = true, Weld = true, ManualWeld = true,
+    WeldConstraint = true, AnimationConstraint = true, RigidConstraint = true,
+    Animation = true, Animator = true, AnimationController = true,
+    ParticleEmitter = true, Beam = true, Trail = true, Sound = true,
+    Attachment = true, MeshPart = true, SpecialMesh = true,
+    KeyframeSequence = true, Keyframe = true, Pose = true
 }
 
 function F.isVisualAsset(object, className)
@@ -1314,6 +1389,43 @@ function F.captureOptionalVisualProperty(object, output, property)
     end
 end
 
+local VISUAL_REFERENCE_PROPERTIES = {
+    Motor6D = { "Part0", "Part1" }, Motor = { "Part0", "Part1" },
+    Weld = { "Part0", "Part1" }, ManualWeld = { "Part0", "Part1" },
+    ManualGlue = { "Part0", "Part1" }, Glue = { "Part0", "Part1" },
+    Snap = { "Part0", "Part1" }, WeldConstraint = { "Part0", "Part1" },
+    NoCollisionConstraint = { "Part0", "Part1" },
+    RigidConstraint = { "Attachment0", "Attachment1" },
+    AnimationConstraint = { "Attachment0", "Attachment1" },
+    BallSocketConstraint = { "Attachment0", "Attachment1" },
+    HingeConstraint = { "Attachment0", "Attachment1" },
+    PrismaticConstraint = { "Attachment0", "Attachment1" },
+    CylindricalConstraint = { "Attachment0", "Attachment1" },
+    SpringConstraint = { "Attachment0", "Attachment1" },
+    RodConstraint = { "Attachment0", "Attachment1" },
+    RopeConstraint = { "Attachment0", "Attachment1" },
+    AlignPosition = { "Attachment0", "Attachment1" },
+    AlignOrientation = { "Attachment0", "Attachment1" },
+    UniversalConstraint = { "Attachment0", "Attachment1" },
+    PlaneConstraint = { "Attachment0", "Attachment1" },
+    TorsionSpringConstraint = { "Attachment0", "Attachment1" },
+    AngularVelocity = { "Attachment0" }, LinearVelocity = { "Attachment0" },
+    VectorForce = { "Attachment0" }, Torque = { "Attachment0" },
+    Beam = { "Attachment0", "Attachment1" },
+    Trail = { "Attachment0", "Attachment1" }
+}
+
+function F.getVisualRuntimeId(object)
+    if not object then return nil end
+    local id = visualRuntimeIdentityIds[object]
+    if not id then
+        nextVisualRuntimeIdentity = nextVisualRuntimeIdentity + 1
+        id = nextVisualRuntimeIdentity
+        visualRuntimeIdentityIds[object] = id
+    end
+    return id
+end
+
 function F.addVisualProperties(object, output, className)
     if not CONFIG.VisualCapture or not F.isVisualAsset(object, className) then return end
     if VISUAL_PART_CLASSES[className] then
@@ -1330,6 +1442,34 @@ function F.addVisualProperties(object, output, className)
     if visualProperties then
         for _, property in ipairs(visualProperties) do
             F.captureOptionalVisualProperty(object, output, property)
+        end
+    end
+    if className == "Animator" then
+        output.PlayingAnimationTracks = F.getAnimatorPlaybackTracks(object)
+    end
+    local links = VISUAL_REFERENCE_PROPERTIES[className]
+    if links then
+        for _, property in ipairs(links) do
+            local readOk, target = pcall(function() return object[property] end)
+            if readOk and target and typeof(target) == "Instance" then
+                local reference = output[property]
+                if type(reference) == "table" and reference.__type == "Instance" then
+                    if not reference.Id and not snapshotFinalized then
+                        reference.Id = F.assignInstanceId(target)
+                    end
+                    reference.VisualRuntimeId = F.getVisualRuntimeId(target)
+                end
+            end
+        end
+        local missing = nil
+        for _, property in ipairs(links) do
+            if output[property] == nil then
+                missing = missing or {}
+                missing[#missing + 1] = property
+            end
+        end
+        if missing then
+            output._MissingVisualLinks = missing
         end
     end
 end
@@ -1349,6 +1489,81 @@ function F.getVisualAncestors(object)
     return result
 end
 
+function F.getAnimatorPlaybackTracks(animator)
+    local ok, tracks = pcall(function()
+        return animator:GetPlayingAnimationTracks()
+    end)
+    if not ok or type(tracks) ~= "table" then
+        return nil
+    end
+    local result = {}
+    for _, track in ipairs(tracks) do
+        local record = {}
+        local properties = {
+            "Name", "IsPlaying", "Looped", "Priority", "Speed", "Length",
+            "TimePosition", "WeightCurrent", "WeightTarget"
+        }
+        for _, property in ipairs(properties) do
+            F.captureOptionalVisualProperty(track, record, property)
+        end
+        local animationOk, animation = pcall(function() return track.Animation end)
+        if animationOk and animation then
+            record.Animation = F.makeInstanceReference(animation, false)
+            local idOk, animationId = pcall(function() return animation.AnimationId end)
+            if idOk and animationId then
+                record.AnimationId = F.sanitizeString(animationId)
+            end
+        end
+        result[#result + 1] = record
+    end
+    table.sort(result, function(a, b)
+        local an = tostring(a.AnimationId or a.Name or "")
+        local bn = tostring(b.AnimationId or b.Name or "")
+        if an ~= bn then return an < bn end
+        return tostring(a.Name or "") < tostring(b.Name or "")
+    end)
+    return result
+end
+
+function F.registerVisualAnimator(animator)
+    if not CONFIG.VisualCapture or visualAnimatorInstances[animator] then return end
+    if visualTrackedAnimatorCount >= math.max(0, CONFIG.VisualMaxTrackedAnimators) then return end
+    visualTrackedAnimatorCount = visualTrackedAnimatorCount + 1
+    visualAnimatorInstances[animator] = true
+end
+
+function F.captureAnimatorPlayback(animator, pass)
+    if not CONFIG.VisualCapture or not visualAnimatorInstances[animator] then return end
+    local tracks = F.getAnimatorPlaybackTracks(animator)
+    if not tracks then return end
+    local current = os.clock() - runtimeStartedAt
+    local signatureParts = {}
+    for _, track in ipairs(tracks) do
+        signatureParts[#signatureParts + 1] = table.concat({
+            tostring(track.AnimationId or track.Name or ""),
+            tostring(track.Priority and track.Priority.value or ""),
+            tostring(track.Speed or ""), tostring(track.Looped or false)
+        }, "|")
+    end
+    local signature = table.concat(signatureParts, ";")
+    local state = visualAnimatorStates[animator]
+    local keepalive = math.max(0.25, tonumber(CONFIG.VisualAnimatorKeepaliveInterval) or 3)
+    if state and state.Signature == signature and current - state.LastSaved < keepalive then
+        return
+    end
+    visualAnimatorStates[animator] = { Signature = signature, LastSaved = current }
+    if #visualAnimationPlaybackRecords >= math.max(0, CONFIG.VisualMaxAnimationPlaybackEntries) then
+        visualAnimationPlaybackOmitted = visualAnimationPlaybackOmitted + 1
+        return
+    end
+    visualAnimationPlaybackRecords[#visualAnimationPlaybackRecords + 1] = {
+        TimeSeconds = current,
+        CapturePass = pass,
+        Animator = F.makeInstanceReference(animator, false),
+        Tracks = tracks
+    }
+end
+
 function F.makeVisualRecord(object, id, parentId, name, className, path, attributes, tags, properties, withAncestors)
     local parent = object.Parent
     return {
@@ -1358,6 +1573,8 @@ function F.makeVisualRecord(object, id, parentId, name, className, path, attribu
         Path = path,
         ParentId = parentId,
         ParentPath = parent and F.safeFullName(parent) or nil,
+        VisualRuntimeId = withAncestors and F.getVisualRuntimeId(object) or nil,
+        ParentVisualRuntimeId = withAncestors and F.getVisualRuntimeId(parent) or nil,
         Ancestors = withAncestors and F.getVisualAncestors(object) or nil,
         Attributes = F.optionalMap(attributes),
         Tags = tags,
@@ -1372,10 +1589,19 @@ function F.captureDynamicVisual(object, pass)
 
     local existing = visualDynamicByInstance[object]
     if not existing and #visualDynamicRecords >= math.max(0, CONFIG.VisualMaxDynamicEntries) then
-        visualDynamicOmitted = visualDynamicOmitted + 1
-        return
+        if not VISUAL_ESSENTIAL_CLASSES[className]
+            or visualEssentialOverflowSaved >= math.max(0, CONFIG.VisualEssentialOverflowEntries)
+        then
+            visualDynamicOmitted = visualDynamicOmitted + 1
+            return
+        end
+        visualEssentialOverflowSaved = visualEssentialOverflowSaved + 1
     end
 
+    if className == "Animator" then
+        F.registerVisualAnimator(object)
+        F.captureAnimatorPlayback(object, pass)
+    end
     local name = F.safeName(object)
     local path = F.safeFullName(object)
     local properties = F.getUsefulProperties(object, className)
@@ -1409,6 +1635,10 @@ function F.buildVisualDocument(records, dynamic)
         Total = #records,
         OmittedByCap = dynamic and visualDynamicOmitted or visualSnapshotOmitted,
         SerializationErrors = visualCaptureErrors,
+        EssentialOverflowSaved = dynamic and visualEssentialOverflowSaved or nil,
+        AnimationPlaybackOmitted = dynamic and visualAnimationPlaybackOmitted or nil,
+        AnimationPlayback = dynamic and visualAnimationPlaybackRecords or nil,
+        VisualRuntimeIdScope = dynamic and "SnapshotAndRuntimeLocal" or nil,
         Assets = records
     }
 end
@@ -3727,6 +3957,30 @@ function F.startRuntimeTrace()
 		else
 			F.recordWarning("RuntimeVisualCapture", nil, visualConnection)
 		end
+        local removingOk, removingConnection = pcall(function()
+            return game.DescendantRemoving:Connect(function(object)
+                if runtimeTraceActive and visualDynamicByInstance[object] then
+                    F.captureDynamicVisual(object, "BeforeRemoval")
+                end
+            end)
+        end)
+        if removingOk and removingConnection then
+            table.insert(runtimeConnections, removingConnection)
+        else
+            F.recordWarning("RuntimeVisualRemoval", nil, removingConnection)
+        end
+        task.spawn(function()
+            local sampleDelay = math.max(0.25, tonumber(CONFIG.VisualAnimatorSampleInterval) or 0.6)
+            while runtimeTraceActive do
+                for animator in pairs(visualAnimatorInstances) do
+                    if not runtimeTraceActive then break end
+                    if animator.Parent then
+                        F.captureAnimatorPlayback(animator, "RuntimeSample")
+                    end
+                end
+                task.wait(sampleDelay)
+            end
+        end)
 	end
 
 	if CONFIG.RuntimePrimeBeforeSnapshot then
@@ -3989,6 +4243,11 @@ dumpNode = function(object, parentId, context)
 	local attributes = F.getAttributes(object)
 	local tags = F.getTags(object)
 	local properties = F.getUsefulProperties(object, className)
+
+    if className == "Animator" and CONFIG.VisualCapture then
+        F.registerVisualAnimator(object)
+        F.captureAnimatorPlayback(object, "Snapshot")
+    end
 
 	if CONFIG.VisualCapture and F.isVisualAsset(object, className) then
 		if #visualSnapshotRecords < math.max(0, CONFIG.VisualMaxSnapshotEntries) then
@@ -5928,6 +6187,10 @@ function F.run()
 			DynamicCount = #visualDynamicRecords,
 			SnapshotOmitted = visualSnapshotOmitted,
 			DynamicOmitted = visualDynamicOmitted,
+            EssentialOverflowSaved = visualEssentialOverflowSaved,
+            AnimationPlaybackCount = #visualAnimationPlaybackRecords,
+            AnimationPlaybackOmitted = visualAnimationPlaybackOmitted,
+            TrackedAnimators = visualTrackedAnimatorCount,
 			Files = { VISUAL_ASSETS_FILE, RUNTIME_VISUAL_ASSETS_FILE }
 		},
 		RuntimeTrace = {
