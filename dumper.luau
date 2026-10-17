@@ -13,6 +13,7 @@ local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
 local STRUCTURE_FILE = OUTPUT_FOLDER .. "/structure.json"
 local INSTANCES_FILE = OUTPUT_FOLDER .. "/instances.json"
 local VISUAL_ASSETS_FILE = OUTPUT_FOLDER .. "/visual_assets.json"
+local GUI_FILE = OUTPUT_FOLDER .. "/gui.json"
 local RUNTIME_VISUAL_ASSETS_FILE = OUTPUT_FOLDER .. "/runtime_visual_assets.json"
 local REMOTES_FILE = OUTPUT_FOLDER .. "/remotes.json"
 local SCRIPTS_FILE = OUTPUT_FOLDER .. "/scripts.json"
@@ -26,6 +27,7 @@ local PLAYER_REFERENCES_FILE = OUTPUT_FOLDER .. "/player_references.json"
 local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
 local RUNTIME_FILES = {
 	Events = OUTPUT_FOLDER .. "/runtime_events.json",
+	Gui = OUTPUT_FOLDER .. "/runtime_gui.json",
 	EventsGame = OUTPUT_FOLDER .. "/runtime_events_game.json",
 	EventsReplicator = OUTPUT_FOLDER .. "/runtime_events_replicator.json",
 	EventsAnalytics = OUTPUT_FOLDER .. "/runtime_events_analytics.json",
@@ -52,6 +54,11 @@ local CONFIG = {
 	RuntimeTrace = true,
 	RuntimeTracePostSeconds = 90,
 	VisualCapture = true,
+	GuiCapture = true,
+	GuiMaxSnapshotEntries = 100000,
+	RuntimeTraceGui = true,
+	RuntimeMaxObservedGui = 10000,
+	RuntimeMaxGuiChanges = 20000,
 	VisualMaxSnapshotEntries = 60000,
 	VisualMaxDynamicEntries = 24000,
 	VisualEssentialOverflowEntries = 6000,
@@ -262,6 +269,16 @@ local runtimeHookState = {
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
 local snapshotFinalized = false
+local guiCapture = {
+    Snapshot = {},
+    Observed = setmetatable({}, { __mode = "k" }),
+    Records = {},
+    SnapshotOmitted = 0,
+    SnapshotSaved = 0,
+    ObservedCount = 0,
+    OmittedObservers = 0,
+    ObserverCapWarned = false
+}
 local visualSnapshotRecords = {}
 local visualDynamicRecords = {}
 local visualDynamicByInstance = setmetatable({}, { __mode = "k" })
@@ -840,6 +857,68 @@ serializeValue = function(value, state)
 		}
 	end
 
+    if valueType == "Vector2int16" or valueType == "Vector3int16" then
+        local result = {
+            __type = valueType,
+            x = value.X,
+            y = value.Y
+        }
+        if valueType == "Vector3int16" then result.z = value.Z end
+        return result
+    end
+
+    if valueType == "PhysicalProperties" then
+        return {
+            __type = "PhysicalProperties",
+            Density = F.serializeComponentNumber(value.Density),
+            Friction = F.serializeComponentNumber(value.Friction),
+            Elasticity = F.serializeComponentNumber(value.Elasticity),
+            FrictionWeight = F.serializeComponentNumber(value.FrictionWeight),
+            ElasticityWeight = F.serializeComponentNumber(value.ElasticityWeight)
+        }
+    end
+
+    if valueType == "Axes" then
+        return { __type = "Axes", X = value.X, Y = value.Y, Z = value.Z }
+    end
+
+    if valueType == "Faces" then
+        return {
+            __type = "Faces", Top = value.Top, Bottom = value.Bottom,
+            Left = value.Left, Right = value.Right,
+            Front = value.Front, Back = value.Back
+        }
+    end
+
+    if valueType == "DateTime" then
+        return { __type = "DateTime", UnixTimestampMillis = value.UnixTimestampMillis }
+    end
+
+    if valueType == "TweenInfo" then
+        return {
+            __type = "TweenInfo", Time = value.Time,
+            EasingStyle = serializeValue(value.EasingStyle),
+            EasingDirection = serializeValue(value.EasingDirection),
+            RepeatCount = value.RepeatCount,
+            Reverses = value.Reverses,
+            DelayTime = value.DelayTime
+        }
+    end
+
+    if valueType == "Region3" then
+        return {
+            __type = "Region3", CFrame = serializeValue(value.CFrame),
+            Size = serializeValue(value.Size)
+        }
+    end
+
+    if valueType == "Region3int16" then
+        return {
+            __type = "Region3int16", Min = serializeValue(value.Min),
+            Max = serializeValue(value.Max)
+        }
+    end
+
 	if valueType == "Vector3" then
 		return {
 			__type = "Vector3",
@@ -1231,6 +1310,196 @@ local PROPERTY_GROUPS = {
 	}
 }
 
+-- Optional properties are always read under pcall.  Unsupported, protected and
+-- newer engine properties are omitted without treating a version difference as
+-- an error.  Existing property maps and output field names stay unchanged.
+local GUI_CLASSES = {
+    ScreenGui = true, BillboardGui = true, SurfaceGui = true, Frame = true,
+    CanvasGroup = true, ScrollingFrame = true, TextLabel = true,
+    TextButton = true, TextBox = true, ImageLabel = true, ImageButton = true,
+    VideoFrame = true, ViewportFrame = true, UIListLayout = true,
+    UIGridLayout = true, UITableLayout = true, UIPageLayout = true,
+    UIAspectRatioConstraint = true, UISizeConstraint = true,
+    UITextSizeConstraint = true, UIPadding = true, UIScale = true,
+    UICorner = true, UIStroke = true, UIGradient = true, UIFlexItem = true,
+    UIGridStyleLayout = true, UIComponent = true, LocalizationTable = true
+}
+
+local TEXT_GUI_CLASSES = {
+    TextLabel = true, TextButton = true, TextBox = true
+}
+
+local GUI_PROPERTY_GROUPS = {
+    GuiObject = {
+        "Visible", "Active", "Interactable", "Selectable", "SelectionOrder",
+        "SelectionImageObject", "NextSelectionUp", "NextSelectionDown",
+        "NextSelectionLeft", "NextSelectionRight", "Position", "Size",
+        "AnchorPoint", "Rotation", "AutomaticSize", "SizeConstraint",
+        "BackgroundColor3", "BackgroundTransparency", "BorderColor3",
+        "BorderSizePixel", "BorderMode", "ClipsDescendants", "LayoutOrder",
+        "ZIndex", "AbsolutePosition", "AbsoluteSize", "AbsoluteRotation",
+        "AutoLocalize", "RootLocalizationTable"
+    },
+    GuiButton = { "AutoButtonColor", "Modal", "Selected", "Style" },
+    Text = {
+        "Text", "ContentText", "LocalizedText", "RichText", "Font",
+        "FontFace", "TextSize", "TextScaled", "TextWrapped", "TextTruncate",
+        "TextXAlignment", "TextYAlignment", "TextColor3", "TextTransparency",
+        "TextStrokeColor3", "TextStrokeTransparency", "LineHeight",
+        "MaxVisibleGraphemes", "TextDirection", "TextBounds", "TextFits"
+    },
+    Image = {
+        "Image", "ImageColor3", "ImageTransparency", "ImageRectOffset",
+        "ImageRectSize", "ScaleType", "SliceCenter", "SliceScale", "TileSize",
+        "ResampleMode", "IsLoaded", "ContentImageSize"
+    }
+}
+
+local EXTRA_CLASS_PROPERTIES = {
+    ScreenGui = { "Enabled", "DisplayOrder", "IgnoreGuiInset", "ResetOnSpawn", "ZIndexBehavior", "ScreenInsets", "ClipToDeviceSafeArea", "SafeAreaCompatibility", "OnTopOfCoreBlur" },
+    BillboardGui = { "Enabled", "Adornee", "AlwaysOnTop", "Brightness", "LightInfluence", "MaxDistance", "Size", "SizeOffset", "StudsOffset", "StudsOffsetWorldSpace", "ExtentsOffset", "ExtentsOffsetWorldSpace", "PlayerToHideFrom", "ClipsDescendants", "Active", "ZIndexBehavior", "ResetOnSpawn" },
+    SurfaceGui = { "Enabled", "Adornee", "AlwaysOnTop", "Brightness", "LightInfluence", "CanvasSize", "Face", "PixelsPerStud", "PixelsPerStuds", "SizingMode", "ZOffset", "ToolPunchThroughDistance", "Active", "ZIndexBehavior", "ResetOnSpawn" },
+    Frame = { "Style" },
+    CanvasGroup = { "GroupColor3", "GroupTransparency", "ResolutionScale" },
+    ScrollingFrame = { "CanvasPosition", "CanvasSize", "AbsoluteCanvasSize", "AutomaticCanvasSize", "ScrollingDirection", "ScrollingEnabled", "ScrollBarThickness", "ScrollBarImageColor3", "ScrollBarImageTransparency", "VerticalScrollBarInset", "HorizontalScrollBarInset", "ElasticBehavior", "TopImage", "MidImage", "BottomImage" },
+    TextBox = { "PlaceholderText", "PlaceholderColor3", "ClearTextOnFocus", "MultiLine", "TextEditable", "ShowNativeInput", "CursorPosition", "SelectionStart", "TextInputType", "ReturnKeyType" },
+    ImageButton = { "HoverImage", "PressedImage" },
+    ViewportFrame = { "CurrentCamera", "Ambient", "LightColor", "LightDirection", "ImageColor3", "ImageTransparency", "IsMirrored" },
+    VideoFrame = { "Video", "Looped", "Playing", "Volume", "TimePosition", "TimeLength", "IsLoaded", "ResampleMode" },
+    UIListLayout = { "Padding", "FillDirection", "HorizontalAlignment", "VerticalAlignment", "SortOrder", "Wraps", "HorizontalFlex", "VerticalFlex", "ItemLineAlignment", "AbsoluteContentSize" },
+    UIGridLayout = { "CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells", "HorizontalAlignment", "VerticalAlignment", "SortOrder", "StartCorner", "AbsoluteContentSize" },
+    UITableLayout = { "FillEmptySpaceColumns", "FillEmptySpaceRows", "MajorAxis", "Padding", "AbsoluteContentSize" },
+    UIPageLayout = { "CurrentPage", "EasingDirection", "EasingStyle", "GamepadInputEnabled", "ScrollWheelInputEnabled", "TouchInputEnabled", "TweenTime", "Circular", "Padding", "Animated", "AbsoluteContentSize" },
+    UIAspectRatioConstraint = { "AspectRatio", "AspectType", "DominantAxis" },
+    UISizeConstraint = { "MinSize", "MaxSize" },
+    UITextSizeConstraint = { "MinTextSize", "MaxTextSize" },
+    UIPadding = { "PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop" },
+    UIScale = { "Scale" },
+    UICorner = { "CornerRadius" },
+    UIStroke = { "ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency", "StrokeSizingMode" },
+    UIGradient = { "Color", "Transparency", "Rotation", "Offset", "Enabled" },
+    UIFlexItem = { "FlexMode", "GrowRatio", "ShrinkRatio", "ItemLineAlignment" },
+    UIGridStyleLayout = { "AbsoluteContentSize", "FillDirection", "HorizontalAlignment", "VerticalAlignment", "SortOrder" },
+    LocalizationTable = { "SourceLocale", "Root", "DevelopmentLanguage" },
+    Player = { "DisplayName", "UserId", "AccountAge", "Character", "CharacterAppearanceId", "Team", "TeamColor", "Neutral", "CameraMode", "CameraMaxZoomDistance", "CameraMinZoomDistance", "AutoJumpEnabled", "DevComputerMovementMode", "DevTouchMovementMode", "MembershipType", "FollowUserId", "HasVerifiedBadge" },
+    Team = { "TeamColor", "AutoAssignable" },
+    Camera = { "CFrame", "Focus", "CameraSubject", "CameraType", "FieldOfView", "FieldOfViewMode", "DiagonalFieldOfView", "MaxAxisFieldOfView", "ViewportSize", "HeadLocked", "HeadScale", "NearPlaneZ" },
+    Lighting = { "Ambient", "OutdoorAmbient", "Brightness", "ClockTime", "TimeOfDay", "FogColor", "FogStart", "FogEnd", "GlobalShadows", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale", "ShadowSoftness", "GeographicLatitude", "Technology", "ColorShift_Top", "ColorShift_Bottom" },
+    Workspace = { "CurrentCamera", "Gravity", "FallenPartsDestroyHeight", "StreamingEnabled", "StreamingMinRadius", "StreamingTargetRadius", "StreamingIntegrityMode", "GlobalWind", "DistributedGameTime", "Terrain", "AirDensity", "Retargeting" },
+    Terrain = { "WaterColor", "WaterReflectance", "WaterTransparency", "WaterWaveSize", "WaterWaveSpeed", "Decoration", "MaterialColors" },
+    Sky = { "SkyboxBk", "SkyboxDn", "SkyboxFt", "SkyboxLf", "SkyboxRt", "SkyboxUp", "SunTextureId", "MoonTextureId", "SunAngularSize", "MoonAngularSize", "StarCount", "CelestialBodiesShown" },
+    Atmosphere = { "Color", "Decay", "Density", "Glare", "Haze", "Offset" },
+    Clouds = { "Color", "Cover", "Density", "Enabled" },
+    BloomEffect = { "Enabled", "Intensity", "Size", "Threshold" },
+    BlurEffect = { "Enabled", "Size" },
+    ColorCorrectionEffect = { "Enabled", "Brightness", "Contrast", "Saturation", "TintColor" },
+    DepthOfFieldEffect = { "Enabled", "FarIntensity", "FocusDistance", "InFocusRadius", "NearIntensity" },
+    SunRaysEffect = { "Enabled", "Intensity", "Spread" },
+    Highlight = { "Adornee", "Enabled", "DepthMode", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency" },
+    ProximityPrompt = { "ActionText", "ObjectText", "Enabled", "Exclusivity", "Style", "HoldDuration", "MaxActivationDistance", "RequiresLineOfSight", "ClickablePrompt", "KeyboardKeyCode", "GamepadKeyCode", "UIOffset" },
+    ClickDetector = { "MaxActivationDistance", "CursorIcon" },
+    DragDetector = { "ActivatedCursorIcon", "CursorIcon", "DragStyle", "ResponseStyle", "RunLocally", "Enabled", "MaxActivationDistance", "ReferenceInstance" },
+    Humanoid = { "DisplayName", "DisplayDistanceType", "HealthDisplayType", "NameDisplayDistance", "HealthDisplayDistance", "HipHeight", "AutoRotate", "PlatformStand", "Sit", "SeatPart", "MoveDirection", "Jump", "JumpHeight", "UseJumpPower", "FloorMaterial", "BreakJointsOnDeath", "RequiresNeck", "MaxSlopeAngle", "WalkToPoint", "WalkToPart" },
+    Sound = { "Playing", "IsPlaying", "TimePosition", "TimeLength", "RollOffMode", "RollOffMinDistance", "RollOffMaxDistance", "EmitterSize", "SoundGroup", "PlayOnRemove", "PlaybackRegionsEnabled", "PlaybackRegion", "LoopRegion" },
+    AnimationTrack = { "Animation", "IsPlaying", "TimePosition", "Length", "Looped", "Priority", "Speed", "WeightCurrent", "WeightTarget" },
+    Tool = { "GripForward", "GripPos", "GripRight", "GripUp", "ManualActivationOnly" },
+    Seat = { "Occupant", "Disabled" },
+    VehicleSeat = { "Occupant", "Disabled", "Throttle", "Steer", "MaxSpeed", "Torque", "TurnSpeed" },
+    SpawnLocation = { "Enabled", "AllowTeamChangeOnTouch", "Neutral", "TeamColor", "Duration" },
+    TextChatCommand = { "PrimaryAlias", "SecondaryAlias", "Enabled", "AutocompleteVisible" },
+    TextChannel = { "DisplayName", "DirectChatRequester", "ShouldDeliverCallback" },
+    TextChatService = { "ChatVersion", "CreateDefaultTextChannels", "CreateDefaultCommands", "BubbleChatConfiguration", "ChatWindowConfiguration", "ChatInputBarConfiguration" },
+    Model = { "PrimaryPart", "WorldPivot", "LevelOfDetail", "ModelStreamingMode", "Scale" },
+    Accessory = { "AccessoryType", "AttachmentPoint" },
+    Shirt = { "ShirtTemplate", "Color3" },
+    Pants = { "PantsTemplate", "Color3" },
+    ShirtGraphic = { "Graphic", "Color3" },
+    CharacterMesh = { "BodyPart", "BaseTextureId", "OverlayTextureId", "MeshId" },
+    BodyColors = { "HeadColor3", "LeftArmColor3", "LeftLegColor3", "RightArmColor3", "RightLegColor3", "TorsoColor3" },
+    HumanoidDescription = {
+        "Head", "Torso", "LeftArm", "RightArm", "LeftLeg", "RightLeg",
+        "Face", "Shirt", "Pants", "GraphicTShirt", "HairAccessory",
+        "HatAccessory", "FaceAccessory", "NeckAccessory", "ShouldersAccessory",
+        "FrontAccessory", "BackAccessory", "WaistAccessory", "EyebrowAccessory",
+        "EyelashAccessory", "HeadColor", "TorsoColor", "LeftArmColor",
+        "RightArmColor", "LeftLegColor", "RightLegColor", "HeightScale",
+        "WidthScale", "DepthScale", "HeadScale", "BodyTypeScale", "ProportionScale",
+        "IdleAnimation", "WalkAnimation", "RunAnimation", "JumpAnimation",
+        "FallAnimation", "ClimbAnimation", "SwimAnimation", "MoodAnimation"
+    },
+    SpecialMesh = { "MeshId", "TextureId", "MeshType", "Scale", "Offset", "VertexColor" },
+    SurfaceAppearance = { "ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap", "AlphaMode", "AlphaCutoff", "Color" },
+    WrapLayer = { "ReferenceMeshId", "CageMeshId", "Order", "Puffiness", "AutoSkin" },
+    WrapTarget = { "CageMeshId", "Stiffness" },
+    Part = { "Shape", "TopSurface", "BottomSurface", "LeftSurface", "RightSurface", "FrontSurface", "BackSurface" },
+    MeshPart = { "MeshId", "TextureID", "DoubleSided", "RenderFidelity", "CollisionFidelity" },
+    PathfindingModifier = { "Label", "PassThrough" },
+    PathfindingLink = { "Attachment0", "Attachment1", "Label", "IsBidirectional" },
+    BodyGyro = { "CFrame", "MaxTorque", "P", "D" },
+    BodyPosition = { "Position", "MaxForce", "P", "D" },
+    BodyVelocity = { "Velocity", "MaxForce", "P" },
+    BodyAngularVelocity = { "AngularVelocity", "MaxTorque", "P" },
+    BodyForce = { "Force" },
+    BodyThrust = { "Force", "Location" },
+    Vector3Value = {},
+    StringValue = {},
+    IntValue = {},
+    NumberValue = {}
+}
+
+local EXTENDED_BASEPART_PROPERTIES = {
+    "AssemblyLinearVelocity", "AssemblyAngularVelocity", "AssemblyMass",
+    "AssemblyCenterOfMass", "Massless", "CollisionGroup", "CastShadow",
+    "Reflectance", "MaterialVariant", "CustomPhysicalProperties", "RootPriority",
+    "PivotOffset", "LocalTransparencyModifier", "Locked", "Shape",
+    "TopSurface", "BottomSurface", "Velocity", "RotVelocity"
+}
+
+function F.captureExtendedProperties(object, output, className)
+    local function capture(properties)
+        if not properties then return end
+        for _, property in ipairs(properties) do
+            F.captureOptionalVisualProperty(object, output, property)
+        end
+    end
+
+    if GUI_CLASSES[className] then
+        if F.safeIsA(object, "GuiObject") then
+            capture(GUI_PROPERTY_GROUPS.GuiObject)
+        end
+        if className == "TextButton" or className == "ImageButton" then
+            capture(GUI_PROPERTY_GROUPS.GuiButton)
+        end
+        if TEXT_GUI_CLASSES[className] then
+            capture(GUI_PROPERTY_GROUPS.Text)
+        end
+        if className == "ImageLabel" or className == "ImageButton" then
+            capture(GUI_PROPERTY_GROUPS.Image)
+        end
+        if F.safeIsA(object, "UIListLayout") or F.safeIsA(object, "UIGridStyleLayout") then
+            capture(EXTRA_CLASS_PROPERTIES.UIGridStyleLayout)
+        end
+    end
+
+    if F.safeIsA(object, "BasePart") then
+        capture(EXTENDED_BASEPART_PROPERTIES)
+    end
+    capture(EXTRA_CLASS_PROPERTIES[className])
+
+    if className == "LocalizationTable" then
+        local ok, entries = pcall(function() return object:GetEntries() end)
+        if ok and type(entries) == "table" then
+            local count = #entries
+            -- All entries are preserved; avoid indexing an inaccessible table.
+            local success, serialized = pcall(serializeValue, entries)
+            if success then
+                output.Entries = serialized
+                output.EntryCount = count
+            end
+        end
+    end
+end
+
 -- Resource catalog based exclusively on Roblox class types. No names, effect
 -- folders, asset IDs or game-specific paths are hardcoded.
 local VISUAL_CLASSES = {
@@ -1249,7 +1518,13 @@ local VISUAL_CLASSES = {
     TremoloSoundEffect = true,
     Model = true, Folder = true, Tool = true, Accessory = true,
     BillboardGui = true, SurfaceGui = true, ScreenGui = true,
-    ImageLabel = true, ImageButton = true, UIGradient = true,
+    ImageLabel = true, ImageButton = true, TextLabel = true, TextButton = true,
+    TextBox = true, Frame = true, CanvasGroup = true, ScrollingFrame = true,
+    VideoFrame = true, ViewportFrame = true, UIListLayout = true,
+    UIGridLayout = true, UITableLayout = true, UIPageLayout = true,
+    UIAspectRatioConstraint = true, UISizeConstraint = true,
+    UITextSizeConstraint = true, UIPadding = true, UIScale = true,
+    UIFlexItem = true, UIGradient = true,
     UICorner = true, UIStroke = true,
     Animation = true, Animator = true, AnimationController = true,
     AnimationConstraint = true, KeyframeSequence = true, Keyframe = true,
@@ -1718,6 +1993,7 @@ function F.getUsefulProperties(object, className)
 		end
 	end
 
+	F.captureExtendedProperties(object, data, className)
 	F.addVisualProperties(object, data, className)
 
 	if REMOTE_BUCKETS[className] then
@@ -1729,6 +2005,94 @@ function F.getUsefulProperties(object, className)
 	end
 
 	return data
+end
+
+function F.makeGuiRecord(object, id, parentId, name, className, path, properties)
+    return {
+        Id = id,
+        ParentId = parentId,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        Properties = F.optionalMap(properties)
+    }
+end
+
+function F.captureSnapshotGui(object, id, parentId, name, className, path, properties)
+    if not CONFIG.GuiCapture or not GUI_CLASSES[className] then return end
+    if #guiCapture.Snapshot >= CONFIG.GuiMaxSnapshotEntries then
+        guiCapture.SnapshotOmitted = guiCapture.SnapshotOmitted + 1
+        return
+    end
+    guiCapture.Snapshot[#guiCapture.Snapshot + 1] = F.makeGuiRecord(
+        object, id, parentId, name, className, path, properties
+    )
+    guiCapture.SnapshotSaved = guiCapture.SnapshotSaved + 1
+end
+
+local LIVE_GUI_FIELDS = {
+    Text = true, ContentText = true, PlaceholderText = true,
+    Visible = true, Enabled = true, Image = true, Video = true,
+    DisplayName = true, Adornee = true
+}
+
+function F.appendGuiRuntimeRecord(object, eventName, property)
+    if not runtimeTraceActive or not CONFIG.RuntimeTraceGui then return end
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Event = eventName,
+        Id = instanceIds[object],
+        Name = F.safeName(object),
+        ClassName = F.safeClassName(object),
+        Path = F.safeFullName(object)
+    }
+    if property then
+        local value, readable = F.safeGet(object, property)
+        if not readable then return end
+        record.Property = property
+        record.IsNil = value == nil
+        if value ~= nil then record.Value = F.serializeRuntimeValue(value) end
+    else
+        record.Properties = F.getUsefulProperties(object, record.ClassName)
+    end
+    guiCapture.Records[#guiCapture.Records + 1] = record
+    F.maybeFlushRuntimeTrace()
+end
+
+function F.watchRuntimeGui(object, eventName)
+    if not CONFIG.RuntimeTraceGui or not runtimeTraceActive then return end
+    local className = F.safeClassName(object)
+    if not GUI_CLASSES[className] then return end
+
+    local tracked = guiCapture.Observed[object]
+    if not tracked then
+        if guiCapture.ObservedCount >= CONFIG.RuntimeMaxObservedGui then
+            guiCapture.OmittedObservers = guiCapture.OmittedObservers + 1
+            if not guiCapture.ObserverCapWarned then
+                guiCapture.ObserverCapWarned = true
+                F.recordWarning("RuntimeGuiObserverCap", object, "GUI observer cap reached")
+            end
+            return
+        end
+        guiCapture.Observed[object] = true
+        guiCapture.ObservedCount = guiCapture.ObservedCount + 1
+        local ok, connection = pcall(function()
+            return object.Changed:Connect(function(property)
+                if runtimeTraceActive and LIVE_GUI_FIELDS[property] then
+                    F.appendGuiRuntimeRecord(object, "Changed", property)
+                end
+            end)
+        end)
+        if ok and connection then
+            table.insert(runtimeConnections, connection)
+        else
+            guiCapture.Observed[object] = nil
+            guiCapture.ObservedCount = guiCapture.ObservedCount - 1
+        end
+    end
+    if eventName then
+        F.appendGuiRuntimeRecord(object, eventName)
+    end
 end
 
 function F.registerAttributes(id, name, className, path, attributes)
@@ -1958,13 +2322,30 @@ function F.scanValueForPlayerReferences(objectId, field, value)
 
 	for _, descriptor in ipairs(playerDescriptors) do
 		if valueType == "string" then
-			if value == descriptor.Name then
-				F.addPlayerReference(descriptor, objectId, field, "Username", value)
-			elseif descriptor.DisplayName ~= descriptor.Name and value == descriptor.DisplayName then
-				F.addPlayerReference(descriptor, objectId, field, "DisplayName", value)
-			elseif value == tostring(descriptor.UserId) then
-				F.addPlayerReference(descriptor, objectId, field, "UserIdString", value)
-			end
+            local lowered = string.lower(value)
+            local username = string.lower(descriptor.Name)
+            local displayName = string.lower(descriptor.DisplayName)
+            local userIdString = tostring(descriptor.UserId)
+            if value == descriptor.Name then
+                F.addPlayerReference(descriptor, objectId, field, "Username", value)
+            elseif #username > 0 and string.find(lowered, username, 1, true) then
+                F.addPlayerReference(descriptor, objectId, field, "UsernameContained", value)
+            end
+            if descriptor.DisplayName ~= descriptor.Name and #displayName >= 3 then
+                if value == descriptor.DisplayName then
+                    F.addPlayerReference(descriptor, objectId, field, "DisplayName", value)
+                elseif string.find(lowered, displayName, 1, true) then
+                    F.addPlayerReference(descriptor, objectId, field, "DisplayNameContained", value)
+                end
+            end
+            if value == userIdString then
+                F.addPlayerReference(descriptor, objectId, field, "UserIdString", value)
+            elseif #userIdString >= 6 and string.find(value, userIdString, 1, true)
+                and not string.find(string.lower(field), "image", 1, true)
+                and not string.find(string.lower(field), "texture", 1, true)
+            then
+                F.addPlayerReference(descriptor, objectId, field, "UserIdContained", value)
+            end
 		elseif valueType == "number" and value == descriptor.UserId then
 			F.addPlayerReference(descriptor, objectId, field, "UserIdNumber", value)
 		elseif valueType == "Instance" then
@@ -2228,6 +2609,7 @@ function F.pruneRuntimeCaches(force)
 	F.trimRuntimeArray(runtimeAttributeRecords, CONFIG.RuntimeMaxAttributeChanges, cutoff)
 	F.trimRuntimeArray(runtimeCharacterRecords, CONFIG.RuntimeMaxCharacterRecords, cutoff)
 	F.trimRuntimeArray(runtimeLogRecords, CONFIG.RuntimeMaxLogRecords, cutoff)
+    F.trimRuntimeArray(guiCapture.Records, CONFIG.RuntimeMaxGuiChanges, cutoff)
 	F.trimRuntimeArray(runtimeTimelineRecords, CONFIG.RuntimeMaxTimelineRecords, cutoff)
 	F.trimRuntimeArray(runtimeErrorRecords, 256, cutoff)
 	F.trimRuntimeArray(
@@ -3877,6 +4259,7 @@ function F.primeRuntimeObservers()
 			if F.safeIsA(object, "ValueBase") then
 				F.watchRuntimeValue(object, instanceIds[object], name, className, path)
 			end
+            F.watchRuntimeGui(object)
 
 			local descendantsOk, children = pcall(function()
 				return object:GetChildren()
@@ -3925,12 +4308,17 @@ function F.startRuntimeTrace()
 		F.checkRuntimeHookIntegrity(true, "AfterDumperNamecallHook")
 	end
 
-	if CONFIG.RuntimeTraceDynamicRemotes then
+	if CONFIG.RuntimeTraceDynamicRemotes or CONFIG.RuntimeTraceGui then
 		local ok, connection = pcall(function()
 			return game.DescendantAdded:Connect(function(object)
 				if not runtimeTraceActive then
 					return
 				end
+
+                -- Snapshot short-lived notifications before they are removed.
+                if CONFIG.RuntimeTraceGui and GUI_CLASSES[F.safeClassName(object)] then
+                    F.watchRuntimeGui(object, "Added")
+                end
 
 				task.defer(function()
 					if not runtimeTraceActive or not object or not object.Parent then
@@ -3941,9 +4329,11 @@ function F.startRuntimeTrace()
 					local name = F.safeName(object)
 					local path = F.safeFullName(object)
 
-					if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
-						F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
-					end
+                    if CONFIG.RuntimeTraceDynamicRemotes
+                        and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
+                    then
+                        F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
+                    end
 
 					if CONFIG.RuntimeTraceToolAttributes
 						or CONFIG.RuntimeTraceInterestingAttributes
@@ -3971,6 +4361,19 @@ function F.startRuntimeTrace()
 			F.recordWarning("RuntimeDynamicTrace", nil, connection)
 		end
 	end
+
+    if CONFIG.RuntimeTraceGui then
+        local ok, connection = pcall(function()
+            return game.DescendantRemoving:Connect(function(object)
+                if guiCapture.Observed[object] and runtimeTraceActive then
+                    F.appendGuiRuntimeRecord(object, "Removing")
+                end
+            end)
+        end)
+        if ok and connection then
+            table.insert(runtimeConnections, connection)
+        end
+    end
 
 	if CONFIG.VisualCapture then
 		local visualOk, visualConnection = pcall(function()
@@ -4297,12 +4700,19 @@ dumpNode = function(object, parentId, context)
 	end
 
 	F.registerAttributes(id, name, className, path, attributes)
+	F.captureSnapshotGui(object, id, parentId, name, className, path, properties)
 	F.registerRemote(object, id, name, className, parentId, path, attributes, tags)
 	F.registerScript(object, id, name, className, parentId, path, properties)
 	F.registerValue(object, id, name, className, parentId, path, attributes, tags)
 	F.registerToolDescendant(parentToolState, object, id, className, name)
 
 	F.scanAttributesForPlayerReferences(id, attributes)
+    F.scanValueForPlayerReferences(id, "Name", name)
+    for property, value in pairs(properties) do
+        if type(value) == "string" then
+            F.scanValueForPlayerReferences(id, "Property:" .. property, value)
+        end
+    end
 	if F.safeIsA(object, "ValueBase") then
 		local rawValue, readable = F.safeGet(object, "Value")
 		if readable then
@@ -4313,6 +4723,7 @@ dumpNode = function(object, parentId, context)
 	F.watchRuntimeRemote(object, id, name, className, path)
 	F.watchRuntimeAttributes(object, id, name, className, path, attributes)
 	F.watchRuntimeValue(object, id, name, className, path)
+    F.watchRuntimeGui(object)
 
 	local currentToolState = parentToolState
 	if className == "Tool" or F.safeIsA(object, "Tool") then
@@ -4796,6 +5207,8 @@ function F.buildSummary(elapsed, pathStats)
 		"ModuleScripts decompile skipped: " .. tostring(moduleDecompileStats.Skipped),
 		"Objects With Attributes: " .. tostring(#attributeIndex),
 		"ValueBase Records: " .. tostring(#valueRecords),
+        "GUI Elements: " .. tostring(guiCapture.SnapshotSaved),
+        "GUI Snapshot Omitted: " .. tostring(guiCapture.SnapshotOmitted),
 		"Player References: " .. tostring(#playerReferences),
 		"Tools: " .. tostring(#toolRecords),
 		"Duplicate Path Groups: " .. tostring(pathStats.DuplicatePathGroups),
@@ -4815,6 +5228,7 @@ function F.buildSummary(elapsed, pathStats)
 		"  Other: " .. tostring(#runtimeEventCategoryRecords.Other),
 		"Runtime Value Changes: " .. tostring(#runtimeValueRecords),
 		"Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
+        "Runtime GUI Changes: " .. tostring(#guiCapture.Records),
 		"Runtime Character Records: " .. tostring(#runtimeCharacterRecords),
 		"Runtime Log Records: " .. tostring(#runtimeLogRecords),
 		"Runtime Timeline Records: " .. tostring(#runtimeTimelineRecords),
@@ -5703,6 +6117,13 @@ function F.backfillRuntimeIds()
 		end
 	end
 
+    for _, record in ipairs(guiCapture.Records) do
+        if record.Id == nil then
+            local path = record.Path
+            if path and not duplicatePaths[path] then record.Id = pathToId[path] end
+        end
+    end
+
 	for _, record in ipairs(runtimeValueRecords) do
 		if record.Id == nil then
 			local path = record.Path or record.SnapshotPath
@@ -5903,6 +6324,11 @@ flushRuntimeTrace = function()
 			F.encodeJSON(F.buildVisualDocument(visualDynamicRecords, true), "runtime_visual_assets.json")
 		)
 	end
+    F.writeSafe(RUNTIME_FILES.Gui, F.encodeJSON({
+        DumpId = currentDumpId, Enabled = CONFIG.RuntimeTraceGui,
+        RollingWindow = true, WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        Total = #guiCapture.Records, Changes = guiCapture.Records
+    }, "runtime_gui.json"))
 	F.writeSafe(RUNTIME_FILES.Values, F.encodeJSON(valuesDocument, "runtime_values.json"))
 	F.writeSafe(RUNTIME_FILES.Attributes, F.encodeJSON(attributesDocument, "runtime_attributes.json"))
 	F.writeSafe(RUNTIME_FILES.Character, F.encodeJSON(characterDocument, "runtime_character.json"))
@@ -6072,6 +6498,14 @@ function F.run()
 	)
 	table.clear(visualSnapshotRecords)
 
+    checkpointStage("write_gui_index")
+    F.writeJSONDocument(GUI_FILE, {
+        Total = #guiCapture.Snapshot,
+        Omitted = guiCapture.SnapshotOmitted,
+        Elements = guiCapture.Snapshot
+    }, "gui.json", writtenFiles, true)
+    table.clear(guiCapture.Snapshot)
+
 	checkpointStage("write_structure_json")
 	F.writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
 	root = nil
@@ -6177,6 +6611,20 @@ function F.run()
 		Other = #runtimeEventCategoryRecords.Other
 	}
 	runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
+
+    F.writeJSONDocument(RUNTIME_FILES.Gui, {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceGui,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Observed = guiCapture.ObservedCount,
+        ObserverOmissions = guiCapture.OmittedObservers,
+        Total = #guiCapture.Records,
+        Changes = guiCapture.Records
+    }, "runtime_gui.json", writtenFiles, false)
 
 	local runtimeValuesDocument = {
 		DumpId = currentDumpId,
@@ -6406,6 +6854,8 @@ function F.run()
 			ModuleScriptsDecompileSkipped = moduleDecompileStats.Skipped,
 			ObjectsWithAttributes = #attributeIndex,
 			ValueBaseRecords = #valueRecords,
+            GuiElements = guiCapture.SnapshotSaved,
+            GuiSnapshotOmitted = guiCapture.SnapshotOmitted,
 			PlayerReferences = #playerReferences,
 			Tools = #toolRecords,
 			DuplicatePathGroups = pathStats.DuplicatePathGroups,
@@ -6437,6 +6887,16 @@ function F.run()
 			OutputFolder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER,
 			Stats = moduleDecompileStats
 		},
+        GuiCapture = {
+            Enabled = CONFIG.GuiCapture,
+            SnapshotCount = guiCapture.SnapshotSaved,
+            SnapshotOmitted = guiCapture.SnapshotOmitted,
+            RuntimeTraceEnabled = CONFIG.RuntimeTraceGui,
+            ObservedObjects = guiCapture.ObservedCount,
+            ObserverOmissions = guiCapture.OmittedObservers,
+            RuntimeChanges = #guiCapture.Records,
+            Files = { GUI_FILE, RUNTIME_FILES.Gui }
+        },
 		VisualCapture = {
 			Enabled = CONFIG.VisualCapture,
 			SnapshotCount = visualSnapshotSaved,
@@ -6473,6 +6933,9 @@ function F.run()
 			TraceCharacter = CONFIG.RuntimeTraceCharacter,
 			CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
 			CaptureLogs = CONFIG.RuntimeCaptureLogs,
+            TraceGui = CONFIG.RuntimeTraceGui,
+            MaxObservedGui = CONFIG.RuntimeMaxObservedGui,
+            MaxGuiChanges = CONFIG.RuntimeMaxGuiChanges,
 			MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
 			TraceHookDiagnostics = CONFIG.RuntimeTraceHookDiagnostics,
 			HookIntegrityInterval = CONFIG.RuntimeHookIntegrityInterval,
@@ -6504,6 +6967,7 @@ function F.run()
 				ValueChanges = #runtimeValueRecords,
 				AttributeChanges = #runtimeAttributeRecords,
 				CharacterRecords = #runtimeCharacterRecords,
+                GuiChanges = #guiCapture.Records,
 				LogRecords = #runtimeLogRecords,
 				TimelineRecords = #runtimeTimelineRecords,
 				ErrorMessages = #runtimeErrorRecords,
@@ -6552,7 +7016,9 @@ function F.run()
 		Stats = {
 			Instances = instanceCount,
 			DescendantInstances = nodeCount,
-			RegisteredIds = nextInstanceId,
+            RegisteredIds = nextInstanceId,
+            GuiElements = guiCapture.SnapshotSaved,
+            GuiChanges = #guiCapture.Records,
 			LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
 			LocalScriptsDecompiled = clientDecompileStats.Succeeded,
 			LocalScriptsDecompileFailed = clientDecompileStats.Failed,
@@ -6579,6 +7045,7 @@ function F.run()
 			ValueChanges = #runtimeValueRecords,
 			AttributeChanges = #runtimeAttributeRecords,
 			CharacterRecords = #runtimeCharacterRecords,
+            GuiChanges = #guiCapture.Records,
 			LogRecords = #runtimeLogRecords,
 			TimelineRecords = #runtimeTimelineRecords,
 			ErrorMessages = #runtimeErrorRecords,
@@ -6612,6 +7079,9 @@ function F.run()
 	print("Module decompile time:", string.format("%.2fs", moduleDecompileStats.ElapsedSeconds))
 	print("Attributes:", #attributeIndex)
 	print("Values:", #valueRecords)
+    print("GUI elements captured:", guiCapture.SnapshotSaved)
+    print("GUI entries omitted by snapshot cap:", guiCapture.SnapshotOmitted)
+    print("GUI dynamic changes:", #guiCapture.Records)
 	print("Player references:", #playerReferences)
 	print("Visual assets in snapshot:", visualSnapshotSaved)
 	print("Visual assets seen during runtime:", #visualDynamicRecords)
