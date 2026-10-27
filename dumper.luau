@@ -6,7 +6,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.4
+local SCHEMA_VERSION = 3.5
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -44,6 +44,14 @@ local RUNTIME_FILES = {
 local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
 local WARNINGS_FILE = OUTPUT_FOLDER .. "/warnings.json"
+local DIAGNOSTICS_FILE = OUTPUT_FOLDER .. "/diagnostics.json"
+local CRASH_FILE = OUTPUT_FOLDER .. "/crash_report.json"
+local PREVIOUS_RUN_FILE = OUTPUT_FOLDER .. "/previous_run_interrupted.json"
+local RECOVERY_FOLDER = OUTPUT_FOLDER .. "/recovery"
+local TAGS_FILE = OUTPUT_FOLDER .. "/tags.json"
+local INTERACTIONS_FILE = OUTPUT_FOLDER .. "/interactions.json"
+local PHYSICS_FILE = OUTPUT_FOLDER .. "/physics.json"
+local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
 local CLIENT_SOURCES_FOLDER = OUTPUT_FOLDER .. "/localscripts"
 
@@ -51,6 +59,15 @@ local YIELD_EVERY = 100
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
+	RecoveryEnabled = true,
+	RecoveryFlushSeconds = 2,
+	RecoverySnapshotBatch = 400,
+	RecoveryRuntimeBatch = 120,
+	RecoveryIssueBatch = 80,
+	DiagnosticsIntervalSeconds = 2,
+	MaxInteractionRecords = 20000,
+	MaxPhysicsRecords = 20000,
+	MaxTagRecords = 30000,
 	RuntimeTrace = true,
 	RuntimeTracePostSeconds = 90,
 	VisualCapture = true,
@@ -75,7 +92,7 @@ local CONFIG = {
 	RuntimeTraceInterestingAttributes = true,
 	RuntimeTraceAllValues = true,
 	RuntimeCaptureCaller = true,
-	RuntimeCaptureCallerStack = true,
+	RuntimeCaptureCallerStack = false,
 	RuntimeCallerStackDepth = 10,
 	RuntimeCaptureInvokeReturns = true,
 	RuntimeCaptureBuffers = true,
@@ -87,14 +104,10 @@ local CONFIG = {
 	RuntimeMaxCharacterRecords = 10000,
 	RuntimeCaptureLogs = true,
 	RuntimeMaxLogRecords = 5000,
-	RuntimeTraceHookDiagnostics = true,
+	RuntimeTraceHookDiagnostics = false,
 	RuntimeHookIntegrityInterval = 0.20,
 	RuntimeMaxHookRecords = 12000,
 	RuntimeMaxHookIntegrityRecords = 4000,
-	RuntimeHookRaySignatureMagnitude = 5000,
-	RuntimeHookRaySignatureTolerance = 3,
-	RuntimeHookTargetMaxMissStuds = 12,
-	RuntimeHookNormalRaySampleInterval = 0.25,
 	RuntimeFreezeOnDisconnectError = true,
 	RuntimeFreezeErrorKeywords = {
 		"267",
@@ -189,8 +202,7 @@ local capabilities = {
 	buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function",
 	getrawmetatable = type(getrawmetatable) == "function",
 	isreadonly = type(isreadonly) == "function",
-	getgenv = type(getgenv) == "function",
-	isexecutorclosure = type(isexecutorclosure) == "function",
+		isexecutorclosure = type(isexecutorclosure) == "function",
 	iscclosure = type(iscclosure) == "function"
 }
 
@@ -263,8 +275,7 @@ local runtimeHookState = {
 	HookIntegrityBaseline = nil,
 	HookIntegrityLast = nil,
 	HookIntegrityLastCheckAt = 0,
-	LastNormalRayObservationAt = 0,
-	FlushScheduled = false
+		FlushScheduled = false
 }
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
@@ -300,6 +311,31 @@ local currentDumpId = nil
 local currentModuleSourcesFolder = nil
 local currentClientSourcesFolder = nil
 local checkpointStage
+local journalRecord
+local flushRecovery
+local writeDiagnostics
+local initRecovery
+local recoveryLastPath = "game"
+local recoveryLastClass = "DataModel"
+local recoveryLastError = nil
+local recoveryLastFlush = 0
+local recoveryFlushBusy = false
+local recoveryLastDiagnostics = 0
+local recoveryState = { Folder = nil, Buffers = { Snapshot = {}, Runtime = {}, Issues = {} }, Sequences = { Snapshot = 0, Runtime = 0, Issues = 0 }, Saved = { Snapshot = 0, Runtime = 0, Issues = 0 }, FailedWrites = 0, LastFailure = nil }
+local remoteUsageByKey = {}
+local remoteUsageRecords = {}
+local remoteUsageOverflow = 0
+local REMOTE_USAGE_LIMIT = 6000
+local REMOTE_USAGE_SAMPLE_LIMIT = 2
+local tagRecords = {}
+local tagCounts = {}
+local tagOmitted = 0
+local interactionRecords = {}
+local interactionOmitted = 0
+local physicsRecords = {}
+local physicsOmitted = 0
+local INTERACTION_CLASSES = { ProximityPrompt = true, ClickDetector = true, DragDetector = true, TouchTransmitter = true, Seat = true, VehicleSeat = true, SpawnLocation = true }
+local PHYSICS_CLASSES = { Weld = true, ManualWeld = true, Snap = true, Motor6D = true, WeldConstraint = true, BallSocketConstraint = true, HingeConstraint = true, PrismaticConstraint = true, RodConstraint = true, RopeConstraint = true, SpringConstraint = true, CylindricalConstraint = true, AlignPosition = true, AlignOrientation = true, LinearVelocity = true, AngularVelocity = true, VectorForce = true, Torque = true, LineForce = true, PlaneConstraint = true, NoCollisionConstraint = true, Attachment = true, Bone = true }
 
 local remoteIndex = {
 	RemoteEvents = {},
@@ -530,11 +566,16 @@ function F.makeIssue(stage, object, message, property)
 end
 
 function F.recordError(stage, object, message, property)
-	table.insert(errors, F.makeIssue(stage, object, message, property))
+	local entry = F.makeIssue(stage, object, message, property)
+	table.insert(errors, entry)
+	recoveryLastError = entry
+	if journalRecord then journalRecord("Issues", { Severity = "Error", Data = entry }) end
 end
 
 function F.recordWarning(stage, object, message, property)
-	table.insert(warnings, F.makeIssue(stage, object, message, property))
+	local entry = F.makeIssue(stage, object, message, property)
+	table.insert(warnings, entry)
+	if journalRecord then journalRecord("Issues", { Severity = "Warning", Data = entry }) end
 end
 
 function F.safeGet(object, property)
@@ -1296,7 +1337,7 @@ local PROPERTY_GROUPS = {
 	},
 	{
 		Class = "BaseScript",
-		Properties = { "Disabled" }
+		Properties = { "Disabled", "Enabled", "RunContext" }
 	},
 	{
 		Class = "ProximityPrompt",
@@ -1441,10 +1482,49 @@ local EXTRA_CLASS_PROPERTIES = {
     BodyAngularVelocity = { "AngularVelocity", "MaxTorque", "P" },
     BodyForce = { "Force" },
     BodyThrust = { "Force", "Location" },
+    Weld = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    ManualWeld = { "Part0", "Part1", "C0", "C1", "Enabled" },
+    Motor6D = { "Part0", "Part1", "C0", "C1", "Transform", "CurrentAngle", "DesiredAngle", "MaxVelocity", "Enabled" },
+    WeldConstraint = { "Part0", "Part1", "Enabled", "Active" },
+    Attachment = { "CFrame", "WorldCFrame", "Position", "WorldPosition", "Orientation", "Axis", "SecondaryAxis", "Visible" },
+    Bone = { "CFrame", "WorldCFrame", "Transform", "TransformedWorldCFrame" },
+    HingeConstraint = { "Attachment0", "Attachment1", "ActuatorType", "AngularSpeed", "AngularVelocity", "MotorMaxTorque", "LimitsEnabled", "LowerAngle", "UpperAngle", "TargetAngle", "ServoMaxTorque" },
+    BallSocketConstraint = { "Attachment0", "Attachment1", "LimitsEnabled", "UpperAngle", "TwistLimitsEnabled", "TwistLowerAngle", "TwistUpperAngle" },
+    SpringConstraint = { "Attachment0", "Attachment1", "Stiffness", "Damping", "FreeLength", "MinLength", "MaxLength" },
+    RopeConstraint = { "Attachment0", "Attachment1", "Length", "Thickness", "Visible" },
+    RodConstraint = { "Attachment0", "Attachment1", "Length", "Thickness", "Visible" },
+    PrismaticConstraint = { "Attachment0", "Attachment1", "ActuatorType", "LimitsEnabled", "LowerLimit", "UpperLimit", "Speed", "TargetPosition" },
+    AlignPosition = { "Attachment0", "Attachment1", "Mode", "Position", "MaxForce", "MaxVelocity", "Responsiveness", "RigidityEnabled", "ReactionForceEnabled", "ApplyAtCenterOfMass" },
+    AlignOrientation = { "Attachment0", "Attachment1", "Mode", "CFrame", "MaxTorque", "MaxAngularVelocity", "Responsiveness", "RigidityEnabled", "ReactionTorqueEnabled" },
+    LinearVelocity = { "Attachment0", "RelativeTo", "VelocityConstraintMode", "VectorVelocity", "LineVelocity", "PlaneVelocity", "MaxForce", "ForceLimitsEnabled" },
+    AngularVelocity = { "Attachment0", "RelativeTo", "AngularVelocity", "MaxTorque", "TorqueLimitsEnabled" },
+    VectorForce = { "Attachment0", "RelativeTo", "Force", "ApplyAtCenterOfMass" },
+    LineForce = { "Attachment0", "Attachment1", "Magnitude", "InverseSquareLaw", "MaxForce" },
+    Torque = { "Attachment0", "RelativeTo", "Torque" },
     Vector3Value = {},
     StringValue = {},
     IntValue = {},
     NumberValue = {}
+}
+
+local PHYSICS_PROPERTY_GROUPS = {
+    JointInstance = { "Part0", "Part1", "C0", "C1", "Enabled", "Active" },
+    Constraint = { "Attachment0", "Attachment1", "Enabled", "Active", "Visible", "Color" },
+    Motor6D = { "Transform", "CurrentAngle", "DesiredAngle", "MaxVelocity" },
+    WeldConstraint = { "Part0", "Part1", "Enabled", "Active" },
+    NoCollisionConstraint = { "Part0", "Part1", "Enabled" },
+    HingeConstraint = { "ActuatorType", "AngularVelocity", "MotorMaxTorque", "LimitsEnabled", "LowerAngle", "UpperAngle", "CurrentAngle", "AngularSpeed", "ServoMaxTorque", "TargetAngle" },
+    BallSocketConstraint = { "LimitsEnabled", "UpperAngle", "TwistLimitsEnabled", "TwistLowerAngle", "TwistUpperAngle" },
+    SpringConstraint = { "Stiffness", "Damping", "FreeLength", "MinLength", "MaxLength", "LimitsEnabled", "CurrentLength" },
+    RopeConstraint = { "Length", "Restitution", "Thickness", "CurrentDistance" },
+    RodConstraint = { "Length", "Thickness", "CurrentDistance" },
+    AlignPosition = { "Mode", "Position", "Responsiveness", "MaxForce", "MaxVelocity", "RigidityEnabled" },
+    AlignOrientation = { "Mode", "CFrame", "Responsiveness", "MaxTorque", "MaxAngularVelocity", "RigidityEnabled" },
+    LinearVelocity = { "VelocityConstraintMode", "VectorVelocity", "LineVelocity", "PlaneVelocity", "MaxForce", "RelativeTo", "ForceLimitsEnabled" },
+    AngularVelocity = { "AngularVelocity", "MaxTorque", "RelativeTo" },
+    VectorForce = { "Force", "RelativeTo", "ApplyAtCenterOfMass" },
+    Torque = { "Torque", "RelativeTo" },
+    PlaneConstraint = { "Attachment0", "Attachment1" }
 }
 
 local EXTENDED_BASEPART_PROPERTIES = {
@@ -1484,6 +1564,13 @@ function F.captureExtendedProperties(object, output, className)
     if F.safeIsA(object, "BasePart") then
         capture(EXTENDED_BASEPART_PROPERTIES)
     end
+    if F.safeIsA(object, "JointInstance") then
+        capture(PHYSICS_PROPERTY_GROUPS.JointInstance)
+    end
+    if F.safeIsA(object, "Constraint") then
+        capture(PHYSICS_PROPERTY_GROUPS.Constraint)
+    end
+    capture(PHYSICS_PROPERTY_GROUPS[className])
     capture(EXTRA_CLASS_PROPERTIES[className])
 
     if className == "LocalizationTable" then
@@ -2056,6 +2143,7 @@ function F.appendGuiRuntimeRecord(object, eventName, property)
         record.Properties = F.getUsefulProperties(object, record.ClassName)
     end
     guiCapture.Records[#guiCapture.Records + 1] = record
+    if journalRecord then journalRecord("Runtime", { Kind = "Gui", Data = record }) end
     F.maybeFlushRuntimeTrace()
 end
 
@@ -2896,23 +2984,6 @@ function F.getRuntimeHookSnapshot(source)
 		end
 	end
 
-	if capabilities.getgenv then
-		local envOk, environment = pcall(getgenv)
-		if envOk and type(environment) == "table" then
-			local target = rawget(environment, "AimTarget")
-			if typeof(target) == "Instance" then
-				snapshot.AimTarget = F.makeInstanceReference(target, false)
-				snapshot.AimTargetFingerprint =
-					F.safeFullName(target) .. "|" .. F.sanitizeString(tostring(target))
-			elseif target == nil then
-				snapshot.AimTargetFingerprint = "nil"
-			else
-				snapshot.AimTarget = F.serializeRuntimeValue(target)
-				snapshot.AimTargetFingerprint =
-					typeof(target) .. "|" .. F.sanitizeString(tostring(target))
-			end
-		end
-	end
 
 	return snapshot
 end
@@ -2939,190 +3010,11 @@ function F.appendRuntimeHookRecord(record)
 		Method = record.Method,
 		CallerIsExecutor = record.CallerIsExecutor,
 		CallerPath = record.Caller and record.Caller.Path or nil,
-		DirectionMagnitude = record.Ray and record.Ray.DirectionMagnitude or nil,
-		Matches5000MagnitudeSignature = record.Matches5000MagnitudeSignature,
-		CandidatePath = record.TargetCandidate
-			and record.TargetCandidate.Part
-			and record.TargetCandidate.Part.Path
-			or nil,
-		AimTargetPath = record.GlobalAimTarget
-			and record.GlobalAimTarget.Path
-			or nil
+
 	})
 
 	F.maybeFlushRuntimeTrace()
 	return record
-end
-
-function F.findRuntimeRayCandidate(origin, direction)
-	if typeof(origin) ~= "Vector3"
-		or typeof(direction) ~= "Vector3"
-		or direction.Magnitude <= 0
-	then
-		return nil
-	end
-
-	local directionUnit = direction.Unit
-	local bestPart = nil
-	local bestPlayer = nil
-	local bestMiss = math.huge
-	local bestAlong = nil
-
-	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= LocalPlayer then
-			local otherCharacter = otherPlayer.Character
-			local humanoid = otherCharacter
-				and otherCharacter:FindFirstChildOfClass("Humanoid")
-				or nil
-			local part = otherCharacter
-				and (
-					otherCharacter:FindFirstChild("Head")
-					or otherCharacter:FindFirstChild("HumanoidRootPart")
-				)
-				or nil
-
-			if humanoid
-				and humanoid.Health > 0
-				and part
-				and F.safeIsA(part, "BasePart")
-			then
-				local offset = part.Position - origin
-				local along = offset.X * directionUnit.X
-					+ offset.Y * directionUnit.Y
-					+ offset.Z * directionUnit.Z
-
-				if along > 0 then
-					local nearestPoint = origin + directionUnit * along
-					local miss = (part.Position - nearestPoint).Magnitude
-
-					if miss < bestMiss then
-						bestMiss = miss
-						bestAlong = along
-						bestPart = part
-						bestPlayer = otherPlayer
-					end
-				end
-			end
-		end
-	end
-
-	if not bestPart
-		or bestMiss > math.max(
-			0,
-			tonumber(CONFIG.RuntimeHookTargetMaxMissStuds) or 12
-		)
-	then
-		return nil
-	end
-
-	return {
-		Player = F.makeInstanceReference(bestPlayer, false),
-		Part = F.makeInstanceReference(bestPart, false),
-		MissDistance = bestMiss,
-		DistanceAlongRay = bestAlong
-	}
-end
-
-function F.appendRuntimeRayObservation(self, method, packedArguments)
-	if not runtimeTraceActive
-		or not CONFIG.RuntimeTraceHookDiagnostics
-		or self ~= workspace
-	then
-		return
-	end
-
-	local origin = nil
-	local direction = nil
-	local ray = nil
-
-	if method == "Raycast" then
-		origin = packedArguments[1]
-		direction = packedArguments[2]
-	elseif string.find(method or "", "FindPartOnRay", 1, true) then
-		ray = packedArguments[1]
-		if typeof(ray) == "Ray" then
-			origin = ray.Origin
-			direction = ray.Direction
-		end
-	end
-
-	if typeof(origin) ~= "Vector3" or typeof(direction) ~= "Vector3" then
-		return
-	end
-
-	local magnitude = direction.Magnitude
-	local signatureMagnitude =
-		tonumber(CONFIG.RuntimeHookRaySignatureMagnitude) or 5000
-	local signatureTolerance =
-		math.max(0, tonumber(CONFIG.RuntimeHookRaySignatureTolerance) or 3)
-	local matchesSignature =
-		math.abs(magnitude - signatureMagnitude) <= signatureTolerance
-
-	if not matchesSignature then
-		local now = os.clock()
-		local sampleInterval = math.max(
-			0,
-			tonumber(CONFIG.RuntimeHookNormalRaySampleInterval) or 0.25
-		)
-
-		if sampleInterval > 0
-			and now - (runtimeHookState.LastNormalRayObservationAt or 0) < sampleInterval
-		then
-			return
-		end
-
-		runtimeHookState.LastNormalRayObservationAt = now
-	end
-
-	local callerInfo, _, callerIsExecutor, callerStack = F.getRuntimeCallerInfo()
-
-	local cameraOrigin = nil
-	local cameraDistance = nil
-	local camera = workspace.CurrentCamera
-
-	if camera then
-		local cameraOk, cameraCFrame = pcall(function()
-			return camera.CFrame
-		end)
-
-		if cameraOk and typeof(cameraCFrame) == "CFrame" then
-			cameraOrigin = cameraCFrame.Position
-			cameraDistance = (origin - cameraOrigin).Magnitude
-		end
-	end
-
-	local globalAimTarget = nil
-	if capabilities.getgenv then
-		local envOk, environment = pcall(getgenv)
-		if envOk and type(environment) == "table" then
-			local target = rawget(environment, "AimTarget")
-			if typeof(target) == "Instance" then
-				globalAimTarget = F.makeInstanceReference(target, false)
-			end
-		end
-	end
-
-	F.appendRuntimeHookRecord({
-		HookKind = "NamecallRayObservation",
-		Metamethod = "__namecall",
-		Method = method,
-		Object = F.makeInstanceReference(self, false),
-		Arguments = F.serializePackedRuntimeValues(packedArguments),
-		Caller = callerInfo,
-		CallerIsExecutor = callerIsExecutor,
-		CallerStack = callerStack,
-		Ray = {
-			Origin = F.serializeRuntimeValue(origin),
-			Direction = F.serializeRuntimeValue(direction),
-			DirectionMagnitude = magnitude,
-			EndPoint = F.serializeRuntimeValue(origin + direction),
-			CameraOrigin = cameraOrigin and F.serializeRuntimeValue(cameraOrigin) or nil,
-			OriginDistanceFromCamera = cameraDistance
-		},
-		Matches5000MagnitudeSignature = matchesSignature,
-		TargetCandidate = F.findRuntimeRayCandidate(origin, direction),
-		GlobalAimTarget = globalAimTarget
-	})
 end
 
 function F.checkRuntimeHookIntegrity(force, source)
@@ -3183,15 +3075,6 @@ function F.checkRuntimeHookIntegrity(force, source)
 			current.Mouse and current.Mouse.Index or nil
 		)
 
-		if previous.AimTargetFingerprint ~= current.AimTargetFingerprint then
-			table.insert(changes, {
-				Field = "getgenv().AimTarget",
-				Previous = previous.AimTarget,
-				PreviousFingerprint = previous.AimTargetFingerprint,
-				Current = current.AimTarget,
-				CurrentFingerprint = current.AimTargetFingerprint
-			})
-		end
 	end
 
 	local shouldRecord = previous == nil or #changes > 0 or force
@@ -3229,6 +3112,55 @@ function F.checkRuntimeHookIntegrity(force, source)
 	end
 
 	runtimeHookState.HookIntegrityLast = current
+end
+
+function F.recordRemoteUsage(record)
+    local key = tostring(record.RemoteId or "") .. "|" .. record.ClassName .. "|" .. record.Path
+    local summary = remoteUsageByKey[key]
+    if not summary then
+        if #remoteUsageRecords >= REMOTE_USAGE_LIMIT then
+            remoteUsageOverflow = remoteUsageOverflow + 1
+            return
+        end
+        summary = {
+            RemoteId = record.RemoteId,
+            Name = record.Name,
+            ClassName = record.ClassName,
+            Path = record.Path,
+            Category = record.Category,
+            FirstSeenSeconds = record.Time,
+            LastSeenSeconds = record.Time,
+            TotalCalls = 0,
+            ByDirection = {},
+            ByMethod = {},
+            CallerCounts = {},
+            Samples = {}
+        }
+        remoteUsageByKey[key] = summary
+        remoteUsageRecords[#remoteUsageRecords + 1] = summary
+    end
+    summary.TotalCalls = summary.TotalCalls + 1
+    summary.LastSeenSeconds = record.Time
+    local dir = record.Direction or "Unknown"
+    local method = record.Method or "Unknown"
+    summary.ByDirection[dir] = (summary.ByDirection[dir] or 0) + 1
+    summary.ByMethod[method] = (summary.ByMethod[method] or 0) + 1
+    local caller = record.Caller and record.Caller.Path
+    if caller and (summary.CallerCounts[caller] or 0) > 0 then
+        summary.CallerCounts[caller] = summary.CallerCounts[caller] + 1
+    elseif caller then
+        local count = 0
+        for _ in pairs(summary.CallerCounts) do count = count + 1 end
+        if count < 12 then summary.CallerCounts[caller] = 1 end
+    end
+    if #summary.Samples < REMOTE_USAGE_SAMPLE_LIMIT then
+        summary.Samples[#summary.Samples + 1] = {
+            Time = record.Time, Direction = dir, Method = method,
+            ArgumentCount = record.ArgumentCount, Arguments = record.Arguments,
+            ReturnCount = record.ReturnCount, Returns = record.Returns,
+            CallerPath = caller
+        }
+    end
 end
 
 function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments, extra)
@@ -3278,6 +3210,8 @@ function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments,
 	end
 
 	table.insert(categoryRecords, record)
+	F.recordRemoteUsage(record)
+	if journalRecord then journalRecord("Runtime", { Kind = "Remote", Data = record }) end
 
 	F.appendRuntimeTimeline({
 		Time = record.Time,
@@ -3410,42 +3344,27 @@ function F.installOutgoingRemoteHook()
 		end
 
 		local traceActive = runtimeHookState.Active
-		local observeRay = traceActive
-			and CONFIG.RuntimeTraceHookDiagnostics
-			and self == workspace
-			and (
-				method == "Raycast"
-				or string.find(method or "", "FindPartOnRay", 1, true) ~= nil
-			)
 		local observeRemote = traceActive
 			and (method == "FireServer" or method == "InvokeServer")
 
-		if not observeRay and not observeRemote then
+		if not observeRemote then
+			return oldNamecall(self, ...)
+		end
+
+		local className = typeof(self) == "Instance" and F.safeClassName(self) or nil
+		local isFireServer = method == "FireServer"
+			and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
+		local isInvokeServer = method == "InvokeServer" and className == "RemoteFunction"
+		if not isFireServer and not isInvokeServer then
 			return oldNamecall(self, ...)
 		end
 
 		local packedArguments = table.pack(...)
 		local callStarted = os.clock()
-
 		local returns = table.pack(oldNamecall(self, ...))
 		local duration = os.clock() - callStarted
 
-		if observeRay then
-			pcall(
-				F.appendRuntimeRayObservation,
-				self,
-				method,
-				packedArguments
-			)
-		end
-
 		if observeRemote then
-			local className = typeof(self) == "Instance" and F.safeClassName(self) or nil
-			local isFireServer = method == "FireServer"
-				and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
-			local isInvokeServer = method == "InvokeServer"
-				and className == "RemoteFunction"
-
 			if isFireServer or isInvokeServer then
 				local callerInfo, _, callerIsExecutor, callerStack = F.getRuntimeCallerInfo()
 				local snapshotPath = F.safeFullName(self)
@@ -3616,6 +3535,7 @@ function F.watchRuntimeAttributes(object, id, name, className, path, attributes)
 			}
 
 			table.insert(runtimeAttributeRecords, record)
+			if journalRecord then journalRecord("Runtime", { Kind = "Attribute", Data = record }) end
 
 			F.appendRuntimeTimeline({
 				Time = record.Time,
@@ -3727,6 +3647,7 @@ function F.watchRuntimeValue(object, id, name, className, path)
 			}
 
 			table.insert(runtimeValueRecords, record)
+			if journalRecord then journalRecord("Runtime", { Kind = "Value", Data = record }) end
 
 			F.appendRuntimeTimeline({
 				Time = record.Time,
@@ -3769,6 +3690,7 @@ function F.appendRuntimeCharacterRecord(eventName, object, details)
 	}
 
 	table.insert(runtimeCharacterRecords, record)
+	if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
 
 	F.appendRuntimeTimeline({
 		Time = record.Time,
@@ -4029,6 +3951,7 @@ function F.sampleLocalCharacter()
 	end
 
 	table.insert(runtimeCharacterRecords, record)
+	if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
 
 	F.appendRuntimeTimeline({
 		Time = record.Time,
@@ -4051,6 +3974,7 @@ function F.appendRuntimeLog(message, messageType)
 	}
 
 	table.insert(runtimeLogRecords, record)
+	if journalRecord then journalRecord("Runtime", { Kind = "Log", Data = record }) end
 
 	if F.isRuntimeInteresting(record.Message, "") then
 		F.appendRuntimeTimeline({
@@ -4118,6 +4042,7 @@ function F.handleGuiErrorMessage(message, source)
 	}
 
 	table.insert(runtimeErrorRecords, record)
+	if journalRecord then journalRecord("Runtime", { Kind = "GuiError", Data = record }) end
 
 	F.appendRuntimeTimeline({
 		Time = record.Time,
@@ -4168,6 +4093,9 @@ freezeRuntimeTrace = function(reason, details)
 	})
 
 	F.pruneRuntimeCaches(true)
+	if journalRecord then journalRecord("Runtime", { Kind = "TraceFrozen", Data = runtimeHookState.FreezeInfo }) end
+	if flushRecovery then pcall(flushRecovery, true) end
+	if writeDiagnostics then pcall(writeDiagnostics, "Disconnected", runtimeHookState.FreezeInfo) end
 
 	for _, record in ipairs(runtimeTimelineRecords) do
 		if type(record.Time) == "number" then
@@ -4295,7 +4223,6 @@ function F.startRuntimeTrace()
 	runtimeHookState.HookIntegrityLastCheckAt = 0
 	runtimeHookState.HookIntegrityBaseline = nil
 	runtimeHookState.HookIntegrityLast = nil
-	runtimeHookState.LastNormalRayObservationAt = 0
 	runtimeHookState.FlushScheduled = false
 
 	if CONFIG.RuntimeTraceHookDiagnostics then
@@ -4516,9 +4443,18 @@ function F.startRuntimeTrace()
 	local sampleAccumulator = 0
 	local errorAccumulator = 0
 	local hookIntegrityAccumulator = 0
+	local recoveryAccumulator = 0
 
 	local heartbeatOk, heartbeatConnection = pcall(function()
 		return game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+			recoveryAccumulator = recoveryAccumulator + deltaTime
+			if recoveryAccumulator >= CONFIG.RecoveryFlushSeconds then
+				recoveryAccumulator = 0
+				if flushRecovery then pcall(flushRecovery, false) end
+				if writeDiagnostics and currentStage ~= "complete" then
+					pcall(writeDiagnostics, runtimeHookState.Frozen and "Disconnected" or "InProgress")
+				end
+			end
 			if not runtimeTraceActive then
 				return
 			end
@@ -4648,6 +4584,8 @@ dumpNode = function(object, parentId, context)
 	local name = F.safeName(object)
 	local className = F.safeClassName(object)
 	local path = F.safeFullName(object)
+	recoveryLastPath = path
+	recoveryLastClass = className
 
 	if invalidClassObjects[object] and not invalidClassWarned[object] then
 		invalidClassWarned[object] = true
@@ -4682,6 +4620,43 @@ dumpNode = function(object, parentId, context)
 	local attributes = F.getAttributes(object)
 	local tags = F.getTags(object)
 	local properties = F.getUsefulProperties(object, className)
+
+	if #tags > 0 then
+		for _, tag in ipairs(tags) do tagCounts[tag] = (tagCounts[tag] or 0) + 1 end
+		if #tagRecords < CONFIG.MaxTagRecords then
+			tagRecords[#tagRecords + 1] = { Id = id, Path = path, ClassName = className, Tags = tags }
+		else
+			tagOmitted = tagOmitted + 1
+		end
+	end
+	if INTERACTION_CLASSES[className] then
+		if #interactionRecords < CONFIG.MaxInteractionRecords then
+			interactionRecords[#interactionRecords + 1] = {
+				Id = id, ParentId = parentId, Name = name, Path = path,
+				ClassName = className, Properties = properties,
+				Attributes = F.optionalMap(attributes), Tags = tags
+			}
+		else interactionOmitted = interactionOmitted + 1 end
+	end
+	if PHYSICS_CLASSES[className] then
+		if #physicsRecords < CONFIG.MaxPhysicsRecords then
+			physicsRecords[#physicsRecords + 1] = {
+				Id = id, ParentId = parentId, Name = name, Path = path,
+				ClassName = className, Properties = properties,
+				Attributes = F.optionalMap(attributes)
+			}
+		else physicsOmitted = physicsOmitted + 1 end
+	end
+	if journalRecord then
+		journalRecord("Snapshot", {
+			Id = id, ParentId = parentId, Name = name, ClassName = className,
+			Path = path, Attributes = F.optionalMap(attributes), Tags = tags,
+			Properties = F.optionalMap(properties)
+		})
+	end
+	if flushRecovery and nodeCount % math.max(1, CONFIG.RecoverySnapshotBatch) == 0 then
+		flushRecovery(true)
+	end
 
     if className == "Animator" and CONFIG.VisualCapture then
         F.registerVisualAnimator(object)
@@ -5332,6 +5307,135 @@ function F.writeSafe(path, contents)
 	end
 
 	return true
+end
+
+
+initRecovery = function()
+	if not CONFIG.RecoveryEnabled or not capabilities.writefile then return end
+	if not F.ensureFolder(RECOVERY_FOLDER) then
+		F.recordWarning("RecoveryInit", nil, "Recovery folder unavailable")
+		return
+	end
+	local leaf = string.gsub(tostring(currentDumpId or os.time()), "[^%w%-_]", "_")
+	local folder = RECOVERY_FOLDER .. "/" .. leaf
+	if not F.ensureFolder(folder) then
+		F.recordWarning("RecoveryInit", nil, "Recovery run folder unavailable: " .. folder)
+		return
+	end
+	recoveryState.Folder = folder
+	recoveryLastFlush = os.clock()
+	recoveryLastDiagnostics = 0
+end
+
+journalRecord = function(stream, entry)
+	if not recoveryState.Folder then return end
+	local bufferEntries = recoveryState.Buffers[stream]
+	if bufferEntries then bufferEntries[#bufferEntries + 1] = entry end
+end
+
+writeDiagnostics = function(status, extra)
+	if not currentDumpId or not capabilities.writefile then return end
+	local now = os.clock()
+	local memoryOk, memoryKb = pcall(collectgarbage, "count")
+	local payload = {
+		Schema = SCHEMA_NAME,
+		SchemaVersion = SCHEMA_VERSION,
+		DumpId = currentDumpId,
+		Status = status or "InProgress",
+		Stage = currentStage,
+		LastObjectPath = recoveryLastPath,
+		LastObjectClass = recoveryLastClass,
+		LastError = recoveryLastError,
+		SnapshotBusy = snapshotBusy,
+		RuntimeTraceActive = runtimeTraceActive,
+		ElapsedSeconds = now - started,
+		UpdatedAtUnix = os.time(),
+		MemoryKilobytes = memoryOk and memoryKb or nil,
+		Counts = { Traversed = nodeCount, RegisteredIds = nextInstanceId,
+			Errors = #errors, Warnings = #warnings,
+			RemoteEvents = #runtimeEventRecords,
+			RuntimeValues = #runtimeValueRecords,
+			RuntimeAttributes = #runtimeAttributeRecords,
+			LocalDecompiled = clientDecompileStats.Succeeded,
+			ModuleDecompiled = moduleDecompileStats.Succeeded },
+		Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
+			SavedRecords = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites,
+			LastWriteFailure = recoveryState.LastFailure },
+		Details = extra
+	}
+	local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+	if encodedOk then
+		local savedOk = pcall(writefile, DIAGNOSTICS_FILE, encoded)
+		if savedOk then recoveryLastDiagnostics = now end
+	end
+end
+
+flushRecovery = function(force)
+	if not recoveryState.Folder or recoveryFlushBusy then return end
+	local now = os.clock()
+	local interval = math.max(0.2, tonumber(CONFIG.RecoveryFlushSeconds) or 2)
+	if not force and now - recoveryLastFlush < interval then return end
+	recoveryLastFlush = now
+	recoveryFlushBusy = true
+	local flushOk, flushError = pcall(function()
+	for _, stream in ipairs({ "Snapshot", "Runtime", "Issues" }) do
+		local bufferEntries = recoveryState.Buffers[stream]
+		if #bufferEntries > 0 then
+			local batchSize = stream == "Snapshot" and CONFIG.RecoverySnapshotBatch
+				or (stream == "Runtime" and CONFIG.RecoveryRuntimeBatch or CONFIG.RecoveryIssueBatch)
+			batchSize = math.max(1, math.floor(tonumber(batchSize) or 100))
+			local entryIndex = 1
+			local written = 0
+			while entryIndex <= #bufferEntries do
+				local stopIndex = math.min(#bufferEntries, entryIndex + batchSize - 1)
+				local batch = {}
+				for index = entryIndex, stopIndex do
+					batch[#batch + 1] = bufferEntries[index]
+				end
+				local sequence = recoveryState.Sequences[stream] + 1
+				local path = string.format("%s/%s_%06d.json", recoveryState.Folder,
+					string.lower(stream), sequence)
+				local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, {
+					DumpId = currentDumpId, Stream = stream, Sequence = sequence,
+					SavedAtUnix = os.time(), Count = #batch, Entries = batch
+				})
+				local savedOk, saveError = false, nil
+				if encodedOk then savedOk, saveError = pcall(writefile, path, encoded) end
+				if not encodedOk or not savedOk then
+					recoveryState.FailedWrites = recoveryState.FailedWrites + 1
+					recoveryState.LastFailure = tostring(encodedOk and saveError or encoded)
+					break
+				end
+				recoveryState.Sequences[stream] = sequence
+				recoveryState.Saved[stream] = recoveryState.Saved[stream] + #batch
+				written = stopIndex
+				entryIndex = stopIndex + 1
+			end
+			if written > 0 then
+				local remaining = {}
+				for index = written + 1, #bufferEntries do
+					remaining[#remaining + 1] = bufferEntries[index]
+				end
+				recoveryState.Buffers[stream] = remaining
+			end
+		end
+	end
+	local indexOk, indexJson = pcall(HttpService.JSONEncode, HttpService, {
+		DumpId = currentDumpId, Stage = currentStage, Status = "InProgress",
+		Sequences = recoveryState.Sequences, Saved = recoveryState.Saved,
+		FailedWrites = recoveryState.FailedWrites, LastFailure = recoveryState.LastFailure,
+		LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
+		UpdatedAtUnix = os.time()
+	})
+	if indexOk then
+		pcall(writefile, recoveryState.Folder .. "/index.json", indexJson)
+	end
+	end)
+	recoveryFlushBusy = false
+	if not flushOk then
+		recoveryState.FailedWrites = recoveryState.FailedWrites + 1
+		recoveryState.LastFailure = tostring(flushError)
+	end
 end
 
 function F.base64Encode(data)
@@ -6018,6 +6122,8 @@ checkpointStage = function(stage)
 
 	local encoded = F.encodeJSON(checkpoint, "manifest_checkpoint.json")
 	F.writeSafe(MANIFEST_FILE, encoded)
+	if flushRecovery then flushRecovery(true) end
+	if writeDiagnostics then writeDiagnostics("InProgress") end
 end
 
 function F.fileNameFromPath(path)
@@ -6421,6 +6527,43 @@ function F.run()
 	end)
 
 	currentDumpId = guidOk and guid or string.format("%d-%d", os.time(), math.floor(os.clock() * 1000))
+	if type(readfile) == "function" then
+		F.ensureFolder(RECOVERY_FOLDER)
+		local oldCrashOk, oldCrashText = pcall(readfile, CRASH_FILE)
+		if oldCrashOk and type(oldCrashText) == "string" then
+			local decodeOk, oldCrash = pcall(HttpService.JSONDecode, HttpService, oldCrashText)
+			if decodeOk and type(oldCrash) == "table" and oldCrash.Status == "LuaException" then
+				local archiveName = F.sanitizeFileComponent(oldCrash.DumpId or tostring(os.time()))
+				F.writeSafe(RECOVERY_FOLDER .. "/crash_" .. archiveName .. ".json", oldCrashText)
+			end
+		end
+		local previousOk, previousText = pcall(readfile, MANIFEST_FILE)
+		if previousOk and type(previousText) == "string" then
+			local decodedOk, previous = pcall(HttpService.JSONDecode, HttpService, previousText)
+			if decodedOk and type(previous) == "table" and previous.Status == "InProgress" then
+				local detailsOk, detailsText = pcall(readfile, DIAGNOSTICS_FILE)
+				local details = nil
+				if detailsOk and type(detailsText) == "string" then
+					local parsedOk, parsed = pcall(HttpService.JSONDecode, HttpService, detailsText)
+					if parsedOk then details = parsed end
+				end
+				local previousId = F.sanitizeFileComponent(previous.DumpId or tostring(os.time()))
+				local previousReport = F.encodeJSON({
+					Status = "PreviousRunInterrupted",
+					Note = "An unfinished run was found; a native crash, teleport or manual stop cannot be distinguished here.",
+					DetectedAtUnix = os.time(),
+					PreviousManifest = previous, PreviousDiagnostics = details
+				}, "previous_run_interrupted.json")
+				F.writeSafe(RECOVERY_FOLDER .. "/previous_" .. previousId .. ".json", previousReport)
+				F.writeSafe(PREVIOUS_RUN_FILE, previousReport)
+			end
+		end
+	end
+	initRecovery()
+	F.writeSafe(CRASH_FILE, F.encodeJSON({
+		DumpId = currentDumpId, Status = "NoLuaCrashRecorded",
+		Note = "A native client crash cannot be caught by Luau; consult diagnostics.json and recovery/ if the run is interrupted."
+	}, "crash_report.json"))
 	snapshotBusy = true
 	checkpointStage("runtime_start")
 	runtimeStartedAt = os.clock()
@@ -6449,6 +6592,12 @@ function F.run()
 		Children = {}
 	}
 
+	if journalRecord then
+		journalRecord("Snapshot", { Id = rootId, ParentId = nil, Name = "game",
+			ClassName = "DataModel", Path = "game", Properties = root.Properties,
+			Attributes = root.Attributes, Tags = root.Tags })
+	end
+	if flushRecovery then flushRecovery(true) end
 	for _, service in ipairs(F.getSortedChildren(game)) do
 		local ok, result, status = pcall(
 			dumpNode,
@@ -6567,6 +6716,14 @@ function F.run()
 		References = playerReferences
 	}
 
+	F.writeJSONDocument(TAGS_FILE, { Total = #tagRecords, Omitted = tagOmitted,
+		Counts = tagCounts, TaggedInstances = tagRecords }, "tags.json", writtenFiles, false)
+	F.writeJSONDocument(INTERACTIONS_FILE, { Total = #interactionRecords,
+		Omitted = interactionOmitted, Interactions = interactionRecords },
+		"interactions.json", writtenFiles, false)
+	F.writeJSONDocument(PHYSICS_FILE, { Total = #physicsRecords,
+		Omitted = physicsOmitted, JointsAndConstraints = physicsRecords },
+		"physics.json", writtenFiles, false)
 	F.writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true)
 	F.writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
 	inventory = nil
@@ -6596,6 +6753,12 @@ function F.run()
 	checkpointStage("decompile_modules")
 	F.decompileQueuedModules(scriptsDocument)
 	F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+	F.writeJSONDocument(REMOTE_USAGE_FILE, {
+		DumpId = currentDumpId, TotalUniqueRemotes = #remoteUsageRecords,
+		OmittedRemotesDueToCap = remoteUsageOverflow,
+		Coverage = "Observed incoming and outgoing calls for this run, cumulative (not just rolling window)",
+		Remotes = remoteUsageRecords
+	}, "remote_usage.json", writtenFiles, false)
 
 	F.writeJSONDocument(
 		RUNTIME_VISUAL_ASSETS_FILE,
@@ -6826,6 +6989,9 @@ function F.run()
 		SchemaVersion = SCHEMA_VERSION,
 		DumpId = currentDumpId,
 		GeneratedAtUnix = os.time(),
+		Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
+			Saved = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites },
+		AdditionalIndexes = { TAGS_FILE, INTERACTIONS_FILE, PHYSICS_FILE, REMOTE_USAGE_FILE },
 		IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
 		PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
 		Game = {
@@ -6858,6 +7024,10 @@ function F.run()
             GuiSnapshotOmitted = guiCapture.SnapshotOmitted,
 			PlayerReferences = #playerReferences,
 			Tools = #toolRecords,
+			TaggedInstances = #tagRecords,
+			Interactions = #interactionRecords,
+			Physics = #physicsRecords,
+			RemotesObservedWithCalls = #remoteUsageRecords,
 			DuplicatePathGroups = pathStats.DuplicatePathGroups,
 			InstancesInDuplicatePaths = pathStats.InstancesInDuplicatePaths,
 			Errors = #errors,
@@ -6941,10 +7111,6 @@ function F.run()
 			HookIntegrityInterval = CONFIG.RuntimeHookIntegrityInterval,
 			MaxHookRecords = CONFIG.RuntimeMaxHookRecords,
 			MaxHookIntegrityRecords = CONFIG.RuntimeMaxHookIntegrityRecords,
-			HookRaySignatureMagnitude = CONFIG.RuntimeHookRaySignatureMagnitude,
-			HookRaySignatureTolerance = CONFIG.RuntimeHookRaySignatureTolerance,
-			HookTargetMaxMissStuds = CONFIG.RuntimeHookTargetMaxMissStuds,
-			HookNormalRaySampleInterval = CONFIG.RuntimeHookNormalRaySampleInterval,
 			FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
 			MaxEvents = CONFIG.RuntimeMaxEvents,
 			MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
@@ -7062,6 +7228,14 @@ function F.run()
 	end
 
 	currentStage = "complete"
+	if flushRecovery then flushRecovery(true) end
+	if recoveryState.Folder then
+		F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
+			DumpId = currentDumpId, Status = "Complete", Stage = currentStage,
+			Saved = recoveryState.Saved
+		}, "recovery_status.json"))
+	end
+	if writeDiagnostics then writeDiagnostics("Complete") end
 	print("dump finished")
 	print("DumpId:", currentDumpId)
 	print("Serialized instance records:", instanceCount)
@@ -7113,6 +7287,23 @@ local runOk, runError = xpcall(F.run, F.formatFatalError)
 if not runOk then
 	snapshotBusy = false
 	F.recordError("FatalRun", nil, runError, currentStage)
+	pcall(function()
+		if flushRecovery then flushRecovery(true) end
+		if writeDiagnostics then writeDiagnostics("Crashed", { StackTrace = runError }) end
+		if recoveryState.Folder then
+			F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
+				DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
+				LastObjectPath = recoveryLastPath, Error = F.sanitizeString(runError)
+			}, "recovery_status.json"))
+		end
+		F.writeSafe(CRASH_FILE, F.encodeJSON({
+			DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
+			LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
+			StackTrace = F.sanitizeString(runError),
+			NodeCount = nodeCount, Memory = collectgarbage("count"),
+			GeneratedAtUnix = os.time(), RecoveryFolder = recoveryState.Folder
+		}, "crash_report.json"))
+	end)
 
 	pcall(function()
 		if runtimeTraceActive then
