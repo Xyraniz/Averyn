@@ -6,7 +6,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.5
+local SCHEMA_VERSION = 3.6
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -55,14 +55,18 @@ local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
 local CLIENT_SOURCES_FOLDER = OUTPUT_FOLDER .. "/localscripts"
 
-local YIELD_EVERY = 100
+local YIELD_EVERY = 50
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
 	RecoveryEnabled = true,
-	RecoveryFlushSeconds = 2,
-	RecoverySnapshotBatch = 400,
-	RecoveryRuntimeBatch = 120,
+	RecoveryFlushSeconds = 3,
+	RecoverySnapshotBatch = 1000,
+	RecoveryRuntimeBatch = 160,
+	SkipEngineInternals = true,
+	HeavyGameYieldSeconds = 0.025,
+	HeavyGameYieldAfterNodes = 12000,
+	CompactSecondaryIndexes = true,
 	RecoveryIssueBatch = 80,
 	DiagnosticsIntervalSeconds = 2,
 	MaxInteractionRecords = 20000,
@@ -74,7 +78,7 @@ local CONFIG = {
 	GuiCapture = true,
 	GuiMaxSnapshotEntries = 100000,
 	RuntimeTraceGui = true,
-	RuntimeMaxObservedGui = 10000,
+	RuntimeMaxObservedGui = 4500,
 	RuntimeMaxGuiChanges = 20000,
 	VisualMaxSnapshotEntries = 60000,
 	VisualMaxDynamicEntries = 24000,
@@ -82,7 +86,7 @@ local CONFIG = {
 	VisualMaxAnimationPlaybackEntries = 3500,
 	VisualAnimatorSampleInterval = 0.6,
 	VisualAnimatorKeepaliveInterval = 3,
-	VisualMaxTrackedAnimators = 200,
+	VisualMaxTrackedAnimators = 100,
 	VisualSecondPassDelay = 0.35,
 	RuntimeRingWindowSeconds = 30,
 	RuntimeTraceIncomingRemotes = true,
@@ -137,9 +141,9 @@ local CONFIG = {
 	RuntimeMaxValueChanges = 16000,
 	RuntimeMaxAttributeChanges = 16000,
 	RuntimeMaxObservedRemotes = 5000,
-	RuntimeMaxObservedAttributes = 6000,
-	RuntimeMaxObservedValues = 10000,
-	ProgressCheckpointEvery = 5000,
+	RuntimeMaxObservedAttributes = 3500,
+	RuntimeMaxObservedValues = 5000,
+	ProgressCheckpointEvery = 2000,
 	StateIndexMaxPerBucket = 1500,
 	DecompileModuleScripts = true,
 	DecompileLocalScripts = true,
@@ -1956,19 +1960,20 @@ end
 
 function F.makeVisualRecord(object, id, parentId, name, className, path, attributes, tags, properties, withAncestors)
     local parent = object.Parent
+    local compact = CONFIG.CompactSecondaryIndexes and not withAncestors
     return {
         Id = id,
         Name = name,
         ClassName = className,
         Path = path,
         ParentId = parentId,
-        ParentPath = parent and F.safeFullName(parent) or nil,
+        ParentPath = (not compact and parent) and F.safeFullName(parent) or nil,
         VisualRuntimeId = withAncestors and F.getVisualRuntimeId(object) or nil,
         ParentVisualRuntimeId = withAncestors and F.getVisualRuntimeId(parent) or nil,
         Ancestors = withAncestors and F.getVisualAncestors(object) or nil,
-        Attributes = F.optionalMap(attributes),
-        Tags = tags,
-        Properties = F.optionalMap(properties)
+        Attributes = not compact and F.optionalMap(attributes) or nil,
+        Tags = not compact and tags or nil,
+        Properties = not compact and F.optionalMap(properties) or nil
     }
 end
 
@@ -2021,6 +2026,7 @@ function F.buildVisualDocument(records, dynamic)
         Scope = dynamic and "ObservedWhileRunning" or "Snapshot",
         CaptureAllNames = true,
         ClassBasedSelection = true,
+        IndexedPropertiesSource = not dynamic and CONFIG.CompactSecondaryIndexes and "structure.json" or nil,
         Description = "Visual instances visible to this client. No access to server-only/unreplicated assets.",
         Total = #records,
         OmittedByCap = dynamic and visualDynamicOmitted or visualSnapshotOmitted,
@@ -2101,7 +2107,7 @@ function F.makeGuiRecord(object, id, parentId, name, className, path, properties
         Name = name,
         ClassName = className,
         Path = path,
-        Properties = F.optionalMap(properties)
+        Properties = (not CONFIG.CompactSecondaryIndexes) and F.optionalMap(properties) or nil
     }
 end
 
@@ -2147,8 +2153,15 @@ function F.appendGuiRuntimeRecord(object, eventName, property)
     F.maybeFlushRuntimeTrace()
 end
 
+local runtimeCoreGui = nil
+if CONFIG.SkipEngineInternals then
+    local ok, service = pcall(game.GetService, game, "CoreGui")
+    if ok then runtimeCoreGui = service end
+end
+
 function F.watchRuntimeGui(object, eventName)
     if not CONFIG.RuntimeTraceGui or not runtimeTraceActive then return end
+    if runtimeCoreGui and F.safeIsDescendantOf(object, runtimeCoreGui) then return end
     local className = F.safeClassName(object)
     if not GUI_CLASSES[className] then return end
 
@@ -4503,30 +4516,19 @@ function F.getSortedChildren(object)
 	local ok, children = pcall(function()
 		return object:GetChildren()
 	end)
-
 	if not ok then
 		F.recordError("GetChildren", object, children)
 		return {}
 	end
-
+	local keys = {}
+	for _, child in ipairs(children) do
+		keys[child] = { Class = F.safeClassName(child):lower(), Name = F.safeName(child):lower() }
+	end
 	table.sort(children, function(a, b)
-		local classA = F.safeClassName(a):lower()
-		local classB = F.safeClassName(b):lower()
-
-		if classA ~= classB then
-			return classA < classB
-		end
-
-		local nameA = F.safeName(a):lower()
-		local nameB = F.safeName(b):lower()
-
-		if nameA ~= nameB then
-			return nameA < nameB
-		end
-
-		return F.safeFullName(a) < F.safeFullName(b)
+		local left, right = keys[a], keys[b]
+		if left.Class ~= right.Class then return left.Class < right.Class end
+		return left.Name < right.Name
 	end)
-
 	return children
 end
 
@@ -4610,7 +4612,8 @@ dumpNode = function(object, parentId, context)
 	end
 
 	if nodeCount % YIELD_EVERY == 0 then
-		task.wait()
+		local heavy = CONFIG.HeavyGameYieldAfterNodes or 12000
+		task.wait(nodeCount >= heavy and (CONFIG.HeavyGameYieldSeconds or 0.025) or 0)
 	end
 	local source = F.resolveInventorySource(object, context and context.InventorySource or nil)
 	local parentToolState = context and context.ToolState or nil
@@ -4633,8 +4636,10 @@ dumpNode = function(object, parentId, context)
 		if #interactionRecords < CONFIG.MaxInteractionRecords then
 			interactionRecords[#interactionRecords + 1] = {
 				Id = id, ParentId = parentId, Name = name, Path = path,
-				ClassName = className, Properties = properties,
-				Attributes = F.optionalMap(attributes), Tags = tags
+				ClassName = className,
+				Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
+				Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil,
+				Tags = tags
 			}
 		else interactionOmitted = interactionOmitted + 1 end
 	end
@@ -4642,8 +4647,9 @@ dumpNode = function(object, parentId, context)
 		if #physicsRecords < CONFIG.MaxPhysicsRecords then
 			physicsRecords[#physicsRecords + 1] = {
 				Id = id, ParentId = parentId, Name = name, Path = path,
-				ClassName = className, Properties = properties,
-				Attributes = F.optionalMap(attributes)
+				ClassName = className,
+				Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
+				Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil
 			}
 		else physicsOmitted = physicsOmitted + 1 end
 	end
@@ -5421,7 +5427,8 @@ flushRecovery = function(force)
 		end
 	end
 	local indexOk, indexJson = pcall(HttpService.JSONEncode, HttpService, {
-		DumpId = currentDumpId, Stage = currentStage, Status = "InProgress",
+		DumpId = currentDumpId, Stage = currentStage,
+		Status = currentStage == "complete" and "Complete" or "InProgress",
 		Sequences = recoveryState.Sequences, Saved = recoveryState.Saved,
 		FailedWrites = recoveryState.FailedWrites, LastFailure = recoveryState.LastFailure,
 		LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
@@ -6511,7 +6518,21 @@ function F.finishRuntimeTraceAfterSnapshot()
 	)
 end
 
+local activeRegistry
+local activeRegistryToken
+
 function F.run()
+    if type(shared) == "table" then
+        activeRegistry = shared
+        if type(activeRegistry.__SynergyStructureDumperActive) == "table"
+            and activeRegistry.__SynergyStructureDumperActive.JobId == tostring(game.JobId)
+        then
+            warn("GameStructureDump: a dump is already running in this server; duplicate execution ignored.")
+            return
+        end
+        activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
+        activeRegistry.__SynergyStructureDumperActive = activeRegistryToken
+    end
 	if not capabilities.writefile then
 		warn("GameStructureDump: writefile is unavailable; dump aborted.")
 		return
@@ -6599,6 +6620,12 @@ function F.run()
 	end
 	if flushRecovery then flushRecovery(true) end
 	for _, service in ipairs(F.getSortedChildren(game)) do
+		local serviceName = F.safeName(service)
+		if CONFIG.SkipEngineInternals and (serviceName == "CorePackages" or serviceName == "CoreGui") then
+			root.SkippedEngineServices = root.SkippedEngineServices or {}
+			root.SkippedEngineServices[#root.SkippedEngineServices + 1] = serviceName
+			continue
+		end
 		local ok, result, status = pcall(
 			dumpNode,
 			service,
@@ -6651,7 +6678,8 @@ function F.run()
     F.writeJSONDocument(GUI_FILE, {
         Total = #guiCapture.Snapshot,
         Omitted = guiCapture.SnapshotOmitted,
-        Elements = guiCapture.Snapshot
+        Elements = guiCapture.Snapshot,
+        IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil
     }, "gui.json", writtenFiles, true)
     table.clear(guiCapture.Snapshot)
 
@@ -6719,10 +6747,12 @@ function F.run()
 	F.writeJSONDocument(TAGS_FILE, { Total = #tagRecords, Omitted = tagOmitted,
 		Counts = tagCounts, TaggedInstances = tagRecords }, "tags.json", writtenFiles, false)
 	F.writeJSONDocument(INTERACTIONS_FILE, { Total = #interactionRecords,
-		Omitted = interactionOmitted, Interactions = interactionRecords },
+		Omitted = interactionOmitted, Interactions = interactionRecords,
+		IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
 		"interactions.json", writtenFiles, false)
 	F.writeJSONDocument(PHYSICS_FILE, { Total = #physicsRecords,
-		Omitted = physicsOmitted, JointsAndConstraints = physicsRecords },
+		Omitted = physicsOmitted, JointsAndConstraints = physicsRecords,
+		IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
 		"physics.json", writtenFiles, false)
 	F.writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true)
 	F.writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
@@ -7284,6 +7314,11 @@ function F.formatFatalError(err)
 end
 
 local runOk, runError = xpcall(F.run, F.formatFatalError)
+if activeRegistry and activeRegistryToken
+    and activeRegistry.__SynergyStructureDumperActive == activeRegistryToken
+then
+    activeRegistry.__SynergyStructureDumperActive = nil
+end
 if not runOk then
 	snapshotBusy = false
 	F.recordError("FatalRun", nil, runError, currentStage)
