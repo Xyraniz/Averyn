@@ -6,16 +6,16 @@ local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
 local SELECTION = {
-    Structure = true,
-    GUI = true,
-    Remotes = true,
-    Scripts = true,
-    Values = true,
-    PlayersTools = true,
-    Visuals = true,
-    Runtime = true,
-    LocalSources = true,
-    ModuleSources = true
+    Structure = false,
+    GUI = false,
+    Remotes = false,
+    Scripts = false,
+    Values = false,
+    PlayersTools = false,
+    Visuals = false,
+    Runtime = false,
+    LocalSources = false,
+    ModuleSources = false
 }
 local selectionGui
 local selectionStatus
@@ -7635,16 +7635,6 @@ function F.showSelectionWindow()
             TextYAlignment = Enum.TextYAlignment.Center,
         }, parent)
     end
-    local function miniButton(parent, text, width, click)
-        local button = create("TextButton", {
-            Text = text, Font = Enum.Font.GothamMedium, TextSize = 12,
-            TextColor3 = lightText, BackgroundColor3 = surfaceColor,
-            AutoButtonColor = true, Size = UDim2.new(0, width, 0, 30)
-        }, parent)
-        round(button, 8)
-        button.MouseButton1Click:Connect(click)
-        return button
-    end
 
     local root = create("ScreenGui", {
         Name = "AverynDumperPicker", ResetOnSpawn = false,
@@ -7703,21 +7693,13 @@ function F.showSelectionWindow()
     }, header)
     closeButton.MouseButton1Click:Connect(function() root:Destroy() end)
 
-    local presetBar = create("Frame", {
-        BackgroundTransparency = 1, Position = UDim2.fromOffset(18, 70),
-        Size = UDim2.new(1, -36, 0, 34)
-    }, panel)
-    create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
-        HorizontalAlignment = Enum.HorizontalAlignment.Left, Padding = UDim.new(0, 6),
-        SortOrder = Enum.SortOrder.LayoutOrder }, presetBar)
-
     local body = create("ScrollingFrame", {
         Name = "Options", BackgroundTransparency = 1, BorderSizePixel = 0,
         ScrollBarThickness = 3, ScrollBarImageColor3 = accent,
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.fromOffset(0, 0),
-        Position = UDim2.fromOffset(18, 110),
-        Size = UDim2.new(1, -36, 1, -236)
+        Position = UDim2.fromOffset(18, 70),
+        Size = UDim2.new(1, -36, 1, -196)
     }, panel)
     create("UIListLayout", { Padding = UDim.new(0, 6),
         SortOrder = Enum.SortOrder.LayoutOrder }, body)
@@ -7773,20 +7755,6 @@ function F.showSelectionWindow()
         end)
         updateRow(key)
     end
-
-    local function setPreset(mode)
-        if dumpRunning then return end
-        for key in pairs(SELECTION) do
-            SELECTION[key] = (mode == "all")
-        end
-        if mode == "gui" then SELECTION.GUI = true end
-        if mode == "runtime" then SELECTION.Runtime = true end
-        for key in pairs(SELECTION) do updateRow(key) end
-    end
-    miniButton(presetBar, "All", 46, function() setPreset("all") end)
-    miniButton(presetBar, "GUI only", 86, function() setPreset("gui") end)
-    miniButton(presetBar, "Runtime only", 104, function() setPreset("runtime") end)
-    miniButton(presetBar, "Clear", 58, function() setPreset("none") end)
 
     local footer = create("Frame", {
         BackgroundTransparency = 1,
