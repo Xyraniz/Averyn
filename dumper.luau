@@ -5,6 +5,23 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
 local OUTPUT_FOLDER = "GameStructureDump"
+local SELECTION = {
+    Structure = true,
+    GUI = true,
+    Remotes = true,
+    Scripts = true,
+    Values = true,
+    PlayersTools = true,
+    Visuals = true,
+    Runtime = true,
+    LocalSources = true,
+    ModuleSources = true
+}
+local selectionGui
+local selectionStatus
+local selectionStartButton
+local selectedSnapshotNodes
+local dumpRunning = false
 local SCHEMA_NAME = "Averyn.GameStructureDump"
 local SCHEMA_VERSION = 3.6
 
@@ -26,20 +43,20 @@ local PLAYERS_FILE = OUTPUT_FOLDER .. "/players.json"
 local PLAYER_REFERENCES_FILE = OUTPUT_FOLDER .. "/player_references.json"
 local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
 local RUNTIME_FILES = {
-	Events = OUTPUT_FOLDER .. "/runtime_events.json",
-	Gui = OUTPUT_FOLDER .. "/runtime_gui.json",
-	EventsGame = OUTPUT_FOLDER .. "/runtime_events_game.json",
-	EventsReplicator = OUTPUT_FOLDER .. "/runtime_events_replicator.json",
-	EventsAnalytics = OUTPUT_FOLDER .. "/runtime_events_analytics.json",
-	EventsOther = OUTPUT_FOLDER .. "/runtime_events_other.json",
-	Values = OUTPUT_FOLDER .. "/runtime_values.json",
-	Attributes = OUTPUT_FOLDER .. "/runtime_attributes.json",
-	Character = OUTPUT_FOLDER .. "/runtime_character.json",
-	Logs = OUTPUT_FOLDER .. "/runtime_logs.json",
-	Timeline = OUTPUT_FOLDER .. "/runtime_timeline.json",
-	Disconnect = OUTPUT_FOLDER .. "/runtime_disconnect.json",
-	Hooks = OUTPUT_FOLDER .. "/runtime_hooks.json",
-	HookIntegrity = OUTPUT_FOLDER .. "/runtime_hook_integrity.json"
+    Events = OUTPUT_FOLDER .. "/runtime_events.json",
+    Gui = OUTPUT_FOLDER .. "/runtime_gui.json",
+    EventsGame = OUTPUT_FOLDER .. "/runtime_events_game.json",
+    EventsReplicator = OUTPUT_FOLDER .. "/runtime_events_replicator.json",
+    EventsAnalytics = OUTPUT_FOLDER .. "/runtime_events_analytics.json",
+    EventsOther = OUTPUT_FOLDER .. "/runtime_events_other.json",
+    Values = OUTPUT_FOLDER .. "/runtime_values.json",
+    Attributes = OUTPUT_FOLDER .. "/runtime_attributes.json",
+    Character = OUTPUT_FOLDER .. "/runtime_character.json",
+    Logs = OUTPUT_FOLDER .. "/runtime_logs.json",
+    Timeline = OUTPUT_FOLDER .. "/runtime_timeline.json",
+    Disconnect = OUTPUT_FOLDER .. "/runtime_disconnect.json",
+    Hooks = OUTPUT_FOLDER .. "/runtime_hooks.json",
+    HookIntegrity = OUTPUT_FOLDER .. "/runtime_hook_integrity.json"
 }
 local MANIFEST_FILE = OUTPUT_FOLDER .. "/manifest.json"
 local ERRORS_FILE = OUTPUT_FOLDER .. "/errors.json"
@@ -59,155 +76,155 @@ local YIELD_EVERY = 50
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
-	RecoveryEnabled = true,
-	RecoveryFlushSeconds = 3,
-	RecoverySnapshotBatch = 1000,
-	RecoveryRuntimeBatch = 160,
-	SkipEngineInternals = true,
-	HeavyGameYieldSeconds = 0.025,
-	HeavyGameYieldAfterNodes = 12000,
-	CompactSecondaryIndexes = true,
-	RecoveryIssueBatch = 80,
-	DiagnosticsIntervalSeconds = 2,
-	MaxInteractionRecords = 20000,
-	MaxPhysicsRecords = 20000,
-	MaxTagRecords = 30000,
-	RuntimeTrace = true,
-	RuntimeTracePostSeconds = 90,
-	VisualCapture = true,
-	GuiCapture = true,
-	GuiMaxSnapshotEntries = 100000,
-	RuntimeTraceGui = true,
-	RuntimeMaxObservedGui = 4500,
-	RuntimeMaxGuiChanges = 20000,
-	VisualMaxSnapshotEntries = 60000,
-	VisualMaxDynamicEntries = 24000,
-	VisualEssentialOverflowEntries = 6000,
-	VisualMaxAnimationPlaybackEntries = 3500,
-	VisualAnimatorSampleInterval = 0.6,
-	VisualAnimatorKeepaliveInterval = 3,
-	VisualMaxTrackedAnimators = 100,
-	VisualSecondPassDelay = 0.35,
-	RuntimeRingWindowSeconds = 30,
-	RuntimeTraceIncomingRemotes = true,
-	RuntimeTraceOutgoingRemotes = true,
-	RuntimeTraceDynamicRemotes = true,
-	RuntimeTraceToolAttributes = true,
-	RuntimeTraceInterestingAttributes = true,
-	RuntimeTraceAllValues = true,
-	RuntimeCaptureCaller = true,
-	RuntimeCaptureCallerStack = false,
-	RuntimeCallerStackDepth = 10,
-	RuntimeCaptureInvokeReturns = true,
-	RuntimeCaptureBuffers = true,
-	RuntimeMaxBufferBytes = 4096,
-	RuntimeMaxSerializedTableItems = 512,
-	RuntimeMaxSerializedStringBytes = 16384,
-	RuntimeTraceCharacter = true,
-	RuntimeCharacterSampleInterval = 0.15,
-	RuntimeMaxCharacterRecords = 10000,
-	RuntimeCaptureLogs = true,
-	RuntimeMaxLogRecords = 5000,
-	RuntimeTraceHookDiagnostics = false,
-	RuntimeHookIntegrityInterval = 0.20,
-	RuntimeMaxHookRecords = 12000,
-	RuntimeMaxHookIntegrityRecords = 4000,
-	RuntimeFreezeOnDisconnectError = true,
-	RuntimeFreezeErrorKeywords = {
-		"267",
-		"kicked",
-		"kick",
-		"removed",
-		"expelled",
-		"expuls",
-		"moderation",
-		"cheat",
-		"desconect",
-		"disconnect"
-	},
-	RuntimeFlushEvery = 1000,
-	RuntimeFlushMinSeconds = 5.0,
-	RuntimePrimeYieldEvery = 150,
-	RuntimePrimeBeforeSnapshot = false,
-	RuntimeFlushDuringSnapshot = false,
-	RuntimeMaxEvents = 40000,
-	RuntimeMaxEventsPerCategory = {
-		Game = 16000,
-		Replicator = 16000,
-		Analytics = 4000,
-		Other = 8000
-	},
-	RuntimeMaxTimelineRecords = 40000,
-	RuntimeMaxValueChanges = 16000,
-	RuntimeMaxAttributeChanges = 16000,
-	RuntimeMaxObservedRemotes = 5000,
-	RuntimeMaxObservedAttributes = 3500,
-	RuntimeMaxObservedValues = 5000,
-	ProgressCheckpointEvery = 2000,
-	StateIndexMaxPerBucket = 1500,
-	DecompileModuleScripts = true,
-	DecompileLocalScripts = true,
-	LocalDecompilerMaxScripts = 500,
-	LocalDecompilerWorkers = 2,
-	LocalDecompilerTimeout = 10,
-	LocalDecompilerAbortAfterTimeouts = 4,
-	LocalDecompilerPriorityNames = {
-		"GunClient", "GunCursorController", "AimController", "WeaponCrosshair",
-		"ShotTracerClient", "BulletVisualizer", "HitMarker", "DuelController",
-		"KnifeClient", "ThrowingKnifeVisualizer", "PlayerScriptsLoader"
-	},
-	ModuleDecompilerEndpoint = "https://decompiler.bytefall.dev/decompile",
-	ModuleDecompilerWorkers = 3,
-	ModuleDecompilerTimeout = 10,
-	ModuleDecompilerIgnore = { "Chat", "CoreGui", "CorePackages" },
-	ModuleDecompilerRetryCount = 0,
-	ModuleDecompilerRetryDelay = 0.35,
-	ModuleDecompilerAbortAfterTimeouts = 3,
-	ModuleDecompilerProgressEvery = 10,
-	ModuleDecompilerCheckpointEvery = 25
+    RecoveryEnabled = true,
+    RecoveryFlushSeconds = 3,
+    RecoverySnapshotBatch = 1000,
+    RecoveryRuntimeBatch = 160,
+    SkipEngineInternals = true,
+    HeavyGameYieldSeconds = 0.025,
+    HeavyGameYieldAfterNodes = 12000,
+    CompactSecondaryIndexes = true,
+    RecoveryIssueBatch = 80,
+    DiagnosticsIntervalSeconds = 2,
+    MaxInteractionRecords = 20000,
+    MaxPhysicsRecords = 20000,
+    MaxTagRecords = 30000,
+    RuntimeTrace = true,
+    RuntimeTracePostSeconds = 90,
+    VisualCapture = true,
+    GuiCapture = true,
+    GuiMaxSnapshotEntries = 100000,
+    RuntimeTraceGui = true,
+    RuntimeMaxObservedGui = 4500,
+    RuntimeMaxGuiChanges = 20000,
+    VisualMaxSnapshotEntries = 60000,
+    VisualMaxDynamicEntries = 24000,
+    VisualEssentialOverflowEntries = 6000,
+    VisualMaxAnimationPlaybackEntries = 3500,
+    VisualAnimatorSampleInterval = 0.6,
+    VisualAnimatorKeepaliveInterval = 3,
+    VisualMaxTrackedAnimators = 100,
+    VisualSecondPassDelay = 0.35,
+    RuntimeRingWindowSeconds = 30,
+    RuntimeTraceIncomingRemotes = true,
+    RuntimeTraceOutgoingRemotes = true,
+    RuntimeTraceDynamicRemotes = true,
+    RuntimeTraceToolAttributes = true,
+    RuntimeTraceInterestingAttributes = true,
+    RuntimeTraceAllValues = true,
+    RuntimeCaptureCaller = true,
+    RuntimeCaptureCallerStack = false,
+    RuntimeCallerStackDepth = 10,
+    RuntimeCaptureInvokeReturns = true,
+    RuntimeCaptureBuffers = true,
+    RuntimeMaxBufferBytes = 4096,
+    RuntimeMaxSerializedTableItems = 512,
+    RuntimeMaxSerializedStringBytes = 16384,
+    RuntimeTraceCharacter = true,
+    RuntimeCharacterSampleInterval = 0.15,
+    RuntimeMaxCharacterRecords = 10000,
+    RuntimeCaptureLogs = true,
+    RuntimeMaxLogRecords = 5000,
+    RuntimeTraceHookDiagnostics = false,
+    RuntimeHookIntegrityInterval = 0.20,
+    RuntimeMaxHookRecords = 12000,
+    RuntimeMaxHookIntegrityRecords = 4000,
+    RuntimeFreezeOnDisconnectError = true,
+    RuntimeFreezeErrorKeywords = {
+        "267",
+        "kicked",
+        "kick",
+        "removed",
+        "expelled",
+        "expuls",
+        "moderation",
+        "cheat",
+        "desconect",
+        "disconnect"
+    },
+    RuntimeFlushEvery = 1000,
+    RuntimeFlushMinSeconds = 5.0,
+    RuntimePrimeYieldEvery = 150,
+    RuntimePrimeBeforeSnapshot = false,
+    RuntimeFlushDuringSnapshot = false,
+    RuntimeMaxEvents = 40000,
+    RuntimeMaxEventsPerCategory = {
+        Game = 16000,
+        Replicator = 16000,
+        Analytics = 4000,
+        Other = 8000
+    },
+    RuntimeMaxTimelineRecords = 40000,
+    RuntimeMaxValueChanges = 16000,
+    RuntimeMaxAttributeChanges = 16000,
+    RuntimeMaxObservedRemotes = 5000,
+    RuntimeMaxObservedAttributes = 3500,
+    RuntimeMaxObservedValues = 5000,
+    ProgressCheckpointEvery = 2000,
+    StateIndexMaxPerBucket = 1500,
+    DecompileModuleScripts = true,
+    DecompileLocalScripts = true,
+    LocalDecompilerMaxScripts = 500,
+    LocalDecompilerWorkers = 2,
+    LocalDecompilerTimeout = 10,
+    LocalDecompilerAbortAfterTimeouts = 4,
+    LocalDecompilerPriorityNames = {
+        "GunClient", "GunCursorController", "AimController", "WeaponCrosshair",
+        "ShotTracerClient", "BulletVisualizer", "HitMarker", "DuelController",
+        "KnifeClient", "ThrowingKnifeVisualizer", "PlayerScriptsLoader"
+    },
+    ModuleDecompilerEndpoint = "https://decompiler.bytefall.dev/decompile",
+    ModuleDecompilerWorkers = 3,
+    ModuleDecompilerTimeout = 10,
+    ModuleDecompilerIgnore = { "Chat", "CoreGui", "CorePackages" },
+    ModuleDecompilerRetryCount = 0,
+    ModuleDecompilerRetryDelay = 0.35,
+    ModuleDecompilerAbortAfterTimeouts = 3,
+    ModuleDecompilerProgressEvery = 10,
+    ModuleDecompilerCheckpointEvery = 25
 }
 
 local executorRequest =
-	(type(syn) == "table" and type(syn.request) == "function" and syn.request)
-	or (type(http) == "table" and type(http.request) == "function" and http.request)
-	or (type(http_request) == "function" and http_request)
-	or (type(fluxus) == "table" and type(fluxus.request) == "function" and fluxus.request)
-	or (type(request) == "function" and request)
-	or nil
+    (type(syn) == "table" and type(syn.request) == "function" and syn.request)
+    or (type(http) == "table" and type(http.request) == "function" and http.request)
+    or (type(http_request) == "function" and http_request)
+    or (type(fluxus) == "table" and type(fluxus.request) == "function" and fluxus.request)
+    or (type(request) == "function" and request)
+    or nil
 
 local nativeBase64Encoder =
-	(type(base64_encode) == "function" and base64_encode)
-	or (type(crypt) == "table" and type(crypt.base64encode) == "function" and crypt.base64encode)
-	or (
-		type(crypt) == "table"
-		and type(crypt.base64) == "table"
-		and type(crypt.base64.encode) == "function"
-		and crypt.base64.encode
-	)
-	or nil
+    (type(base64_encode) == "function" and base64_encode)
+    or (type(crypt) == "table" and type(crypt.base64encode) == "function" and crypt.base64encode)
+    or (
+        type(crypt) == "table"
+        and type(crypt.base64) == "table"
+        and type(crypt.base64.encode) == "function"
+        and crypt.base64.encode
+    )
+    or nil
 
 local capabilities = {
-	writefile = type(writefile) == "function",
-	getscriptbytecode = type(getscriptbytecode) == "function",
-	http_request = type(executorRequest) == "function",
-	base64_native = type(nativeBase64Encoder) == "function",
-	makefolder = type(makefolder) == "function",
-	isfolder = type(isfolder) == "function",
-	hookmetamethod = type(hookmetamethod) == "function",
-	getnamecallmethod = type(getnamecallmethod) == "function",
-	newcclosure = type(newcclosure) == "function",
-	checkcaller = type(checkcaller) == "function",
-	getcallingscript = type(getcallingscript) == "function",
-	getconnections = type(getconnections) == "function",
-	debug_info = debug ~= nil and type(debug.info) == "function",
-	buffer = type(buffer) == "table",
-	buffer_len = type(buffer) == "table" and type(buffer.len) == "function",
-	buffer_readu8 = type(buffer) == "table" and type(buffer.readu8) == "function",
-	buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function",
-	getrawmetatable = type(getrawmetatable) == "function",
-	isreadonly = type(isreadonly) == "function",
-		isexecutorclosure = type(isexecutorclosure) == "function",
-	iscclosure = type(iscclosure) == "function"
+    writefile = type(writefile) == "function",
+    getscriptbytecode = type(getscriptbytecode) == "function",
+    http_request = type(executorRequest) == "function",
+    base64_native = type(nativeBase64Encoder) == "function",
+    makefolder = type(makefolder) == "function",
+    isfolder = type(isfolder) == "function",
+    hookmetamethod = type(hookmetamethod) == "function",
+    getnamecallmethod = type(getnamecallmethod) == "function",
+    newcclosure = type(newcclosure) == "function",
+    checkcaller = type(checkcaller) == "function",
+    getcallingscript = type(getcallingscript) == "function",
+    getconnections = type(getconnections) == "function",
+    debug_info = debug ~= nil and type(debug.info) == "function",
+    buffer = type(buffer) == "table",
+    buffer_len = type(buffer) == "table" and type(buffer.len) == "function",
+    buffer_readu8 = type(buffer) == "table" and type(buffer.readu8) == "function",
+    buffer_tostring = type(buffer) == "table" and type(buffer.tostring) == "function",
+    getrawmetatable = type(getrawmetatable) == "function",
+    isreadonly = type(isreadonly) == "function",
+        isexecutorclosure = type(isexecutorclosure) == "function",
+    iscclosure = type(iscclosure) == "function"
 }
 
 local started = os.clock()
@@ -231,16 +248,16 @@ local invalidClassWarned = setmetatable({}, { __mode = "k" })
 local invalidClassNameCount = 0
 local runtimeEventRecords = {}
 local runtimeEventCategoryRecords = {
-	Game = {},
-	Replicator = {},
-	Analytics = {},
-	Other = {}
+    Game = {},
+    Replicator = {},
+    Analytics = {},
+    Other = {}
 }
 local runtimeEventCategoryDropped = {
-	Game = 0,
-	Replicator = 0,
-	Analytics = 0,
-	Other = 0
+    Game = 0,
+    Replicator = 0,
+    Analytics = 0,
+    Other = 0
 }
 local runtimeValueRecords = {}
 local runtimeAttributeRecords = {}
@@ -254,32 +271,32 @@ local runtimeObservedRemotes = setmetatable({}, { __mode = "k" })
 local runtimeObservedAttributes = setmetatable({}, { __mode = "k" })
 local runtimeObservedValues = setmetatable({}, { __mode = "k" })
 local runtimeObserverCounts = {
-	Remotes = 0,
-	Attributes = 0,
-	Values = 0
+    Remotes = 0,
+    Attributes = 0,
+    Values = 0
 }
 local runtimeObserverCapWarned = {
-	Remotes = false,
-	Attributes = false,
-	Values = false
+    Remotes = false,
+    Attributes = false,
+    Values = false
 }
 local runtimeAttributeLastValues = setmetatable({}, { __mode = "k" })
 local runtimeValueLastValues = setmetatable({}, { __mode = "k" })
 local runtimeTraceActive = false
 local runtimeHookState = {
-	Active = false,
-	Frozen = false,
-	FreezeInfo = nil,
-	LastFlushAt = 0,
-	MutationsSinceFlush = 0,
-	LastPruneAt = 0,
-	LastGuiErrorMessage = nil,
-	HookRecords = {},
-	HookIntegrityRecords = {},
-	HookIntegrityBaseline = nil,
-	HookIntegrityLast = nil,
-	HookIntegrityLastCheckAt = 0,
-		FlushScheduled = false
+    Active = false,
+    Frozen = false,
+    FreezeInfo = nil,
+    LastFlushAt = 0,
+    MutationsSinceFlush = 0,
+    LastPruneAt = 0,
+    LastGuiErrorMessage = nil,
+    HookRecords = {},
+    HookIntegrityRecords = {},
+    HookIntegrityBaseline = nil,
+    HookIntegrityLast = nil,
+    HookIntegrityLastCheckAt = 0,
+        FlushScheduled = false
 }
 local runtimeOutgoingHookInstalled = false
 local runtimeStartedAt = os.clock()
@@ -342,565 +359,565 @@ local INTERACTION_CLASSES = { ProximityPrompt = true, ClickDetector = true, Drag
 local PHYSICS_CLASSES = { Weld = true, ManualWeld = true, Snap = true, Motor6D = true, WeldConstraint = true, BallSocketConstraint = true, HingeConstraint = true, PrismaticConstraint = true, RodConstraint = true, RopeConstraint = true, SpringConstraint = true, CylindricalConstraint = true, AlignPosition = true, AlignOrientation = true, LinearVelocity = true, AngularVelocity = true, VectorForce = true, Torque = true, LineForce = true, PlaneConstraint = true, NoCollisionConstraint = true, Attachment = true, Bone = true }
 
 local remoteIndex = {
-	RemoteEvents = {},
-	UnreliableRemoteEvents = {},
-	RemoteFunctions = {},
-	BindableEvents = {},
-	BindableFunctions = {}
+    RemoteEvents = {},
+    UnreliableRemoteEvents = {},
+    RemoteFunctions = {},
+    BindableEvents = {},
+    BindableFunctions = {}
 }
 
 local scriptIndex = {
-	LocalScripts = {},
-	ModuleScripts = {},
-	Scripts = {},
-	CoreScripts = {}
+    LocalScripts = {},
+    ModuleScripts = {},
+    Scripts = {},
+    CoreScripts = {}
 }
 
 local moduleScriptQueue = {}
 local clientScriptQueue = {}
 local clientDecompileStats = {
-	Enabled = CONFIG.DecompileLocalScripts,
-	Queued = 0,
-	Attempted = 0,
-	Succeeded = 0,
-	Failed = 0,
-	Skipped = 0,
-	TimedOut = 0,
-	Aborted = 0,
-	Written = 0,
-	BytecodeBytes = 0,
-	SourceBytes = 0,
-	ElapsedSeconds = 0,
-	OutputFolder = nil
+    Enabled = CONFIG.DecompileLocalScripts,
+    Queued = 0,
+    Attempted = 0,
+    Succeeded = 0,
+    Failed = 0,
+    Skipped = 0,
+    TimedOut = 0,
+    Aborted = 0,
+    Written = 0,
+    BytecodeBytes = 0,
+    SourceBytes = 0,
+    ElapsedSeconds = 0,
+    OutputFolder = nil
 }
 local moduleDecompileStats = {
-	Enabled = CONFIG.DecompileModuleScripts,
-	Endpoint = CONFIG.ModuleDecompilerEndpoint,
-	Queued = 0,
-	Attempted = 0,
-	Succeeded = 0,
-	Failed = 0,
-	Skipped = 0,
-	Ignored = 0,
-	TimedOut = 0,
-	Aborted = 0,
-	Written = 0,
-	BytecodeBytes = 0,
-	SourceBytes = 0,
-	ElapsedSeconds = 0
+    Enabled = CONFIG.DecompileModuleScripts,
+    Endpoint = CONFIG.ModuleDecompilerEndpoint,
+    Queued = 0,
+    Attempted = 0,
+    Succeeded = 0,
+    Failed = 0,
+    Skipped = 0,
+    Ignored = 0,
+    TimedOut = 0,
+    Aborted = 0,
+    Written = 0,
+    BytecodeBytes = 0,
+    SourceBytes = 0,
+    ElapsedSeconds = 0
 }
 
 local inventoryToolIds = {
-	Backpack = {},
-	Character = {},
-	StarterGear = {}
+    Backpack = {},
+    Character = {},
+    StarterGear = {}
 }
 
 local F = {}
 
 function F.isContinuationByte(value)
-	return value ~= nil and value >= 0x80 and value <= 0xBF
+    return value ~= nil and value >= 0x80 and value <= 0xBF
 end
 
 function F.sanitizeString(value)
-	if type(value) ~= "string" then
-		value = tostring(value)
-	end
+    if type(value) ~= "string" then
+        value = tostring(value)
+    end
 
-	local utf8Ok, utf8Length = pcall(utf8.len, value)
-	if utf8Ok and utf8Length ~= nil then
-		return value
-	end
+    local utf8Ok, utf8Length = pcall(utf8.len, value)
+    if utf8Ok and utf8Length ~= nil then
+        return value
+    end
 
-	local cached = invalidUtf8Cache[value]
-	if cached then
-		return cached
-	end
+    local cached = invalidUtf8Cache[value]
+    if cached then
+        return cached
+    end
 
-	local output = {}
-	local index = 1
-	local length = #value
+    local output = {}
+    local index = 1
+    local length = #value
 
-	while index <= length do
-		local b1 = string.byte(value, index)
-		local sequenceLength = 0
+    while index <= length do
+        local b1 = string.byte(value, index)
+        local sequenceLength = 0
 
-		if b1 <= 0x7F then
-			sequenceLength = 1
-		elseif b1 >= 0xC2 and b1 <= 0xDF then
-			local b2 = string.byte(value, index + 1)
-			if F.isContinuationByte(b2) then
-				sequenceLength = 2
-			end
-		elseif b1 >= 0xE0 and b1 <= 0xEF then
-			local b2 = string.byte(value, index + 1)
-			local b3 = string.byte(value, index + 2)
-			local secondValid = false
+        if b1 <= 0x7F then
+            sequenceLength = 1
+        elseif b1 >= 0xC2 and b1 <= 0xDF then
+            local b2 = string.byte(value, index + 1)
+            if F.isContinuationByte(b2) then
+                sequenceLength = 2
+            end
+        elseif b1 >= 0xE0 and b1 <= 0xEF then
+            local b2 = string.byte(value, index + 1)
+            local b3 = string.byte(value, index + 2)
+            local secondValid = false
 
-			if b1 == 0xE0 then
-				secondValid = b2 ~= nil and b2 >= 0xA0 and b2 <= 0xBF
-			elseif b1 == 0xED then
-				secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x9F
-			else
-				secondValid = F.isContinuationByte(b2)
-			end
+            if b1 == 0xE0 then
+                secondValid = b2 ~= nil and b2 >= 0xA0 and b2 <= 0xBF
+            elseif b1 == 0xED then
+                secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x9F
+            else
+                secondValid = F.isContinuationByte(b2)
+            end
 
-			if secondValid and F.isContinuationByte(b3) then
-				sequenceLength = 3
-			end
-		elseif b1 >= 0xF0 and b1 <= 0xF4 then
-			local b2 = string.byte(value, index + 1)
-			local b3 = string.byte(value, index + 2)
-			local b4 = string.byte(value, index + 3)
-			local secondValid = false
+            if secondValid and F.isContinuationByte(b3) then
+                sequenceLength = 3
+            end
+        elseif b1 >= 0xF0 and b1 <= 0xF4 then
+            local b2 = string.byte(value, index + 1)
+            local b3 = string.byte(value, index + 2)
+            local b4 = string.byte(value, index + 3)
+            local secondValid = false
 
-			if b1 == 0xF0 then
-				secondValid = b2 ~= nil and b2 >= 0x90 and b2 <= 0xBF
-			elseif b1 == 0xF4 then
-				secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x8F
-			else
-				secondValid = F.isContinuationByte(b2)
-			end
+            if b1 == 0xF0 then
+                secondValid = b2 ~= nil and b2 >= 0x90 and b2 <= 0xBF
+            elseif b1 == 0xF4 then
+                secondValid = b2 ~= nil and b2 >= 0x80 and b2 <= 0x8F
+            else
+                secondValid = F.isContinuationByte(b2)
+            end
 
-			if secondValid and F.isContinuationByte(b3) and F.isContinuationByte(b4) then
-				sequenceLength = 4
-			end
-		end
+            if secondValid and F.isContinuationByte(b3) and F.isContinuationByte(b4) then
+                sequenceLength = 4
+            end
+        end
 
-		if sequenceLength > 0 then
-			table.insert(output, string.sub(value, index, index + sequenceLength - 1))
-			index = index + sequenceLength
-		else
-			table.insert(output, string.format("\\x%02X", b1))
-			index = index + 1
-		end
-	end
+        if sequenceLength > 0 then
+            table.insert(output, string.sub(value, index, index + sequenceLength - 1))
+            index = index + sequenceLength
+        else
+            table.insert(output, string.format("\\x%02X", b1))
+            index = index + 1
+        end
+    end
 
-	local sanitized = table.concat(output)
-	invalidUtf8Cache[value] = sanitized
-	invalidUtf8StringCount = invalidUtf8StringCount + 1
-	return sanitized
+    local sanitized = table.concat(output)
+    invalidUtf8Cache[value] = sanitized
+    invalidUtf8StringCount = invalidUtf8StringCount + 1
+    return sanitized
 end
 
 function F.escapeText(value)
-	value = F.sanitizeString(value)
-	local output = {}
+    value = F.sanitizeString(value)
+    local output = {}
 
-	for index = 1, #value do
-		local byte = string.byte(value, index)
+    for index = 1, #value do
+        local byte = string.byte(value, index)
 
-		if byte == 9 then
-			table.insert(output, "\\t")
-		elseif byte == 10 then
-			table.insert(output, "\\n")
-		elseif byte == 13 then
-			table.insert(output, "\\r")
-		elseif byte < 32 or byte == 127 then
-			table.insert(output, string.format("\\x%02X", byte))
-		else
-			table.insert(output, string.char(byte))
-		end
-	end
+        if byte == 9 then
+            table.insert(output, "\\t")
+        elseif byte == 10 then
+            table.insert(output, "\\n")
+        elseif byte == 13 then
+            table.insert(output, "\\r")
+        elseif byte < 32 or byte == 127 then
+            table.insert(output, string.format("\\x%02X", byte))
+        else
+            table.insert(output, string.char(byte))
+        end
+    end
 
-	return table.concat(output)
+    return table.concat(output)
 end
 
 function F.safeName(object)
-	local ok, value = pcall(function()
-		return object.Name
-	end)
+    local ok, value = pcall(function()
+        return object.Name
+    end)
 
-	if ok then
-		return F.sanitizeString(value)
-	end
+    if ok then
+        return F.sanitizeString(value)
+    end
 
-	return "<unknown>"
+    return "<unknown>"
 end
 
 function F.safeClassName(object)
-	local ok, value = pcall(function()
-		return object.ClassName
-	end)
+    local ok, value = pcall(function()
+        return object.ClassName
+    end)
 
-	if ok and type(value) == "string" then
-		value = F.sanitizeString(value)
-		if value ~= "" then
-			return value
-		end
-	end
+    if ok and type(value) == "string" then
+        value = F.sanitizeString(value)
+        if value ~= "" then
+            return value
+        end
+    end
 
-	if not invalidClassObjects[object] then
-		invalidClassObjects[object] = true
-		invalidClassNameCount = invalidClassNameCount + 1
-	end
+    if not invalidClassObjects[object] then
+        invalidClassObjects[object] = true
+        invalidClassNameCount = invalidClassNameCount + 1
+    end
 
-	return "Instance"
+    return "Instance"
 end
 
 function F.safeFullName(object)
-	local ok, result = pcall(function()
-		return object:GetFullName()
-	end)
+    local ok, result = pcall(function()
+        return object:GetFullName()
+    end)
 
-	if ok then
-		return F.sanitizeString(result)
-	end
+    if ok then
+        return F.sanitizeString(result)
+    end
 
-	return F.safeName(object)
+    return F.safeName(object)
 end
 
 function F.makeIssue(stage, object, message, property)
-	local entry = {
-		Stage = F.sanitizeString(stage),
-		Error = F.sanitizeString(message)
-	}
+    local entry = {
+        Stage = F.sanitizeString(stage),
+        Error = F.sanitizeString(message)
+    }
 
-	if object then
-		entry.Id = instanceIds[object]
-		entry.Name = F.safeName(object)
-		entry.ClassName = F.safeClassName(object)
-		entry.Path = F.safeFullName(object)
-	end
+    if object then
+        entry.Id = instanceIds[object]
+        entry.Name = F.safeName(object)
+        entry.ClassName = F.safeClassName(object)
+        entry.Path = F.safeFullName(object)
+    end
 
-	if property then
-		entry.Property = F.sanitizeString(property)
-	end
+    if property then
+        entry.Property = F.sanitizeString(property)
+    end
 
-	return entry
+    return entry
 end
 
 function F.recordError(stage, object, message, property)
-	local entry = F.makeIssue(stage, object, message, property)
-	table.insert(errors, entry)
-	recoveryLastError = entry
-	if journalRecord then journalRecord("Issues", { Severity = "Error", Data = entry }) end
+    local entry = F.makeIssue(stage, object, message, property)
+    table.insert(errors, entry)
+    recoveryLastError = entry
+    if journalRecord then journalRecord("Issues", { Severity = "Error", Data = entry }) end
 end
 
 function F.recordWarning(stage, object, message, property)
-	local entry = F.makeIssue(stage, object, message, property)
-	table.insert(warnings, entry)
-	if journalRecord then journalRecord("Issues", { Severity = "Warning", Data = entry }) end
+    local entry = F.makeIssue(stage, object, message, property)
+    table.insert(warnings, entry)
+    if journalRecord then journalRecord("Issues", { Severity = "Warning", Data = entry }) end
 end
 
 function F.safeGet(object, property)
-	local ok, value = pcall(function()
-		return object[property]
-	end)
+    local ok, value = pcall(function()
+        return object[property]
+    end)
 
-	if ok then
-		return value, true, nil
-	end
+    if ok then
+        return value, true, nil
+    end
 
-	return nil, false, value
+    return nil, false, value
 end
 
 function F.safeIsA(object, className)
-	local ok, result = pcall(function()
-		return object:IsA(className)
-	end)
+    local ok, result = pcall(function()
+        return object:IsA(className)
+    end)
 
-	return ok and result or false
+    return ok and result or false
 end
 
 function F.safeIsDescendantOf(object, ancestor)
-	if not object or not ancestor then
-		return false
-	end
+    if not object or not ancestor then
+        return false
+    end
 
-	local ok, result = pcall(function()
-		return object:IsDescendantOf(ancestor)
-	end)
+    local ok, result = pcall(function()
+        return object:IsDescendantOf(ancestor)
+    end)
 
-	return ok and result or false
+    return ok and result or false
 end
 
 function F.assignInstanceId(object)
-	local existing = instanceIds[object]
-	if existing then
-		return existing
-	end
+    local existing = instanceIds[object]
+    if existing then
+        return existing
+    end
 
-	nextInstanceId = nextInstanceId + 1
-	local id = nextInstanceId
-	instanceIds[object] = id
+    nextInstanceId = nextInstanceId + 1
+    local id = nextInstanceId
+    instanceIds[object] = id
 
-	instanceMetaById[id] = {
-		Id = id,
-		Name = F.safeName(object),
-		ClassName = F.safeClassName(object),
-		Path = F.safeFullName(object),
-		ReferencedOnly = true
-	}
+    instanceMetaById[id] = {
+        Id = id,
+        Name = F.safeName(object),
+        ClassName = F.safeClassName(object),
+        Path = F.safeFullName(object),
+        ReferencedOnly = true
+    }
 
-	return id
+    return id
 end
 
 function F.updateInstanceMeta(object, id, parentId, name, className, path)
-	local meta = instanceMetaById[id]
-	if not meta then
-		meta = { Id = id }
-		instanceMetaById[id] = meta
-	end
+    local meta = instanceMetaById[id]
+    if not meta then
+        meta = { Id = id }
+        instanceMetaById[id] = meta
+    end
 
-	meta.Name = name or F.safeName(object)
-	meta.ClassName = className or F.safeClassName(object)
-	meta.Path = path or F.safeFullName(object)
-	meta.ParentId = parentId
-	meta.ReferencedOnly = false
+    meta.Name = name or F.safeName(object)
+    meta.ClassName = className or F.safeClassName(object)
+    meta.Path = path or F.safeFullName(object)
+    meta.ParentId = parentId
+    meta.ReferencedOnly = false
 end
 
 function F.makeInstanceReference(object, allowAssign)
-	if not object then
-		return nil
-	end
+    if not object then
+        return nil
+    end
 
-	if allowAssign == nil then
-		allowAssign = true
-	end
+    if allowAssign == nil then
+        allowAssign = true
+    end
 
-	local id = instanceIds[object]
-	if not id and not snapshotFinalized and allowAssign then
-		id = F.assignInstanceId(object)
-	end
+    local id = instanceIds[object]
+    if not id and not snapshotFinalized and allowAssign then
+        id = F.assignInstanceId(object)
+    end
 
-	local reference = {
-		Name = F.safeName(object),
-		ClassName = F.safeClassName(object),
-		Path = F.safeFullName(object)
-	}
+    local reference = {
+        Name = F.safeName(object),
+        ClassName = F.safeClassName(object),
+        Path = F.safeFullName(object)
+    }
 
-	if id then
-		reference.Id = id
-	end
+    if id then
+        reference.Id = id
+    end
 
-	return reference
+    return reference
 end
 
 function F.finiteNumber(value)
-	if value ~= value then
-		return false
-	end
+    if value ~= value then
+        return false
+    end
 
-	return value ~= math.huge and value ~= -math.huge
+    return value ~= math.huge and value ~= -math.huge
 end
 
 function F.serializeComponentNumber(value)
-	if F.finiteNumber(value) then
-		return value
-	end
+    if F.finiteNumber(value) then
+        return value
+    end
 
-	return {
-		__type = "NonFiniteNumber",
-		value = F.sanitizeString(tostring(value))
-	}
+    return {
+        __type = "NonFiniteNumber",
+        value = F.sanitizeString(tostring(value))
+    }
 end
 
 function F.optionalMap(value)
-	if next(value) == nil then
-		return nil
-	end
+    if next(value) == nil then
+        return nil
+    end
 
-	return value
+    return value
 end
 
 function F.isArrayTable(value)
-	local count = 0
-	local highest = 0
+    local count = 0
+    local highest = 0
 
-	for key in pairs(value) do
-		if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-			return false
-		end
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+            return false
+        end
 
-		count = count + 1
-		if key > highest then
-			highest = key
-		end
-	end
+        count = count + 1
+        if key > highest then
+            highest = key
+        end
+    end
 
-	return highest == count
+    return highest == count
 end
 
 function F.stableKey(value)
-	local valueType = typeof(value)
+    local valueType = typeof(value)
 
-	if valueType == "string" or valueType == "number" or valueType == "boolean" then
-		return valueType .. ":" .. tostring(value)
-	end
+    if valueType == "string" or valueType == "number" or valueType == "boolean" then
+        return valueType .. ":" .. tostring(value)
+    end
 
-	if valueType == "EnumItem" then
-		return valueType .. ":" .. tostring(value)
-	end
+    if valueType == "EnumItem" then
+        return valueType .. ":" .. tostring(value)
+    end
 
-	return valueType .. ":" .. tostring(value)
+    return valueType .. ":" .. tostring(value)
 end
 
 function F.bytesToHex(value)
-	local output = table.create(math.ceil(#value / 32))
+    local output = table.create(math.ceil(#value / 32))
 
-	for index = 1, #value, 32 do
-		local stopIndex = math.min(index + 31, #value)
-		local chunk = table.create(stopIndex - index + 1)
+    for index = 1, #value, 32 do
+        local stopIndex = math.min(index + 31, #value)
+        local chunk = table.create(stopIndex - index + 1)
 
-		for byteIndex = index, stopIndex do
-			chunk[#chunk + 1] = string.format("%02X", string.byte(value, byteIndex))
-		end
+        for byteIndex = index, stopIndex do
+            chunk[#chunk + 1] = string.format("%02X", string.byte(value, byteIndex))
+        end
 
-		output[#output + 1] = table.concat(chunk)
-	end
+        output[#output + 1] = table.concat(chunk)
+    end
 
-	return table.concat(output)
+    return table.concat(output)
 end
 
 function F.readBufferRange(value, offset, length)
-	if length <= 0 then
-		return ""
-	end
+    if length <= 0 then
+        return ""
+    end
 
-	if capabilities.buffer_tostring then
-		local ok, raw = pcall(buffer.tostring, value)
-		if ok and type(raw) == "string" then
-			return string.sub(raw, offset + 1, offset + length)
-		end
-	end
+    if capabilities.buffer_tostring then
+        local ok, raw = pcall(buffer.tostring, value)
+        if ok and type(raw) == "string" then
+            return string.sub(raw, offset + 1, offset + length)
+        end
+    end
 
-	if capabilities.buffer_readu8 then
-		local bytes = table.create(length)
+    if capabilities.buffer_readu8 then
+        local bytes = table.create(length)
 
-		for index = 0, length - 1 do
-			local ok, byte = pcall(buffer.readu8, value, offset + index)
-			if not ok then
-				return nil
-			end
+        for index = 0, length - 1 do
+            local ok, byte = pcall(buffer.readu8, value, offset + index)
+            if not ok then
+                return nil
+            end
 
-			bytes[index + 1] = string.char(byte)
-		end
+            bytes[index + 1] = string.char(byte)
+        end
 
-		return table.concat(bytes)
-	end
+        return table.concat(bytes)
+    end
 
-	return nil
+    return nil
 end
 
 function F.serializeBufferValue(value)
-	local result = {
-		__type = "buffer"
-	}
+    local result = {
+        __type = "buffer"
+    }
 
-	if not CONFIG.RuntimeCaptureBuffers then
-		result.Captured = false
-		result.Value = F.sanitizeString(tostring(value))
-		return result
-	end
+    if not CONFIG.RuntimeCaptureBuffers then
+        result.Captured = false
+        result.Value = F.sanitizeString(tostring(value))
+        return result
+    end
 
-	if not capabilities.buffer_len then
-		result.Captured = false
-		result.Error = "buffer.len unavailable"
-		result.Value = F.sanitizeString(tostring(value))
-		return result
-	end
+    if not capabilities.buffer_len then
+        result.Captured = false
+        result.Error = "buffer.len unavailable"
+        result.Value = F.sanitizeString(tostring(value))
+        return result
+    end
 
-	local lengthOk, length = pcall(buffer.len, value)
-	if not lengthOk or type(length) ~= "number" then
-		result.Captured = false
-		result.Error = F.sanitizeString(length)
-		result.Value = F.sanitizeString(tostring(value))
-		return result
-	end
+    local lengthOk, length = pcall(buffer.len, value)
+    if not lengthOk or type(length) ~= "number" then
+        result.Captured = false
+        result.Error = F.sanitizeString(length)
+        result.Value = F.sanitizeString(tostring(value))
+        return result
+    end
 
-	result.Length = length
+    result.Length = length
 
-	local maxBytes = math.max(0, tonumber(CONFIG.RuntimeMaxBufferBytes) or 0)
-	if maxBytes == 0 then
-		result.Captured = false
-		return result
-	end
+    local maxBytes = math.max(0, tonumber(CONFIG.RuntimeMaxBufferBytes) or 0)
+    if maxBytes == 0 then
+        result.Captured = false
+        return result
+    end
 
-	if length <= maxBytes then
-		local raw = F.readBufferRange(value, 0, length)
-		if raw then
-			result.Captured = true
-			result.CapturedBytes = length
-			result.Truncated = false
-			result.Hex = F.bytesToHex(raw)
-		else
-			result.Captured = false
-			result.Error = "buffer bytes could not be read"
-		end
+    if length <= maxBytes then
+        local raw = F.readBufferRange(value, 0, length)
+        if raw then
+            result.Captured = true
+            result.CapturedBytes = length
+            result.Truncated = false
+            result.Hex = F.bytesToHex(raw)
+        else
+            result.Captured = false
+            result.Error = "buffer bytes could not be read"
+        end
 
-		return result
-	end
+        return result
+    end
 
-	local prefixLength = math.floor(maxBytes / 2)
-	local suffixLength = maxBytes - prefixLength
-	local prefix = F.readBufferRange(value, 0, prefixLength)
-	local suffix = F.readBufferRange(value, math.max(0, length - suffixLength), suffixLength)
+    local prefixLength = math.floor(maxBytes / 2)
+    local suffixLength = maxBytes - prefixLength
+    local prefix = F.readBufferRange(value, 0, prefixLength)
+    local suffix = F.readBufferRange(value, math.max(0, length - suffixLength), suffixLength)
 
-	if prefix and suffix then
-		result.Captured = true
-		result.CapturedBytes = prefixLength + suffixLength
-		result.Truncated = true
-		result.HexPrefix = F.bytesToHex(prefix)
-		result.HexSuffix = F.bytesToHex(suffix)
-		result.OmittedBytes = math.max(0, length - prefixLength - suffixLength)
-	else
-		result.Captured = false
-		result.Error = "buffer bytes could not be read"
-	end
+    if prefix and suffix then
+        result.Captured = true
+        result.CapturedBytes = prefixLength + suffixLength
+        result.Truncated = true
+        result.HexPrefix = F.bytesToHex(prefix)
+        result.HexSuffix = F.bytesToHex(suffix)
+        result.OmittedBytes = math.max(0, length - prefixLength - suffixLength)
+    else
+        result.Captured = false
+        result.Error = "buffer bytes could not be read"
+    end
 
-	return result
+    return result
 end
 
 local serializeValue
 
 serializeValue = function(value, state)
-	if value == nil then
-		return nil
-	end
+    if value == nil then
+        return nil
+    end
 
-	state = state or {
-		seen = {},
-		depth = 0
-	}
+    state = state or {
+        seen = {},
+        depth = 0
+    }
 
-	if state.depth > MAX_SERIALIZE_DEPTH then
-		return {
-			__type = "MaxDepth",
-			depth = state.depth
-		}
-	end
+    if state.depth > MAX_SERIALIZE_DEPTH then
+        return {
+            __type = "MaxDepth",
+            depth = state.depth
+        }
+    end
 
-	local valueType = typeof(value)
+    local valueType = typeof(value)
 
-	if valueType == "string" then
-		local serializedString = F.sanitizeString(value)
-		local maxStringBytes = tonumber(state.maxStringBytes)
-		if maxStringBytes and maxStringBytes > 0 and #serializedString > maxStringBytes then
-			local omitted = #serializedString - maxStringBytes
-			return string.sub(serializedString, 1, maxStringBytes)
-				.. string.format("...<truncated %d bytes>", omitted)
-		end
-		return serializedString
-	end
+    if valueType == "string" then
+        local serializedString = F.sanitizeString(value)
+        local maxStringBytes = tonumber(state.maxStringBytes)
+        if maxStringBytes and maxStringBytes > 0 and #serializedString > maxStringBytes then
+            local omitted = #serializedString - maxStringBytes
+            return string.sub(serializedString, 1, maxStringBytes)
+                .. string.format("...<truncated %d bytes>", omitted)
+        end
+        return serializedString
+    end
 
-	if valueType == "buffer" then
-		return F.serializeBufferValue(value)
-	end
+    if valueType == "buffer" then
+        return F.serializeBufferValue(value)
+    end
 
-	if valueType == "boolean" then
-		return value
-	end
+    if valueType == "boolean" then
+        return value
+    end
 
-	if valueType == "number" then
-		if F.finiteNumber(value) then
-			return value
-		end
+    if valueType == "number" then
+        if F.finiteNumber(value) then
+            return value
+        end
 
-		return {
-			__type = "Number",
-			value = F.sanitizeString(tostring(value))
-		}
-	end
+        return {
+            __type = "Number",
+            value = F.sanitizeString(tostring(value))
+        }
+    end
 
     if valueType == "Vector2int16" or valueType == "Vector3int16" then
         local result = {
@@ -964,395 +981,395 @@ serializeValue = function(value, state)
         }
     end
 
-	if valueType == "Vector3" then
-		return {
-			__type = "Vector3",
-			x = F.serializeComponentNumber(value.X),
-			y = F.serializeComponentNumber(value.Y),
-			z = F.serializeComponentNumber(value.Z)
-		}
-	end
+    if valueType == "Vector3" then
+        return {
+            __type = "Vector3",
+            x = F.serializeComponentNumber(value.X),
+            y = F.serializeComponentNumber(value.Y),
+            z = F.serializeComponentNumber(value.Z)
+        }
+    end
 
-	if valueType == "Vector2" then
-		return {
-			__type = "Vector2",
-			x = F.serializeComponentNumber(value.X),
-			y = F.serializeComponentNumber(value.Y)
-		}
-	end
+    if valueType == "Vector2" then
+        return {
+            __type = "Vector2",
+            x = F.serializeComponentNumber(value.X),
+            y = F.serializeComponentNumber(value.Y)
+        }
+    end
 
-	if valueType == "Color3" then
-		return {
-			__type = "Color3",
-			r = F.serializeComponentNumber(value.R),
-			g = F.serializeComponentNumber(value.G),
-			b = F.serializeComponentNumber(value.B)
-		}
-	end
+    if valueType == "Color3" then
+        return {
+            __type = "Color3",
+            r = F.serializeComponentNumber(value.R),
+            g = F.serializeComponentNumber(value.G),
+            b = F.serializeComponentNumber(value.B)
+        }
+    end
 
-	if valueType == "CFrame" then
-		local rawComponents = { value:GetComponents() }
-		local components = {}
-		for index, component in ipairs(rawComponents) do
-			components[index] = F.serializeComponentNumber(component)
-		end
+    if valueType == "CFrame" then
+        local rawComponents = { value:GetComponents() }
+        local components = {}
+        for index, component in ipairs(rawComponents) do
+            components[index] = F.serializeComponentNumber(component)
+        end
 
-		return {
-			__type = "CFrame",
-			components = components
-		}
-	end
+        return {
+            __type = "CFrame",
+            components = components
+        }
+    end
 
-	if valueType == "UDim" then
-		return {
-			__type = "UDim",
-			scale = F.serializeComponentNumber(value.Scale),
-			offset = F.serializeComponentNumber(value.Offset)
-		}
-	end
+    if valueType == "UDim" then
+        return {
+            __type = "UDim",
+            scale = F.serializeComponentNumber(value.Scale),
+            offset = F.serializeComponentNumber(value.Offset)
+        }
+    end
 
-	if valueType == "UDim2" then
-		return {
-			__type = "UDim2",
-			xScale = F.serializeComponentNumber(value.X.Scale),
-			xOffset = F.serializeComponentNumber(value.X.Offset),
-			yScale = F.serializeComponentNumber(value.Y.Scale),
-			yOffset = F.serializeComponentNumber(value.Y.Offset)
-		}
-	end
+    if valueType == "UDim2" then
+        return {
+            __type = "UDim2",
+            xScale = F.serializeComponentNumber(value.X.Scale),
+            xOffset = F.serializeComponentNumber(value.X.Offset),
+            yScale = F.serializeComponentNumber(value.Y.Scale),
+            yOffset = F.serializeComponentNumber(value.Y.Offset)
+        }
+    end
 
-	if valueType == "BrickColor" then
-		return {
-			__type = "BrickColor",
-			name = F.sanitizeString(value.Name),
-			number = value.Number
-		}
-	end
+    if valueType == "BrickColor" then
+        return {
+            __type = "BrickColor",
+            name = F.sanitizeString(value.Name),
+            number = value.Number
+        }
+    end
 
-	if valueType == "EnumItem" then
-		return {
-			__type = "EnumItem",
-			value = F.sanitizeString(tostring(value))
-		}
-	end
+    if valueType == "EnumItem" then
+        return {
+            __type = "EnumItem",
+            value = F.sanitizeString(tostring(value))
+        }
+    end
 
-	if valueType == "Font" then
-		return {
-			__type = "Font",
-			family = F.sanitizeString(value.Family),
-			weight = serializeValue(value.Weight),
-			style = serializeValue(value.Style)
-		}
-	end
+    if valueType == "Font" then
+        return {
+            __type = "Font",
+            family = F.sanitizeString(value.Family),
+            weight = serializeValue(value.Weight),
+            style = serializeValue(value.Style)
+        }
+    end
 
-	if valueType == "NumberRange" then
-		return {
-			__type = "NumberRange",
-			min = F.serializeComponentNumber(value.Min),
-			max = F.serializeComponentNumber(value.Max)
-		}
-	end
+    if valueType == "NumberRange" then
+        return {
+            __type = "NumberRange",
+            min = F.serializeComponentNumber(value.Min),
+            max = F.serializeComponentNumber(value.Max)
+        }
+    end
 
-	if valueType == "Rect" then
-		return {
-			__type = "Rect",
-			min = serializeValue(value.Min),
-			max = serializeValue(value.Max)
-		}
-	end
+    if valueType == "Rect" then
+        return {
+            __type = "Rect",
+            min = serializeValue(value.Min),
+            max = serializeValue(value.Max)
+        }
+    end
 
-	if valueType == "Ray" then
-		return {
-			__type = "Ray",
-			origin = serializeValue(value.Origin),
-			direction = serializeValue(value.Direction)
-		}
-	end
+    if valueType == "Ray" then
+        return {
+            __type = "Ray",
+            origin = serializeValue(value.Origin),
+            direction = serializeValue(value.Direction)
+        }
+    end
 
-	if valueType == "NumberSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(value.Keypoints) do
-			table.insert(keypoints, {
-				time = F.serializeComponentNumber(keypoint.Time),
-				value = F.serializeComponentNumber(keypoint.Value),
-				envelope = F.serializeComponentNumber(keypoint.Envelope)
-			})
-		end
+    if valueType == "NumberSequence" then
+        local keypoints = {}
+        for _, keypoint in ipairs(value.Keypoints) do
+            table.insert(keypoints, {
+                time = F.serializeComponentNumber(keypoint.Time),
+                value = F.serializeComponentNumber(keypoint.Value),
+                envelope = F.serializeComponentNumber(keypoint.Envelope)
+            })
+        end
 
-		return {
-			__type = "NumberSequence",
-			keypoints = keypoints
-		}
-	end
+        return {
+            __type = "NumberSequence",
+            keypoints = keypoints
+        }
+    end
 
-	if valueType == "ColorSequence" then
-		local keypoints = {}
-		for _, keypoint in ipairs(value.Keypoints) do
-			table.insert(keypoints, {
-				time = F.serializeComponentNumber(keypoint.Time),
-				value = serializeValue(keypoint.Value)
-			})
-		end
+    if valueType == "ColorSequence" then
+        local keypoints = {}
+        for _, keypoint in ipairs(value.Keypoints) do
+            table.insert(keypoints, {
+                time = F.serializeComponentNumber(keypoint.Time),
+                value = serializeValue(keypoint.Value)
+            })
+        end
 
-		return {
-			__type = "ColorSequence",
-			keypoints = keypoints
-		}
-	end
+        return {
+            __type = "ColorSequence",
+            keypoints = keypoints
+        }
+    end
 
-	if valueType == "Instance" then
-		local reference = F.makeInstanceReference(value, not state.noAssignInstanceId)
-		reference.__type = "Instance"
-		return reference
-	end
+    if valueType == "Instance" then
+        local reference = F.makeInstanceReference(value, not state.noAssignInstanceId)
+        reference.__type = "Instance"
+        return reference
+    end
 
-	if valueType == "table" then
-		if state.seen[value] then
-			return {
-				__type = "CircularReference"
-			}
-		end
+    if valueType == "table" then
+        if state.seen[value] then
+            return {
+                __type = "CircularReference"
+            }
+        end
 
-		state.seen[value] = true
+        state.seen[value] = true
 
-		local childState = {
-			seen = state.seen,
-			depth = state.depth + 1,
-			noAssignInstanceId = state.noAssignInstanceId,
-			maxTableItems = state.maxTableItems,
-			maxStringBytes = state.maxStringBytes
-		}
+        local childState = {
+            seen = state.seen,
+            depth = state.depth + 1,
+            noAssignInstanceId = state.noAssignInstanceId,
+            maxTableItems = state.maxTableItems,
+            maxStringBytes = state.maxStringBytes
+        }
 
-		local result
+        local result
 
-		local maxTableItems = tonumber(state.maxTableItems)
-		if maxTableItems and maxTableItems <= 0 then
-			maxTableItems = nil
-		end
+        local maxTableItems = tonumber(state.maxTableItems)
+        if maxTableItems and maxTableItems <= 0 then
+            maxTableItems = nil
+        end
 
-		if F.isArrayTable(value) then
-			result = {}
-			local total = #value
-			local limit = maxTableItems and math.min(total, maxTableItems) or total
+        if F.isArrayTable(value) then
+            result = {}
+            local total = #value
+            local limit = maxTableItems and math.min(total, maxTableItems) or total
 
-			for index = 1, limit do
-				result[index] = serializeValue(value[index], childState)
-			end
+            for index = 1, limit do
+                result[index] = serializeValue(value[index], childState)
+            end
 
-			if limit < total then
-				result[limit + 1] = {
-					__type = "TruncatedArray",
-					OmittedItems = total - limit
-				}
-			end
-		else
-			local entries = {}
-			local totalEntries = 0
+            if limit < total then
+                result[limit + 1] = {
+                    __type = "TruncatedArray",
+                    OmittedItems = total - limit
+                }
+            end
+        else
+            local entries = {}
+            local totalEntries = 0
 
-			for key, item in pairs(value) do
-				totalEntries = totalEntries + 1
-				if not maxTableItems or #entries < maxTableItems then
-					table.insert(entries, {
-						_sort = F.stableKey(key),
-						key = serializeValue(key, childState),
-						value = serializeValue(item, childState)
-					})
-				end
-			end
+            for key, item in pairs(value) do
+                totalEntries = totalEntries + 1
+                if not maxTableItems or #entries < maxTableItems then
+                    table.insert(entries, {
+                        _sort = F.stableKey(key),
+                        key = serializeValue(key, childState),
+                        value = serializeValue(item, childState)
+                    })
+                end
+            end
 
-			table.sort(entries, function(a, b)
-				return a._sort < b._sort
-			end)
+            table.sort(entries, function(a, b)
+                return a._sort < b._sort
+            end)
 
-			for _, entry in ipairs(entries) do
-				entry._sort = nil
-			end
+            for _, entry in ipairs(entries) do
+                entry._sort = nil
+            end
 
-			result = {
-				__type = "Table",
-				entries = entries
-			}
+            result = {
+                __type = "Table",
+                entries = entries
+            }
 
-			if totalEntries > #entries then
-				result.Truncated = true
-				result.OmittedEntries = totalEntries - #entries
-			end
-		end
+            if totalEntries > #entries then
+                result.Truncated = true
+                result.OmittedEntries = totalEntries - #entries
+            end
+        end
 
-		state.seen[value] = nil
-		return result
-	end
+        state.seen[value] = nil
+        return result
+    end
 
-	return {
-		__type = F.sanitizeString(valueType),
-		value = F.sanitizeString(tostring(value))
-	}
+    return {
+        __type = F.sanitizeString(valueType),
+        value = F.sanitizeString(tostring(value))
+    }
 end
 
 function F.serializeRuntimeValue(value)
-	local ok, result = pcall(serializeValue, value, {
-		seen = {},
-		depth = 0,
-		noAssignInstanceId = true,
-		maxTableItems = CONFIG.RuntimeMaxSerializedTableItems,
-		maxStringBytes = CONFIG.RuntimeMaxSerializedStringBytes
-	})
+    local ok, result = pcall(serializeValue, value, {
+        seen = {},
+        depth = 0,
+        noAssignInstanceId = true,
+        maxTableItems = CONFIG.RuntimeMaxSerializedTableItems,
+        maxStringBytes = CONFIG.RuntimeMaxSerializedStringBytes
+    })
 
-	if ok then
-		return result
-	end
+    if ok then
+        return result
+    end
 
-	return {
-		__type = "SerializationError",
-		value = F.sanitizeString(result)
-	}
+    return {
+        __type = "SerializationError",
+        value = F.sanitizeString(result)
+    }
 end
 
 function F.serializePackedRuntimeValues(packed)
-	local output = {}
-	for index = 1, packed.n do
-		local value = packed[index]
-		if value == nil then
-			output[index] = { __type = "Nil" }
-		else
-			output[index] = F.serializeRuntimeValue(value)
-		end
-	end
-	return output
+    local output = {}
+    for index = 1, packed.n do
+        local value = packed[index]
+        if value == nil then
+            output[index] = { __type = "Nil" }
+        else
+            output[index] = F.serializeRuntimeValue(value)
+        end
+    end
+    return output
 end
 
 function F.getAttributes(object)
-	local ok, attributes = pcall(function()
-		return object:GetAttributes()
-	end)
+    local ok, attributes = pcall(function()
+        return object:GetAttributes()
+    end)
 
-	if not ok then
-		F.recordError("GetAttributes", object, attributes)
-		return {}
-	end
+    if not ok then
+        F.recordError("GetAttributes", object, attributes)
+        return {}
+    end
 
-	local output = {}
+    local output = {}
 
-	for name, value in pairs(attributes) do
-		local safeAttributeName = F.sanitizeString(name)
-		local success, serialized = pcall(serializeValue, value)
-		if success then
-			output[safeAttributeName] = serialized
-		else
-			F.recordError("SerializeAttribute", object, serialized, safeAttributeName)
-		end
-	end
+    for name, value in pairs(attributes) do
+        local safeAttributeName = F.sanitizeString(name)
+        local success, serialized = pcall(serializeValue, value)
+        if success then
+            output[safeAttributeName] = serialized
+        else
+            F.recordError("SerializeAttribute", object, serialized, safeAttributeName)
+        end
+    end
 
-	return output
+    return output
 end
 
 function F.getTags(object)
-	local ok, tags = pcall(function()
-		return CollectionService:GetTags(object)
-	end)
+    local ok, tags = pcall(function()
+        return CollectionService:GetTags(object)
+    end)
 
-	if not ok then
-		F.recordError("GetTags", object, tags)
-		return {}
-	end
+    if not ok then
+        F.recordError("GetTags", object, tags)
+        return {}
+    end
 
-	for index, tag in ipairs(tags) do
-		tags[index] = F.sanitizeString(tag)
-	end
+    for index, tag in ipairs(tags) do
+        tags[index] = F.sanitizeString(tag)
+    end
 
-	table.sort(tags)
-	return tags
+    table.sort(tags)
+    return tags
 end
 
 local PROPERTY_GROUPS = {
-	{
-		Class = "ValueBase",
-		Properties = { "Value" }
-	},
-	{
-		Class = "BasePart",
-		Properties = {
-			"Position",
-			"Size",
-			"CFrame",
-			"Anchored",
-			"CanCollide",
-			"CanTouch",
-			"CanQuery",
-			"Transparency",
-			"Material",
-			"Color"
-		}
-	},
-	{
-		Class = "Animation",
-		Properties = { "AnimationId" }
-	},
-	{
-		Class = "Sound",
-		Properties = {
-			"SoundId",
-			"Volume",
-			"Looped",
-			"PlaybackSpeed"
-		}
-	},
-	{
-		Class = "Decal",
-		Properties = { "Texture", "Transparency" }
-	},
-	{
-		Class = "Texture",
-		Properties = { "Texture", "Transparency" }
-	},
-	{
-		Class = "MeshPart",
-		Properties = { "MeshId", "TextureID" }
-	},
-	{
-		Class = "SpecialMesh",
-		Properties = {
-			"MeshId",
-			"TextureId",
-			"MeshType",
-			"Scale"
-		}
-	},
-	{
-		Class = "Humanoid",
-		Properties = {
-			"Health",
-			"MaxHealth",
-			"WalkSpeed",
-			"JumpPower",
-			"RigType"
-		}
-	},
-	{
-		Class = "Tool",
-		Properties = {
-			"ToolTip",
-			"CanBeDropped",
-			"RequiresHandle",
-			"Enabled",
-			"Grip",
-			"TextureId"
-		}
-	},
-	{
-		Class = "BaseScript",
-		Properties = { "Disabled", "Enabled", "RunContext" }
-	},
-	{
-		Class = "ProximityPrompt",
-		Properties = {
-			"ActionText",
-			"ObjectText",
-			"HoldDuration",
-			"MaxActivationDistance",
-			"KeyboardKeyCode"
-		}
-	}
+    {
+        Class = "ValueBase",
+        Properties = { "Value" }
+    },
+    {
+        Class = "BasePart",
+        Properties = {
+            "Position",
+            "Size",
+            "CFrame",
+            "Anchored",
+            "CanCollide",
+            "CanTouch",
+            "CanQuery",
+            "Transparency",
+            "Material",
+            "Color"
+        }
+    },
+    {
+        Class = "Animation",
+        Properties = { "AnimationId" }
+    },
+    {
+        Class = "Sound",
+        Properties = {
+            "SoundId",
+            "Volume",
+            "Looped",
+            "PlaybackSpeed"
+        }
+    },
+    {
+        Class = "Decal",
+        Properties = { "Texture", "Transparency" }
+    },
+    {
+        Class = "Texture",
+        Properties = { "Texture", "Transparency" }
+    },
+    {
+        Class = "MeshPart",
+        Properties = { "MeshId", "TextureID" }
+    },
+    {
+        Class = "SpecialMesh",
+        Properties = {
+            "MeshId",
+            "TextureId",
+            "MeshType",
+            "Scale"
+        }
+    },
+    {
+        Class = "Humanoid",
+        Properties = {
+            "Health",
+            "MaxHealth",
+            "WalkSpeed",
+            "JumpPower",
+            "RigType"
+        }
+    },
+    {
+        Class = "Tool",
+        Properties = {
+            "ToolTip",
+            "CanBeDropped",
+            "RequiresHandle",
+            "Enabled",
+            "Grip",
+            "TextureId"
+        }
+    },
+    {
+        Class = "BaseScript",
+        Properties = { "Disabled", "Enabled", "RunContext" }
+    },
+    {
+        Class = "ProximityPrompt",
+        Properties = {
+            "ActionText",
+            "ObjectText",
+            "HoldDuration",
+            "MaxActivationDistance",
+            "KeyboardKeyCode"
+        }
+    }
 }
 
 -- Optional properties are always read under pcall.  Unsupported, protected and
@@ -1960,7 +1977,7 @@ end
 
 function F.makeVisualRecord(object, id, parentId, name, className, path, attributes, tags, properties, withAncestors)
     local parent = object.Parent
-    local compact = CONFIG.CompactSecondaryIndexes and not withAncestors
+    local compact = CONFIG.CompactSecondaryIndexes and SELECTION.Structure and not withAncestors
     return {
         Id = id,
         Name = name,
@@ -2026,7 +2043,7 @@ function F.buildVisualDocument(records, dynamic)
         Scope = dynamic and "ObservedWhileRunning" or "Snapshot",
         CaptureAllNames = true,
         ClassBasedSelection = true,
-        IndexedPropertiesSource = not dynamic and CONFIG.CompactSecondaryIndexes and "structure.json" or nil,
+        IndexedPropertiesSource = not dynamic and SELECTION.Structure and CONFIG.CompactSecondaryIndexes and "structure.json" or nil,
         Description = "Visual instances visible to this client. No access to server-only/unreplicated assets.",
         Total = #records,
         OmittedByCap = dynamic and visualDynamicOmitted or visualSnapshotOmitted,
@@ -2040,64 +2057,64 @@ function F.buildVisualDocument(records, dynamic)
 end
 
 local REMOTE_BUCKETS = {
-	RemoteEvent = "RemoteEvents",
-	UnreliableRemoteEvent = "UnreliableRemoteEvents",
-	RemoteFunction = "RemoteFunctions",
-	BindableEvent = "BindableEvents",
-	BindableFunction = "BindableFunctions"
+    RemoteEvent = "RemoteEvents",
+    UnreliableRemoteEvent = "UnreliableRemoteEvents",
+    RemoteFunction = "RemoteFunctions",
+    BindableEvent = "BindableEvents",
+    BindableFunction = "BindableFunctions"
 }
 
 local SCRIPT_BUCKETS = {
-	LocalScript = "LocalScripts",
-	ModuleScript = "ModuleScripts",
-	Script = "Scripts",
-	CoreScript = "CoreScripts"
+    LocalScript = "LocalScripts",
+    ModuleScript = "ModuleScripts",
+    Script = "Scripts",
+    CoreScript = "CoreScripts"
 }
 
 function F.captureProperty(object, output, property)
-	local value, readable, readError = F.safeGet(object, property)
+    local value, readable, readError = F.safeGet(object, property)
 
-	if not readable then
-		F.recordError("ReadProperty", object, readError, property)
-		return
-	end
+    if not readable then
+        F.recordError("ReadProperty", object, readError, property)
+        return
+    end
 
-	if value == nil then
-		return
-	end
+    if value == nil then
+        return
+    end
 
-	local ok, serialized = pcall(serializeValue, value)
-	if ok then
-		output[property] = serialized
-	else
-		F.recordError("SerializeProperty", object, serialized, property)
-	end
+    local ok, serialized = pcall(serializeValue, value)
+    if ok then
+        output[property] = serialized
+    else
+        F.recordError("SerializeProperty", object, serialized, property)
+    end
 end
 
 function F.getUsefulProperties(object, className)
-	local data = {}
-	className = className or F.safeClassName(object)
+    local data = {}
+    className = className or F.safeClassName(object)
 
-	for _, group in ipairs(PROPERTY_GROUPS) do
-		if F.safeIsA(object, group.Class) then
-			for _, property in ipairs(group.Properties) do
-				F.captureProperty(object, data, property)
-			end
-		end
-	end
+    for _, group in ipairs(PROPERTY_GROUPS) do
+        if F.safeIsA(object, group.Class) then
+            for _, property in ipairs(group.Properties) do
+                F.captureProperty(object, data, property)
+            end
+        end
+    end
 
-	F.captureExtendedProperties(object, data, className)
-	F.addVisualProperties(object, data, className)
+    F.captureExtendedProperties(object, data, className)
+    F.addVisualProperties(object, data, className)
 
-	if REMOTE_BUCKETS[className] then
-		data.RemoteType = className
-	end
+    if REMOTE_BUCKETS[className] then
+        data.RemoteType = className
+    end
 
-	if SCRIPT_BUCKETS[className] then
-		data.ScriptType = className
-	end
+    if SCRIPT_BUCKETS[className] then
+        data.ScriptType = className
+    end
 
-	return data
+    return data
 end
 
 function F.makeGuiRecord(object, id, parentId, name, className, path, properties)
@@ -2107,7 +2124,7 @@ function F.makeGuiRecord(object, id, parentId, name, className, path, properties
         Name = name,
         ClassName = className,
         Path = path,
-        Properties = (not CONFIG.CompactSecondaryIndexes) and F.optionalMap(properties) or nil
+        Properties = (not CONFIG.CompactSecondaryIndexes or not SELECTION.Structure) and F.optionalMap(properties) or nil
     }
 end
 
@@ -2160,6 +2177,7 @@ if CONFIG.SkipEngineInternals then
 end
 
 function F.watchRuntimeGui(object, eventName)
+    if selectionGui and (object == selectionGui or F.safeIsDescendantOf(object, selectionGui)) then return end
     if not CONFIG.RuntimeTraceGui or not runtimeTraceActive then return end
     if runtimeCoreGui and F.safeIsDescendantOf(object, runtimeCoreGui) then return end
     local className = F.safeClassName(object)
@@ -2197,167 +2215,167 @@ function F.watchRuntimeGui(object, eventName)
 end
 
 function F.registerAttributes(id, name, className, path, attributes)
-	if next(attributes) == nil then
-		return
-	end
+    if next(attributes) == nil then
+        return
+    end
 
-	table.insert(attributeIndex, {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		Attributes = attributes
-	})
+    table.insert(attributeIndex, {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        Attributes = attributes
+    })
 end
 
 function F.getRemoteClientMetadata(object, className)
-	local metadata = {}
+    local metadata = {}
 
-	if (className == "RemoteEvent" or className == "UnreliableRemoteEvent") and capabilities.getconnections then
-		local signalOk, signal = pcall(function()
-			return object.OnClientEvent
-		end)
+    if (className == "RemoteEvent" or className == "UnreliableRemoteEvent") and capabilities.getconnections then
+        local signalOk, signal = pcall(function()
+            return object.OnClientEvent
+        end)
 
-		if signalOk and signal then
-			local connectionsOk, connections = pcall(getconnections, signal)
-			if connectionsOk and type(connections) == "table" then
-				metadata.ClientConnectionCount = #connections
-			end
-		end
-	elseif className == "RemoteFunction" then
-		local callbackOk, callback = pcall(function()
-			return object.OnClientInvoke
-		end)
+        if signalOk and signal then
+            local connectionsOk, connections = pcall(getconnections, signal)
+            if connectionsOk and type(connections) == "table" then
+                metadata.ClientConnectionCount = #connections
+            end
+        end
+    elseif className == "RemoteFunction" then
+        local callbackOk, callback = pcall(function()
+            return object.OnClientInvoke
+        end)
 
-		if callbackOk then
-			metadata.HasOnClientInvoke = type(callback) == "function"
+        if callbackOk then
+            metadata.HasOnClientInvoke = type(callback) == "function"
 
-			if type(callback) == "function" and debug and type(debug.info) == "function" then
-				local infoOk, source, line, name = pcall(debug.info, callback, "sln")
-				if infoOk then
-					metadata.OnClientInvokeDebug = {
-						Source = source and F.sanitizeString(source) or nil,
-						Line = line,
-						Name = name and F.sanitizeString(name) or nil
-					}
-				end
-			end
-		end
-	end
+            if type(callback) == "function" and debug and type(debug.info) == "function" then
+                local infoOk, source, line, name = pcall(debug.info, callback, "sln")
+                if infoOk then
+                    metadata.OnClientInvokeDebug = {
+                        Source = source and F.sanitizeString(source) or nil,
+                        Line = line,
+                        Name = name and F.sanitizeString(name) or nil
+                    }
+                end
+            end
+        end
+    end
 
-	return F.optionalMap(metadata)
+    return F.optionalMap(metadata)
 end
 
 function F.registerRemote(object, id, name, className, parentId, path, attributes, tags)
-	local bucket = REMOTE_BUCKETS[className]
-	if not bucket then
-		return
-	end
+    local bucket = REMOTE_BUCKETS[className]
+    if not bucket then
+        return
+    end
 
-	local record = {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		ParentId = parentId,
-		Attributes = F.optionalMap(attributes),
-		Tags = tags
-	}
+    local record = {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId,
+        Attributes = F.optionalMap(attributes),
+        Tags = tags
+    }
 
-	local clientMetadata = F.getRemoteClientMetadata(object, className)
-	if clientMetadata then
-		record.Client = clientMetadata
-	end
+    local clientMetadata = F.getRemoteClientMetadata(object, className)
+    if clientMetadata then
+        record.Client = clientMetadata
+    end
 
-	table.insert(remoteIndex[bucket], record)
+    table.insert(remoteIndex[bucket], record)
 end
 
 function F.moduleDecompileIgnoreReason(path)
-	local cleanPath = tostring(path or "")
-	for _, ignoredRoot in ipairs(CONFIG.ModuleDecompilerIgnore or {}) do
-		local rootName = tostring(ignoredRoot)
-		if cleanPath == rootName or cleanPath:sub(1, #rootName + 1) == rootName .. "." then
-			return "ignored by DecompileIgnore: " .. rootName
-		end
-	end
-	return nil
+    local cleanPath = tostring(path or "")
+    for _, ignoredRoot in ipairs(CONFIG.ModuleDecompilerIgnore or {}) do
+        local rootName = tostring(ignoredRoot)
+        if cleanPath == rootName or cleanPath:sub(1, #rootName + 1) == rootName .. "." then
+            return "ignored by DecompileIgnore: " .. rootName
+        end
+    end
+    return nil
 end
 
 function F.registerScript(object, id, name, className, parentId, path, properties)
-	local bucket = SCRIPT_BUCKETS[className]
-	if not bucket then
-		return
-	end
+    local bucket = SCRIPT_BUCKETS[className]
+    if not bucket then
+        return
+    end
 
-	local record = {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		ParentId = parentId
-	}
+    local record = {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId
+    }
 
-	if properties.Disabled ~= nil then
-		record.Disabled = properties.Disabled
-	end
+    if properties.Disabled ~= nil then
+        record.Disabled = properties.Disabled
+    end
 
-	table.insert(scriptIndex[bucket], record)
+    table.insert(scriptIndex[bucket], record)
 
-	if className == "LocalScript" and CONFIG.DecompileLocalScripts then
-		table.insert(clientScriptQueue, {
-			Object = object,
-			Record = record
-		})
-		clientDecompileStats.Queued = clientDecompileStats.Queued + 1
-	end
+    if className == "LocalScript" and CONFIG.DecompileLocalScripts then
+        table.insert(clientScriptQueue, {
+            Object = object,
+            Record = record
+        })
+        clientDecompileStats.Queued = clientDecompileStats.Queued + 1
+    end
 
-	if className == "ModuleScript" then
-		local ignoreReason = F.moduleDecompileIgnoreReason(path)
-		if ignoreReason then
-			record.Decompile = {
-				Status = "Skipped",
-				Reason = ignoreReason
-			}
-			moduleDecompileStats.Skipped = moduleDecompileStats.Skipped + 1
-			moduleDecompileStats.Ignored = moduleDecompileStats.Ignored + 1
-		else
-			table.insert(moduleScriptQueue, {
-				Object = object,
-				Record = record
-			})
-			moduleDecompileStats.Queued = moduleDecompileStats.Queued + 1
-		end
-	end
+    if className == "ModuleScript" and CONFIG.DecompileModuleScripts then
+        local ignoreReason = F.moduleDecompileIgnoreReason(path)
+        if ignoreReason then
+            record.Decompile = {
+                Status = "Skipped",
+                Reason = ignoreReason
+            }
+            moduleDecompileStats.Skipped = moduleDecompileStats.Skipped + 1
+            moduleDecompileStats.Ignored = moduleDecompileStats.Ignored + 1
+        else
+            table.insert(moduleScriptQueue, {
+                Object = object,
+                Record = record
+            })
+            moduleDecompileStats.Queued = moduleDecompileStats.Queued + 1
+        end
+    end
 end
 
 function F.registerValue(object, id, name, className, parentId, path, attributes, tags)
-	if not F.safeIsA(object, "ValueBase") then
-		return
-	end
+    if not F.safeIsA(object, "ValueBase") then
+        return
+    end
 
-	local rawValue, readable, readError = F.safeGet(object, "Value")
-	local record = {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		ParentId = parentId,
-		Attributes = F.optionalMap(attributes),
-		Tags = tags,
-		Readable = readable
-	}
+    local rawValue, readable, readError = F.safeGet(object, "Value")
+    local record = {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId,
+        Attributes = F.optionalMap(attributes),
+        Tags = tags,
+        Readable = readable
+    }
 
-	if readable then
-		if rawValue == nil then
-			record.IsNil = true
-		else
-			record.Value = serializeValue(rawValue)
-		end
-	else
-		record.ReadError = F.sanitizeString(readError)
-	end
+    if readable then
+        if rawValue == nil then
+            record.IsNil = true
+        else
+            record.Value = serializeValue(rawValue)
+        end
+    else
+        record.ReadError = F.sanitizeString(readError)
+    end
 
-	table.insert(valueRecords, record)
+    table.insert(valueRecords, record)
 end
 
 local backpack = LocalPlayer and LocalPlayer:FindFirstChildOfClass("Backpack") or nil
@@ -2368,61 +2386,61 @@ local playerDescriptors = {}
 local playerReferenceKeys = {}
 
 function F.preparePlayerDescriptors()
-	playerDescriptors = {}
+    playerDescriptors = {}
 
-	for _, player in ipairs(Players:GetPlayers()) do
-		local descriptor = {
-			Player = player,
-			Name = player.Name,
-			DisplayName = player.DisplayName,
-			UserId = player.UserId,
-			Character = player.Character,
-			Backpack = player:FindFirstChildOfClass("Backpack"),
-			PlayerGui = player:FindFirstChildOfClass("PlayerGui"),
-			StarterGear = player:FindFirstChild("StarterGear")
-		}
+    for _, player in ipairs(Players:GetPlayers()) do
+        local descriptor = {
+            Player = player,
+            Name = player.Name,
+            DisplayName = player.DisplayName,
+            UserId = player.UserId,
+            Character = player.Character,
+            Backpack = player:FindFirstChildOfClass("Backpack"),
+            PlayerGui = player:FindFirstChildOfClass("PlayerGui"),
+            StarterGear = player:FindFirstChild("StarterGear")
+        }
 
-		table.insert(playerDescriptors, descriptor)
-	end
+        table.insert(playerDescriptors, descriptor)
+    end
 
-	table.sort(playerDescriptors, function(a, b)
-		if a.UserId ~= b.UserId then
-			return a.UserId < b.UserId
-		end
+    table.sort(playerDescriptors, function(a, b)
+        if a.UserId ~= b.UserId then
+            return a.UserId < b.UserId
+        end
 
-		return a.Name < b.Name
-	end)
+        return a.Name < b.Name
+    end)
 end
 
 function F.addPlayerReference(descriptor, objectId, field, matchKind, value)
-	local key = table.concat({
-		tostring(descriptor.UserId),
-		tostring(objectId),
-		tostring(field),
-		tostring(matchKind)
-	}, "|")
+    local key = table.concat({
+        tostring(descriptor.UserId),
+        tostring(objectId),
+        tostring(field),
+        tostring(matchKind)
+    }, "|")
 
-	if playerReferenceKeys[key] then
-		return
-	end
+    if playerReferenceKeys[key] then
+        return
+    end
 
-	playerReferenceKeys[key] = true
-	table.insert(playerReferences, {
-		PlayerName = F.sanitizeString(descriptor.Name),
-		DisplayName = F.sanitizeString(descriptor.DisplayName),
-		UserId = descriptor.UserId,
-		ObjectId = objectId,
-		Field = F.sanitizeString(field),
-		MatchKind = F.sanitizeString(matchKind),
-		Value = serializeValue(value)
-	})
+    playerReferenceKeys[key] = true
+    table.insert(playerReferences, {
+        PlayerName = F.sanitizeString(descriptor.Name),
+        DisplayName = F.sanitizeString(descriptor.DisplayName),
+        UserId = descriptor.UserId,
+        ObjectId = objectId,
+        Field = F.sanitizeString(field),
+        MatchKind = F.sanitizeString(matchKind),
+        Value = serializeValue(value)
+    })
 end
 
 function F.scanValueForPlayerReferences(objectId, field, value)
-	local valueType = typeof(value)
+    local valueType = typeof(value)
 
-	for _, descriptor in ipairs(playerDescriptors) do
-		if valueType == "string" then
+    for _, descriptor in ipairs(playerDescriptors) do
+        if valueType == "string" then
             local lowered = string.lower(value)
             local username = string.lower(descriptor.Name)
             local displayName = string.lower(descriptor.DisplayName)
@@ -2447,684 +2465,684 @@ function F.scanValueForPlayerReferences(objectId, field, value)
             then
                 F.addPlayerReference(descriptor, objectId, field, "UserIdContained", value)
             end
-		elseif valueType == "number" and value == descriptor.UserId then
-			F.addPlayerReference(descriptor, objectId, field, "UserIdNumber", value)
-		elseif valueType == "Instance" then
-			if value == descriptor.Player then
-				F.addPlayerReference(descriptor, objectId, field, "PlayerInstance", value)
-			elseif descriptor.Character and value == descriptor.Character then
-				F.addPlayerReference(descriptor, objectId, field, "CharacterInstance", value)
-			elseif descriptor.Backpack and value == descriptor.Backpack then
-				F.addPlayerReference(descriptor, objectId, field, "BackpackInstance", value)
-			elseif descriptor.PlayerGui and value == descriptor.PlayerGui then
-				F.addPlayerReference(descriptor, objectId, field, "PlayerGuiInstance", value)
-			end
-		end
-	end
+        elseif valueType == "number" and value == descriptor.UserId then
+            F.addPlayerReference(descriptor, objectId, field, "UserIdNumber", value)
+        elseif valueType == "Instance" then
+            if value == descriptor.Player then
+                F.addPlayerReference(descriptor, objectId, field, "PlayerInstance", value)
+            elseif descriptor.Character and value == descriptor.Character then
+                F.addPlayerReference(descriptor, objectId, field, "CharacterInstance", value)
+            elseif descriptor.Backpack and value == descriptor.Backpack then
+                F.addPlayerReference(descriptor, objectId, field, "BackpackInstance", value)
+            elseif descriptor.PlayerGui and value == descriptor.PlayerGui then
+                F.addPlayerReference(descriptor, objectId, field, "PlayerGuiInstance", value)
+            end
+        end
+    end
 end
 
 function F.scanAttributesForPlayerReferences(objectId, attributes)
-	for name, value in pairs(attributes) do
-		F.scanValueForPlayerReferences(objectId, "Attribute:" .. F.sanitizeString(name), value)
-	end
+    for name, value in pairs(attributes) do
+        F.scanValueForPlayerReferences(objectId, "Attribute:" .. F.sanitizeString(name), value)
+    end
 end
 
 function F.findTopServiceName(object)
-	local current = object
-	local previous = object
+    local current = object
+    local previous = object
 
-	while current do
-		previous = current
-		local parent, readable = F.safeGet(current, "Parent")
-		if not readable or parent == nil then
-			break
-		end
+    while current do
+        previous = current
+        local parent, readable = F.safeGet(current, "Parent")
+        if not readable or parent == nil then
+            break
+        end
 
-		if parent == game then
-			return F.safeName(current)
-		end
+        if parent == game then
+            return F.safeName(current)
+        end
 
-		current = parent
-	end
+        current = parent
+    end
 
-	return F.safeName(previous)
+    return F.safeName(previous)
 end
 
 function F.describeToolLocation(object, source)
-	local result = {
-		Location = source or F.findTopServiceName(object)
-	}
+    local result = {
+        Location = source or F.findTopServiceName(object)
+    }
 
-	for _, descriptor in ipairs(playerDescriptors) do
-		local ownerLocation
+    for _, descriptor in ipairs(playerDescriptors) do
+        local ownerLocation
 
-		if descriptor.Backpack and F.safeIsDescendantOf(object, descriptor.Backpack) then
-			ownerLocation = "PlayerBackpack"
-		elseif descriptor.Character and F.safeIsDescendantOf(object, descriptor.Character) then
-			ownerLocation = "PlayerCharacter"
-		elseif descriptor.StarterGear and F.safeIsDescendantOf(object, descriptor.StarterGear) then
-			ownerLocation = "PlayerStarterGear"
-		end
+        if descriptor.Backpack and F.safeIsDescendantOf(object, descriptor.Backpack) then
+            ownerLocation = "PlayerBackpack"
+        elseif descriptor.Character and F.safeIsDescendantOf(object, descriptor.Character) then
+            ownerLocation = "PlayerCharacter"
+        elseif descriptor.StarterGear and F.safeIsDescendantOf(object, descriptor.StarterGear) then
+            ownerLocation = "PlayerStarterGear"
+        end
 
-		if ownerLocation then
-			result.Location = ownerLocation
-			result.OwnerName = F.sanitizeString(descriptor.Name)
-			result.OwnerUserId = descriptor.UserId
-			result.IsLocalPlayer = descriptor.Player == LocalPlayer
-			break
-		end
-	end
+        if ownerLocation then
+            result.Location = ownerLocation
+            result.OwnerName = F.sanitizeString(descriptor.Name)
+            result.OwnerUserId = descriptor.UserId
+            result.IsLocalPlayer = descriptor.Player == LocalPlayer
+            break
+        end
+    end
 
-	return result
+    return result
 end
 
 function F.resolveInventorySource(object, inheritedSource)
-	if object == backpack then
-		return "Backpack"
-	end
+    if object == backpack then
+        return "Backpack"
+    end
 
-	if object == character then
-		return "Character"
-	end
+    if object == character then
+        return "Character"
+    end
 
-	if object == starterGear then
-		return "StarterGear"
-	end
+    if object == starterGear then
+        return "StarterGear"
+    end
 
-	return inheritedSource
+    return inheritedSource
 end
 
 function F.createToolRecord(object, id, name, className, path, source, attributes, properties)
-	local location = F.describeToolLocation(object, source)
-	local record = {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		Source = source,
-		Location = location.Location,
-		OwnerName = location.OwnerName,
-		OwnerUserId = location.OwnerUserId,
-		IsLocalPlayer = location.IsLocalPlayer,
-		Attributes = F.optionalMap(attributes),
-		Properties = F.optionalMap(properties),
-		HandleId = nil,
-		AnimationIds = {},
-		SoundIds = {},
-		ValueIds = {},
-		DescendantIds = {},
-		DescendantCount = 0
-	}
+    local location = F.describeToolLocation(object, source)
+    local record = {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        Source = source,
+        Location = location.Location,
+        OwnerName = location.OwnerName,
+        OwnerUserId = location.OwnerUserId,
+        IsLocalPlayer = location.IsLocalPlayer,
+        Attributes = F.optionalMap(attributes),
+        Properties = F.optionalMap(properties),
+        HandleId = nil,
+        AnimationIds = {},
+        SoundIds = {},
+        ValueIds = {},
+        DescendantIds = {},
+        DescendantCount = 0
+    }
 
-	table.insert(toolRecords, record)
+    table.insert(toolRecords, record)
 
-	if source and inventoryToolIds[source] then
-		table.insert(inventoryToolIds[source], id)
-	end
+    if source and inventoryToolIds[source] then
+        table.insert(inventoryToolIds[source], id)
+    end
 
-	return {
-		Instance = object,
-		Record = record
-	}
+    return {
+        Instance = object,
+        Record = record
+    }
 end
 
 function F.registerToolDescendant(toolState, object, id, className, name)
-	if not toolState then
-		return
-	end
+    if not toolState then
+        return
+    end
 
-	local record = toolState.Record
-	table.insert(record.DescendantIds, id)
-	record.DescendantCount = record.DescendantCount + 1
+    local record = toolState.Record
+    table.insert(record.DescendantIds, id)
+    record.DescendantCount = record.DescendantCount + 1
 
-	if className == "Animation" then
-		table.insert(record.AnimationIds, id)
-	end
+    if className == "Animation" then
+        table.insert(record.AnimationIds, id)
+    end
 
-	if className == "Sound" then
-		table.insert(record.SoundIds, id)
-	end
+    if className == "Sound" then
+        table.insert(record.SoundIds, id)
+    end
 
-	if F.safeIsA(object, "ValueBase") then
-		table.insert(record.ValueIds, id)
-	end
+    if F.safeIsA(object, "ValueBase") then
+        table.insert(record.ValueIds, id)
+    end
 
-	local parent, parentReadable = F.safeGet(object, "Parent")
-	if parentReadable and parent == toolState.Instance and name == "Handle" and record.HandleId == nil then
-		record.HandleId = id
-	end
+    local parent, parentReadable = F.safeGet(object, "Parent")
+    if parentReadable and parent == toolState.Instance and name == "Handle" and record.HandleId == nil then
+        record.HandleId = id
+    end
 end
 
 local RUNTIME_KEYWORDS = {
-	"team",
-	"red",
-	"blue",
-	"match",
-	"round",
-	"player",
-	"owner",
-	"enemy",
-	"ally",
-	"score",
-	"state",
-	"teleport",
-	"spawn",
-	"respawn",
-	"winner",
-	"dead",
-	"ammo",
-	"reload",
-	"fire",
-	"shoot",
-	"gun",
-	"weapon",
-	"tool",
-	"damage",
-	"projectile",
-	"velocity",
-	"speed",
-	"position",
-	"movement",
-	"security",
-	"detect",
-	"kick",
-	"ban"
+    "team",
+    "red",
+    "blue",
+    "match",
+    "round",
+    "player",
+    "owner",
+    "enemy",
+    "ally",
+    "score",
+    "state",
+    "teleport",
+    "spawn",
+    "respawn",
+    "winner",
+    "dead",
+    "ammo",
+    "reload",
+    "fire",
+    "shoot",
+    "gun",
+    "weapon",
+    "tool",
+    "damage",
+    "projectile",
+    "velocity",
+    "speed",
+    "position",
+    "movement",
+    "security",
+    "detect",
+    "kick",
+    "ban"
 }
 
 local flushRuntimeTrace
 local freezeRuntimeTrace
 
 function F.isRuntimeInteresting(name, path)
-	local haystack = string.lower((name or "") .. " " .. (path or ""))
+    local haystack = string.lower((name or "") .. " " .. (path or ""))
 
-	for _, keyword in ipairs(RUNTIME_KEYWORDS) do
-		if string.find(haystack, keyword, 1, true) then
-			return true
-		end
-	end
+    for _, keyword in ipairs(RUNTIME_KEYWORDS) do
+        if string.find(haystack, keyword, 1, true) then
+            return true
+        end
+    end
 
-	return false
+    return false
 end
 
 function F.trimRuntimeArray(records, maxCount, cutoffTime)
-	local firstKeep = 1
-	local total = #records
+    local firstKeep = 1
+    local total = #records
 
-	if cutoffTime ~= nil then
-		while firstKeep <= total do
-			local record = records[firstKeep]
-			local recordTime = record and record.Time
+    if cutoffTime ~= nil then
+        while firstKeep <= total do
+            local record = records[firstKeep]
+            local recordTime = record and record.Time
 
-			if type(recordTime) ~= "number" or recordTime >= cutoffTime then
-				break
-			end
+            if type(recordTime) ~= "number" or recordTime >= cutoffTime then
+                break
+            end
 
-			firstKeep = firstKeep + 1
-		end
-	end
+            firstKeep = firstKeep + 1
+        end
+    end
 
-	local expired = firstKeep - 1
-	local remaining = total - expired
-	local overflow = 0
+    local expired = firstKeep - 1
+    local remaining = total - expired
+    local overflow = 0
 
-	if maxCount and maxCount >= 0 and remaining > maxCount then
-		overflow = remaining - maxCount
-		firstKeep = firstKeep + overflow
-	end
+    if maxCount and maxCount >= 0 and remaining > maxCount then
+        overflow = remaining - maxCount
+        firstKeep = firstKeep + overflow
+    end
 
-	local removeCount = firstKeep - 1
-	if removeCount > 0 then
-		local kept = total - firstKeep + 1
+    local removeCount = firstKeep - 1
+    if removeCount > 0 then
+        local kept = total - firstKeep + 1
 
-		if kept > 0 and type(table.move) == "function" then
-			table.move(records, firstKeep, total, 1, records)
-		elseif kept > 0 then
-			for source = firstKeep, total do
-				records[source - firstKeep + 1] = records[source]
-			end
-		end
+        if kept > 0 and type(table.move) == "function" then
+            table.move(records, firstKeep, total, 1, records)
+        elseif kept > 0 then
+            for source = firstKeep, total do
+                records[source - firstKeep + 1] = records[source]
+            end
+        end
 
-		for index = kept + 1, total do
-			records[index] = nil
-		end
-	end
+        for index = kept + 1, total do
+            records[index] = nil
+        end
+    end
 
-	return expired, overflow
+    return expired, overflow
 end
 
 function F.pruneRuntimeCaches(force)
-	local now = os.clock()
+    local now = os.clock()
 
-	if not force and now - runtimeHookState.LastPruneAt < 1 then
-		return
-	end
+    if not force and now - runtimeHookState.LastPruneAt < 1 then
+        return
+    end
 
-	runtimeHookState.LastPruneAt = now
+    runtimeHookState.LastPruneAt = now
 
-	local elapsed = now - runtimeStartedAt
-	local window = math.max(0, tonumber(CONFIG.RuntimeRingWindowSeconds) or 0)
-	local cutoff = window > 0 and math.max(0, elapsed - window) or nil
+    local elapsed = now - runtimeStartedAt
+    local window = math.max(0, tonumber(CONFIG.RuntimeRingWindowSeconds) or 0)
+    local cutoff = window > 0 and math.max(0, elapsed - window) or nil
 
-	F.trimRuntimeArray(runtimeEventRecords, CONFIG.RuntimeMaxEvents, cutoff)
-	F.trimRuntimeArray(runtimeValueRecords, CONFIG.RuntimeMaxValueChanges, cutoff)
-	F.trimRuntimeArray(runtimeAttributeRecords, CONFIG.RuntimeMaxAttributeChanges, cutoff)
-	F.trimRuntimeArray(runtimeCharacterRecords, CONFIG.RuntimeMaxCharacterRecords, cutoff)
-	F.trimRuntimeArray(runtimeLogRecords, CONFIG.RuntimeMaxLogRecords, cutoff)
+    F.trimRuntimeArray(runtimeEventRecords, CONFIG.RuntimeMaxEvents, cutoff)
+    F.trimRuntimeArray(runtimeValueRecords, CONFIG.RuntimeMaxValueChanges, cutoff)
+    F.trimRuntimeArray(runtimeAttributeRecords, CONFIG.RuntimeMaxAttributeChanges, cutoff)
+    F.trimRuntimeArray(runtimeCharacterRecords, CONFIG.RuntimeMaxCharacterRecords, cutoff)
+    F.trimRuntimeArray(runtimeLogRecords, CONFIG.RuntimeMaxLogRecords, cutoff)
     F.trimRuntimeArray(guiCapture.Records, CONFIG.RuntimeMaxGuiChanges, cutoff)
-	F.trimRuntimeArray(runtimeTimelineRecords, CONFIG.RuntimeMaxTimelineRecords, cutoff)
-	F.trimRuntimeArray(runtimeErrorRecords, 256, cutoff)
-	F.trimRuntimeArray(
-		runtimeHookState.HookRecords,
-		CONFIG.RuntimeMaxHookRecords,
-		cutoff
-	)
-	F.trimRuntimeArray(
-		runtimeHookState.HookIntegrityRecords,
-		CONFIG.RuntimeMaxHookIntegrityRecords,
-		cutoff
-	)
+    F.trimRuntimeArray(runtimeTimelineRecords, CONFIG.RuntimeMaxTimelineRecords, cutoff)
+    F.trimRuntimeArray(runtimeErrorRecords, 256, cutoff)
+    F.trimRuntimeArray(
+        runtimeHookState.HookRecords,
+        CONFIG.RuntimeMaxHookRecords,
+        cutoff
+    )
+    F.trimRuntimeArray(
+        runtimeHookState.HookIntegrityRecords,
+        CONFIG.RuntimeMaxHookIntegrityRecords,
+        cutoff
+    )
 
-	for category, records in pairs(runtimeEventCategoryRecords) do
-		local maxCount = CONFIG.RuntimeMaxEventsPerCategory
-			and CONFIG.RuntimeMaxEventsPerCategory[category]
-			or CONFIG.RuntimeMaxEvents
+    for category, records in pairs(runtimeEventCategoryRecords) do
+        local maxCount = CONFIG.RuntimeMaxEventsPerCategory
+            and CONFIG.RuntimeMaxEventsPerCategory[category]
+            or CONFIG.RuntimeMaxEvents
 
-		local _, overflow = F.trimRuntimeArray(records, maxCount, cutoff)
-		if overflow > 0 then
-			runtimeEventCategoryDropped[category] =
-				(runtimeEventCategoryDropped[category] or 0) + overflow
-		end
-	end
+        local _, overflow = F.trimRuntimeArray(records, maxCount, cutoff)
+        if overflow > 0 then
+            runtimeEventCategoryDropped[category] =
+                (runtimeEventCategoryDropped[category] or 0) + overflow
+        end
+    end
 end
 
 function F.scheduleRuntimeFlush()
-	if not flushRuntimeTrace or runtimeHookState.FlushScheduled then
-		return
-	end
+    if not flushRuntimeTrace or runtimeHookState.FlushScheduled then
+        return
+    end
 
-	runtimeHookState.FlushScheduled = true
-	task.defer(function()
-		runtimeHookState.FlushScheduled = false
+    runtimeHookState.FlushScheduled = true
+    task.defer(function()
+        runtimeHookState.FlushScheduled = false
 
-		if not flushRuntimeTrace then
-			return
-		end
+        if not flushRuntimeTrace then
+            return
+        end
 
-		local ok, flushError = pcall(flushRuntimeTrace)
-		if not ok then
-			F.recordError("RuntimeFlush", nil, flushError)
-		end
-	end)
+        local ok, flushError = pcall(flushRuntimeTrace)
+        if not ok then
+            F.recordError("RuntimeFlush", nil, flushError)
+        end
+    end)
 end
 
 function F.maybeFlushRuntimeTrace()
-	runtimeHookState.MutationsSinceFlush = runtimeHookState.MutationsSinceFlush + 1
-	F.pruneRuntimeCaches(false)
+    runtimeHookState.MutationsSinceFlush = runtimeHookState.MutationsSinceFlush + 1
+    F.pruneRuntimeCaches(false)
 
-	if not flushRuntimeTrace then
-		return
-	end
+    if not flushRuntimeTrace then
+        return
+    end
 
-	if snapshotBusy
-		and not CONFIG.RuntimeFlushDuringSnapshot
-		and not runtimeHookState.Frozen
-	then
-		return
-	end
+    if snapshotBusy
+        and not CONFIG.RuntimeFlushDuringSnapshot
+        and not runtimeHookState.Frozen
+    then
+        return
+    end
 
-	local every = math.max(1, tonumber(CONFIG.RuntimeFlushEvery) or 1000)
-	local minSeconds = math.max(0, tonumber(CONFIG.RuntimeFlushMinSeconds) or 0)
-	local now = os.clock()
+    local every = math.max(1, tonumber(CONFIG.RuntimeFlushEvery) or 1000)
+    local minSeconds = math.max(0, tonumber(CONFIG.RuntimeFlushMinSeconds) or 0)
+    local now = os.clock()
 
-	if runtimeHookState.MutationsSinceFlush >= every
-		and now - runtimeHookState.LastFlushAt >= minSeconds
-	then
-		runtimeHookState.MutationsSinceFlush = 0
-		runtimeHookState.LastFlushAt = now
-		F.scheduleRuntimeFlush()
-	end
+    if runtimeHookState.MutationsSinceFlush >= every
+        and now - runtimeHookState.LastFlushAt >= minSeconds
+    then
+        runtimeHookState.MutationsSinceFlush = 0
+        runtimeHookState.LastFlushAt = now
+        F.scheduleRuntimeFlush()
+    end
 end
 
 function F.appendRuntimeTimeline(record)
-	if type(record) ~= "table" then
-		return
-	end
+    if type(record) ~= "table" then
+        return
+    end
 
-	if record.Time == nil then
-		record.Time = os.clock() - runtimeStartedAt
-	end
+    if record.Time == nil then
+        record.Time = os.clock() - runtimeStartedAt
+    end
 
-	table.insert(runtimeTimelineRecords, record)
+    table.insert(runtimeTimelineRecords, record)
 end
 
 function F.classifyRuntimeRemote(remote, path)
-	local text = string.lower(
-		(path or F.safeFullName(remote) or "")
-			.. " "
-			.. F.safeName(remote)
-	)
+    local text = string.lower(
+        (path or F.safeFullName(remote) or "")
+            .. " "
+            .. F.safeName(remote)
+    )
 
-	if string.find(text, "__replicatorinternal", 1, true)
-		or string.find(text, "replicatorclient", 1, true)
-		or string.find(text, "replicator", 1, true)
-	then
-		return "Replicator"
-	end
+    if string.find(text, "__replicatorinternal", 1, true)
+        or string.find(text, "replicatorclient", 1, true)
+        or string.find(text, "replicator", 1, true)
+    then
+        return "Replicator"
+    end
 
-	if string.find(text, "analytics", 1, true)
-		or string.find(text, "telemetry", 1, true)
-		or string.find(text, "metrics", 1, true)
-	then
-		return "Analytics"
-	end
+    if string.find(text, "analytics", 1, true)
+        or string.find(text, "telemetry", 1, true)
+        or string.find(text, "metrics", 1, true)
+    then
+        return "Analytics"
+    end
 
-	if string.find(text, "robloxreplicatedstorage", 1, true)
-		or string.find(text, "coregui", 1, true)
-	then
-		return "Other"
-	end
+    if string.find(text, "robloxreplicatedstorage", 1, true)
+        or string.find(text, "coregui", 1, true)
+    then
+        return "Other"
+    end
 
-	return "Game"
+    return "Game"
 end
 
 function F.captureRuntimeCallerStack()
-	if not CONFIG.RuntimeCaptureCaller
-		or not CONFIG.RuntimeCaptureCallerStack
-		or not capabilities.debug_info
-	then
-		return nil
-	end
+    if not CONFIG.RuntimeCaptureCaller
+        or not CONFIG.RuntimeCaptureCallerStack
+        or not capabilities.debug_info
+    then
+        return nil
+    end
 
-	local frames = {}
-	local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 10)
+    local frames = {}
+    local maxDepth = math.max(1, tonumber(CONFIG.RuntimeCallerStackDepth) or 10)
 
-	for level = 4, 3 + maxDepth do
-		local ok, source, line, name = pcall(debug.info, level, "sln")
-		if not ok or source == nil then
-			break
-		end
+    for level = 4, 3 + maxDepth do
+        local ok, source, line, name = pcall(debug.info, level, "sln")
+        if not ok or source == nil then
+            break
+        end
 
-		table.insert(frames, {
-			Level = level,
-			Source = F.sanitizeString(source),
-			Line = line,
-			Name = name and F.sanitizeString(name) or nil
-		})
-	end
+        table.insert(frames, {
+            Level = level,
+            Source = F.sanitizeString(source),
+            Line = line,
+            Name = name and F.sanitizeString(name) or nil
+        })
+    end
 
-	return #frames > 0 and frames or nil
+    return #frames > 0 and frames or nil
 end
 
 function F.getRuntimeCallerInfo()
-	local callerInfo = nil
-	local callerScript = nil
+    local callerInfo = nil
+    local callerScript = nil
 
-	if CONFIG.RuntimeCaptureCaller and capabilities.getcallingscript then
-		local ok, result = pcall(getcallingscript)
-		if ok and typeof(result) == "Instance" then
-			callerScript = result
-			callerInfo = F.makeInstanceReference(result, false)
+    if CONFIG.RuntimeCaptureCaller and capabilities.getcallingscript then
+        local ok, result = pcall(getcallingscript)
+        if ok and typeof(result) == "Instance" then
+            callerScript = result
+            callerInfo = F.makeInstanceReference(result, false)
 
-			if callerInfo then
-				if not callerInfo.Name or callerInfo.Name == "" then
-					callerInfo.Name = F.safeName(result)
-				end
-				if not callerInfo.Path or callerInfo.Path == "" then
-					callerInfo.Path = F.safeFullName(result)
-				end
-			end
-		end
-	end
+            if callerInfo then
+                if not callerInfo.Name or callerInfo.Name == "" then
+                    callerInfo.Name = F.safeName(result)
+                end
+                if not callerInfo.Path or callerInfo.Path == "" then
+                    callerInfo.Path = F.safeFullName(result)
+                end
+            end
+        end
+    end
 
-	local isExecutor = nil
-	if capabilities.checkcaller then
-		local ok, result = pcall(checkcaller)
-		if ok then
-			isExecutor = result and true or false
-		end
-	end
+    local isExecutor = nil
+    if capabilities.checkcaller then
+        local ok, result = pcall(checkcaller)
+        if ok then
+            isExecutor = result and true or false
+        end
+    end
 
-	local stack = F.captureRuntimeCallerStack()
-	if callerInfo and stack and stack[1] then
-		callerInfo.DebugSource = stack[1].Source
-		callerInfo.DebugLine = stack[1].Line
-		callerInfo.DebugName = stack[1].Name
-	end
+    local stack = F.captureRuntimeCallerStack()
+    if callerInfo and stack and stack[1] then
+        callerInfo.DebugSource = stack[1].Source
+        callerInfo.DebugLine = stack[1].Line
+        callerInfo.DebugName = stack[1].Name
+    end
 
-	return callerInfo, callerScript, isExecutor, stack
+    return callerInfo, callerScript, isExecutor, stack
 end
 
 function F.describeRuntimeHookValue(value)
-	local description = {
-		Type = typeof(value),
-		Text = F.sanitizeString(tostring(value))
-	}
+    local description = {
+        Type = typeof(value),
+        Text = F.sanitizeString(tostring(value))
+    }
 
-	local fingerprintParts = {
-		description.Type,
-		description.Text
-	}
+    local fingerprintParts = {
+        description.Type,
+        description.Text
+    }
 
-	if type(value) == "function" and capabilities.debug_info then
-		local ok, source, line, name = pcall(debug.info, value, "sln")
-		if ok then
-			description.Source = source and F.sanitizeString(source) or nil
-			description.Line = line
-			description.Name = name and F.sanitizeString(name) or nil
+    if type(value) == "function" and capabilities.debug_info then
+        local ok, source, line, name = pcall(debug.info, value, "sln")
+        if ok then
+            description.Source = source and F.sanitizeString(source) or nil
+            description.Line = line
+            description.Name = name and F.sanitizeString(name) or nil
 
-			table.insert(fingerprintParts, description.Source or "")
-			table.insert(fingerprintParts, tostring(description.Line or ""))
-			table.insert(fingerprintParts, description.Name or "")
-		end
-	end
+            table.insert(fingerprintParts, description.Source or "")
+            table.insert(fingerprintParts, tostring(description.Line or ""))
+            table.insert(fingerprintParts, description.Name or "")
+        end
+    end
 
-	if type(value) == "function" and capabilities.isexecutorclosure then
-		local ok, result = pcall(isexecutorclosure, value)
-		if ok then
-			description.IsExecutorClosure = result and true or false
-			table.insert(
-				fingerprintParts,
-				"executor=" .. tostring(description.IsExecutorClosure)
-			)
-		end
-	end
+    if type(value) == "function" and capabilities.isexecutorclosure then
+        local ok, result = pcall(isexecutorclosure, value)
+        if ok then
+            description.IsExecutorClosure = result and true or false
+            table.insert(
+                fingerprintParts,
+                "executor=" .. tostring(description.IsExecutorClosure)
+            )
+        end
+    end
 
-	if type(value) == "function" and capabilities.iscclosure then
-		local ok, result = pcall(iscclosure, value)
-		if ok then
-			description.IsCClosure = result and true or false
-			table.insert(
-				fingerprintParts,
-				"cclosure=" .. tostring(description.IsCClosure)
-			)
-		end
-	end
+    if type(value) == "function" and capabilities.iscclosure then
+        local ok, result = pcall(iscclosure, value)
+        if ok then
+            description.IsCClosure = result and true or false
+            table.insert(
+                fingerprintParts,
+                "cclosure=" .. tostring(description.IsCClosure)
+            )
+        end
+    end
 
-	description.Fingerprint = table.concat(fingerprintParts, "|")
-	return description
+    description.Fingerprint = table.concat(fingerprintParts, "|")
+    return description
 end
 
 function F.getRuntimeHookSnapshot(source)
-	local snapshot = {
-		Time = os.clock() - runtimeStartedAt,
-		Source = source
-	}
+    local snapshot = {
+        Time = os.clock() - runtimeStartedAt,
+        Source = source
+    }
 
-	local function describeMetatable(object)
-		if not object or not capabilities.getrawmetatable then
-			return nil
-		end
+    local function describeMetatable(object)
+        if not object or not capabilities.getrawmetatable then
+            return nil
+        end
 
-		local ok, metatableValue = pcall(getrawmetatable, object)
-		if not ok or type(metatableValue) ~= "table" then
-			return {
-				Available = false,
-				Error = not ok and F.sanitizeString(metatableValue) or "not a table"
-			}
-		end
+        local ok, metatableValue = pcall(getrawmetatable, object)
+        if not ok or type(metatableValue) ~= "table" then
+            return {
+                Available = false,
+                Error = not ok and F.sanitizeString(metatableValue) or "not a table"
+            }
+        end
 
-		local result = {
-			Available = true,
-			Index = F.describeRuntimeHookValue(rawget(metatableValue, "__index")),
-			Namecall = F.describeRuntimeHookValue(rawget(metatableValue, "__namecall")),
-			NewIndex = F.describeRuntimeHookValue(rawget(metatableValue, "__newindex"))
-		}
+        local result = {
+            Available = true,
+            Index = F.describeRuntimeHookValue(rawget(metatableValue, "__index")),
+            Namecall = F.describeRuntimeHookValue(rawget(metatableValue, "__namecall")),
+            NewIndex = F.describeRuntimeHookValue(rawget(metatableValue, "__newindex"))
+        }
 
-		if capabilities.isreadonly then
-			local readonlyOk, readonlyValue = pcall(isreadonly, metatableValue)
-			if readonlyOk then
-				result.ReadOnly = readonlyValue and true or false
-			end
-		end
+        if capabilities.isreadonly then
+            local readonlyOk, readonlyValue = pcall(isreadonly, metatableValue)
+            if readonlyOk then
+                result.ReadOnly = readonlyValue and true or false
+            end
+        end
 
-		return result
-	end
+        return result
+    end
 
-	snapshot.Game = describeMetatable(game)
+    snapshot.Game = describeMetatable(game)
 
-	if LocalPlayer then
-		local mouseOk, mouseObject = pcall(function()
-			return LocalPlayer:GetMouse()
-		end)
+    if LocalPlayer then
+        local mouseOk, mouseObject = pcall(function()
+            return LocalPlayer:GetMouse()
+        end)
 
-		if mouseOk and mouseObject then
-			snapshot.Mouse = describeMetatable(mouseObject)
-		else
-			snapshot.Mouse = {
-				Available = false,
-				Error = F.sanitizeString(mouseObject)
-			}
-		end
-	end
+        if mouseOk and mouseObject then
+            snapshot.Mouse = describeMetatable(mouseObject)
+        else
+            snapshot.Mouse = {
+                Available = false,
+                Error = F.sanitizeString(mouseObject)
+            }
+        end
+    end
 
 
-	return snapshot
+    return snapshot
 end
 
 function F.appendRuntimeHookRecord(record)
-	if not runtimeTraceActive
-		or not CONFIG.RuntimeTraceHookDiagnostics
-		or type(record) ~= "table"
-	then
-		return nil
-	end
+    if not runtimeTraceActive
+        or not CONFIG.RuntimeTraceHookDiagnostics
+        or type(record) ~= "table"
+    then
+        return nil
+    end
 
-	if record.Time == nil then
-		record.Time = os.clock() - runtimeStartedAt
-	end
+    if record.Time == nil then
+        record.Time = os.clock() - runtimeStartedAt
+    end
 
-	table.insert(runtimeHookState.HookRecords, record)
+    table.insert(runtimeHookState.HookRecords, record)
 
-	F.appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "HookObservation",
-		HookKind = record.HookKind,
-		Metamethod = record.Metamethod,
-		Method = record.Method,
-		CallerIsExecutor = record.CallerIsExecutor,
-		CallerPath = record.Caller and record.Caller.Path or nil,
+    F.appendRuntimeTimeline({
+        Time = record.Time,
+        Kind = "HookObservation",
+        HookKind = record.HookKind,
+        Metamethod = record.Metamethod,
+        Method = record.Method,
+        CallerIsExecutor = record.CallerIsExecutor,
+        CallerPath = record.Caller and record.Caller.Path or nil,
 
-	})
+    })
 
-	F.maybeFlushRuntimeTrace()
-	return record
+    F.maybeFlushRuntimeTrace()
+    return record
 end
 
 function F.checkRuntimeHookIntegrity(force, source)
-	if not CONFIG.RuntimeTraceHookDiagnostics or not runtimeTraceActive then
-		return
-	end
+    if not CONFIG.RuntimeTraceHookDiagnostics or not runtimeTraceActive then
+        return
+    end
 
-	local now = os.clock()
-	local interval =
-		math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
+    local now = os.clock()
+    local interval =
+        math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
 
-	if not force
-		and now - (runtimeHookState.HookIntegrityLastCheckAt or 0) < interval
-	then
-		return
-	end
+    if not force
+        and now - (runtimeHookState.HookIntegrityLastCheckAt or 0) < interval
+    then
+        return
+    end
 
-	runtimeHookState.HookIntegrityLastCheckAt = now
+    runtimeHookState.HookIntegrityLastCheckAt = now
 
-	local current = F.getRuntimeHookSnapshot(source)
-	local previous = runtimeHookState.HookIntegrityLast
-	local changes = {}
+    local current = F.getRuntimeHookSnapshot(source)
+    local previous = runtimeHookState.HookIntegrityLast
+    local changes = {}
 
-	local function compareDescription(label, previousValue, currentValue)
-		local previousFingerprint =
-			previousValue and previousValue.Fingerprint or "<nil>"
-		local currentFingerprint =
-			currentValue and currentValue.Fingerprint or "<nil>"
+    local function compareDescription(label, previousValue, currentValue)
+        local previousFingerprint =
+            previousValue and previousValue.Fingerprint or "<nil>"
+        local currentFingerprint =
+            currentValue and currentValue.Fingerprint or "<nil>"
 
-		if previousFingerprint ~= currentFingerprint then
-			table.insert(changes, {
-				Field = label,
-				Previous = previousValue,
-				Current = currentValue
-			})
-		end
-	end
+        if previousFingerprint ~= currentFingerprint then
+            table.insert(changes, {
+                Field = label,
+                Previous = previousValue,
+                Current = currentValue
+            })
+        end
+    end
 
-	if previous then
-		compareDescription(
-			"Game.__namecall",
-			previous.Game and previous.Game.Namecall or nil,
-			current.Game and current.Game.Namecall or nil
-		)
-		compareDescription(
-			"Game.__index",
-			previous.Game and previous.Game.Index or nil,
-			current.Game and current.Game.Index or nil
-		)
-		compareDescription(
-			"Mouse.__namecall",
-			previous.Mouse and previous.Mouse.Namecall or nil,
-			current.Mouse and current.Mouse.Namecall or nil
-		)
-		compareDescription(
-			"Mouse.__index",
-			previous.Mouse and previous.Mouse.Index or nil,
-			current.Mouse and current.Mouse.Index or nil
-		)
+    if previous then
+        compareDescription(
+            "Game.__namecall",
+            previous.Game and previous.Game.Namecall or nil,
+            current.Game and current.Game.Namecall or nil
+        )
+        compareDescription(
+            "Game.__index",
+            previous.Game and previous.Game.Index or nil,
+            current.Game and current.Game.Index or nil
+        )
+        compareDescription(
+            "Mouse.__namecall",
+            previous.Mouse and previous.Mouse.Namecall or nil,
+            current.Mouse and current.Mouse.Namecall or nil
+        )
+        compareDescription(
+            "Mouse.__index",
+            previous.Mouse and previous.Mouse.Index or nil,
+            current.Mouse and current.Mouse.Index or nil
+        )
 
-	end
+    end
 
-	local shouldRecord = previous == nil or #changes > 0 or force
-	if shouldRecord then
-		local record = {
-			Time = current.Time,
-			Source = source,
-			Event = previous == nil
-				and "Baseline"
-				or (#changes > 0 and "Changed" or "Snapshot"),
-			Changes = #changes > 0 and changes or nil,
-			Snapshot = current
-		}
+    local shouldRecord = previous == nil or #changes > 0 or force
+    if shouldRecord then
+        local record = {
+            Time = current.Time,
+            Source = source,
+            Event = previous == nil
+                and "Baseline"
+                or (#changes > 0 and "Changed" or "Snapshot"),
+            Changes = #changes > 0 and changes or nil,
+            Snapshot = current
+        }
 
-		table.insert(runtimeHookState.HookIntegrityRecords, record)
+        table.insert(runtimeHookState.HookIntegrityRecords, record)
 
-		local fields = {}
-		for _, change in ipairs(changes) do
-			table.insert(fields, change.Field)
-		end
+        local fields = {}
+        for _, change in ipairs(changes) do
+            table.insert(fields, change.Field)
+        end
 
-		F.appendRuntimeTimeline({
-			Time = current.Time,
-			Kind = "HookIntegrity",
-			Source = source,
-			Event = record.Event,
-			ChangedFields = #fields > 0 and fields or nil
-		})
+        F.appendRuntimeTimeline({
+            Time = current.Time,
+            Kind = "HookIntegrity",
+            Source = source,
+            Event = record.Event,
+            ChangedFields = #fields > 0 and fields or nil
+        })
 
-		F.maybeFlushRuntimeTrace()
-	end
+        F.maybeFlushRuntimeTrace()
+    end
 
-	if runtimeHookState.HookIntegrityBaseline == nil then
-		runtimeHookState.HookIntegrityBaseline = current
-	end
+    if runtimeHookState.HookIntegrityBaseline == nil then
+        runtimeHookState.HookIntegrityBaseline = current
+    end
 
-	runtimeHookState.HookIntegrityLast = current
+    runtimeHookState.HookIntegrityLast = current
 end
 
 function F.recordRemoteUsage(record)
@@ -3177,1097 +3195,1097 @@ function F.recordRemoteUsage(record)
 end
 
 function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments, extra)
-	if not runtimeTraceActive then
-		return nil
-	end
+    if not runtimeTraceActive then
+        return nil
+    end
 
-	extra = extra or {}
-	local className = F.safeClassName(remote)
-	local path = F.safeFullName(remote)
-	local category = extra.Category or F.classifyRuntimeRemote(remote, path)
-	local callerInfo = extra.Caller
+    extra = extra or {}
+    local className = F.safeClassName(remote)
+    local path = F.safeFullName(remote)
+    local category = extra.Category or F.classifyRuntimeRemote(remote, path)
+    local callerInfo = extra.Caller
 
-	local record = {
-		Time = os.clock() - runtimeStartedAt,
-		Direction = direction,
-		Method = method,
-		Category = category,
-		Phase = extra.Phase,
-		RemoteId = instanceIds[remote],
-		Name = F.safeName(remote),
-		ClassName = className,
-		Path = path,
-		SnapshotPath = extra.SnapshotPath,
-		ArgumentCount = packedArguments.n,
-		Arguments = F.serializePackedRuntimeValues(packedArguments),
-		Caller = callerInfo,
-		CallerIsExecutor = direction == "ClientToServer" and extra.CallerIsExecutor or nil,
-		CallerStack = extra.CallerStack,
-		ObservedByExecutor = extra.ObservedByExecutor,
-		Observer = extra.Observer,
-		DurationSeconds = extra.DurationSeconds
-	}
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Direction = direction,
+        Method = method,
+        Category = category,
+        Phase = extra.Phase,
+        RemoteId = instanceIds[remote],
+        Name = F.safeName(remote),
+        ClassName = className,
+        Path = path,
+        SnapshotPath = extra.SnapshotPath,
+        ArgumentCount = packedArguments.n,
+        Arguments = F.serializePackedRuntimeValues(packedArguments),
+        Caller = callerInfo,
+        CallerIsExecutor = direction == "ClientToServer" and extra.CallerIsExecutor or nil,
+        CallerStack = extra.CallerStack,
+        ObservedByExecutor = extra.ObservedByExecutor,
+        Observer = extra.Observer,
+        DurationSeconds = extra.DurationSeconds
+    }
 
-	if extra.Returns then
-		record.ReturnCount = extra.Returns.n
-		record.Returns = F.serializePackedRuntimeValues(extra.Returns)
-	end
+    if extra.Returns then
+        record.ReturnCount = extra.Returns.n
+        record.Returns = F.serializePackedRuntimeValues(extra.Returns)
+    end
 
-	table.insert(runtimeEventRecords, record)
+    table.insert(runtimeEventRecords, record)
 
-	local categoryRecords = runtimeEventCategoryRecords[category]
-	if not categoryRecords then
-		category = "Other"
-		record.Category = category
-		categoryRecords = runtimeEventCategoryRecords.Other
-	end
+    local categoryRecords = runtimeEventCategoryRecords[category]
+    if not categoryRecords then
+        category = "Other"
+        record.Category = category
+        categoryRecords = runtimeEventCategoryRecords.Other
+    end
 
-	table.insert(categoryRecords, record)
-	F.recordRemoteUsage(record)
-	if journalRecord then journalRecord("Runtime", { Kind = "Remote", Data = record }) end
+    table.insert(categoryRecords, record)
+    F.recordRemoteUsage(record)
+    if journalRecord then journalRecord("Runtime", { Kind = "Remote", Data = record }) end
 
-	F.appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "Remote",
-		Category = category,
-		Direction = direction,
-		Method = method,
-		Name = record.Name,
-		Path = record.Path,
-		ArgumentCount = record.ArgumentCount,
-		CallerIsExecutor = record.CallerIsExecutor,
-		CallerPath = callerInfo and callerInfo.Path or nil
-	})
+    F.appendRuntimeTimeline({
+        Time = record.Time,
+        Kind = "Remote",
+        Category = category,
+        Direction = direction,
+        Method = method,
+        Name = record.Name,
+        Path = record.Path,
+        ArgumentCount = record.ArgumentCount,
+        CallerIsExecutor = record.CallerIsExecutor,
+        CallerPath = callerInfo and callerInfo.Path or nil
+    })
 
-	F.maybeFlushRuntimeTrace()
-	return record
+    F.maybeFlushRuntimeTrace()
+    return record
 end
 
 function F.claimRuntimeObserver(kind, object, limit, warningStage)
-	limit = tonumber(limit)
-	if not limit or limit <= 0 then
-		return true
-	end
+    limit = tonumber(limit)
+    if not limit or limit <= 0 then
+        return true
+    end
 
-	local count = runtimeObserverCounts[kind] or 0
-	if count >= limit then
-		if not runtimeObserverCapWarned[kind] then
-			runtimeObserverCapWarned[kind] = true
-			F.recordWarning(
-				warningStage,
-				object,
-				string.format(
-					"Runtime %s observer cap reached (%d); static dump continues, extra runtime observers are skipped",
-					string.lower(kind),
-					limit
-				)
-			)
-		end
-		return false
-	end
+    local count = runtimeObserverCounts[kind] or 0
+    if count >= limit then
+        if not runtimeObserverCapWarned[kind] then
+            runtimeObserverCapWarned[kind] = true
+            F.recordWarning(
+                warningStage,
+                object,
+                string.format(
+                    "Runtime %s observer cap reached (%d); static dump continues, extra runtime observers are skipped",
+                    string.lower(kind),
+                    limit
+                )
+            )
+        end
+        return false
+    end
 
-	runtimeObserverCounts[kind] = count + 1
-	return true
+    runtimeObserverCounts[kind] = count + 1
+    return true
 end
 
 function F.watchRuntimeRemote(object, id, name, className, path)
-	if not CONFIG.RuntimeTrace or not runtimeTraceActive or not CONFIG.RuntimeTraceIncomingRemotes then
-		return
-	end
+    if not CONFIG.RuntimeTrace or not runtimeTraceActive or not CONFIG.RuntimeTraceIncomingRemotes then
+        return
+    end
 
-	if className ~= "RemoteEvent" and className ~= "UnreliableRemoteEvent" then
-		return
-	end
+    if className ~= "RemoteEvent" and className ~= "UnreliableRemoteEvent" then
+        return
+    end
 
-	if runtimeObservedRemotes[object] then
-		return
-	end
+    if runtimeObservedRemotes[object] then
+        return
+    end
 
-	if not F.claimRuntimeObserver(
-		"Remotes",
-		object,
-		CONFIG.RuntimeMaxObservedRemotes,
-		"RuntimeRemoteObserverCap"
-	) then
-		return
-	end
+    if not F.claimRuntimeObserver(
+        "Remotes",
+        object,
+        CONFIG.RuntimeMaxObservedRemotes,
+        "RuntimeRemoteObserverCap"
+    ) then
+        return
+    end
 
-	runtimeObservedRemotes[object] = true
+    runtimeObservedRemotes[object] = true
 
-	local ok, signal = pcall(function()
-		return object.OnClientEvent
-	end)
+    local ok, signal = pcall(function()
+        return object.OnClientEvent
+    end)
 
-	if not ok or not signal then
-		return
-	end
+    if not ok or not signal then
+        return
+    end
 
-	local connectionOk, connection = pcall(function()
-		return signal:Connect(function(...)
-			if not runtimeTraceActive then
-				return
-			end
+    local connectionOk, connection = pcall(function()
+        return signal:Connect(function(...)
+            if not runtimeTraceActive then
+                return
+            end
 
-			F.appendRuntimeRemoteRecord(
-				object,
-				"ServerToClient",
-				"OnClientEvent",
-				table.pack(...),
-				{
-					SnapshotPath = path,
-					ObservedByExecutor = true,
-					Observer = "DumperOnClientEventConnection"
-				}
-			)
-		end)
-	end)
+            F.appendRuntimeRemoteRecord(
+                object,
+                "ServerToClient",
+                "OnClientEvent",
+                table.pack(...),
+                {
+                    SnapshotPath = path,
+                    ObservedByExecutor = true,
+                    Observer = "DumperOnClientEventConnection"
+                }
+            )
+        end)
+    end)
 
-	if connectionOk and connection then
-		table.insert(runtimeConnections, connection)
-	else
-		F.recordWarning("RuntimeRemoteTrace", object, connection)
-	end
+    if connectionOk and connection then
+        table.insert(runtimeConnections, connection)
+    else
+        F.recordWarning("RuntimeRemoteTrace", object, connection)
+    end
 end
 
 function F.installOutgoingRemoteHook()
-	if not CONFIG.RuntimeTrace or not CONFIG.RuntimeTraceOutgoingRemotes then
-		return false
-	end
+    if not CONFIG.RuntimeTrace or not CONFIG.RuntimeTraceOutgoingRemotes then
+        return false
+    end
 
-	if runtimeOutgoingHookInstalled then
-		runtimeHookState.Active = true
-		return true
-	end
+    if runtimeOutgoingHookInstalled then
+        runtimeHookState.Active = true
+        return true
+    end
 
-	if not capabilities.hookmetamethod or not capabilities.getnamecallmethod then
-		F.recordWarning(
-			"RuntimeOutgoingRemoteTrace",
-			nil,
-			"hookmetamethod/getnamecallmethod unavailable; outgoing FireServer/InvokeServer calls cannot be observed"
-		)
-		return false
-	end
+    if not capabilities.hookmetamethod or not capabilities.getnamecallmethod then
+        F.recordWarning(
+            "RuntimeOutgoingRemoteTrace",
+            nil,
+            "hookmetamethod/getnamecallmethod unavailable; outgoing FireServer/InvokeServer calls cannot be observed"
+        )
+        return false
+    end
 
-	local oldNamecall
+    local oldNamecall
 
-	local function handler(self, ...)
-		local methodOk, method = pcall(getnamecallmethod)
-		if not methodOk then
-			return oldNamecall(self, ...)
-		end
+    local function handler(self, ...)
+        local methodOk, method = pcall(getnamecallmethod)
+        if not methodOk then
+            return oldNamecall(self, ...)
+        end
 
-		local traceActive = runtimeHookState.Active
-		local observeRemote = traceActive
-			and (method == "FireServer" or method == "InvokeServer")
+        local traceActive = runtimeHookState.Active
+        local observeRemote = traceActive
+            and (method == "FireServer" or method == "InvokeServer")
 
-		if not observeRemote then
-			return oldNamecall(self, ...)
-		end
+        if not observeRemote then
+            return oldNamecall(self, ...)
+        end
 
-		local className = typeof(self) == "Instance" and F.safeClassName(self) or nil
-		local isFireServer = method == "FireServer"
-			and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
-		local isInvokeServer = method == "InvokeServer" and className == "RemoteFunction"
-		if not isFireServer and not isInvokeServer then
-			return oldNamecall(self, ...)
-		end
+        local className = typeof(self) == "Instance" and F.safeClassName(self) or nil
+        local isFireServer = method == "FireServer"
+            and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
+        local isInvokeServer = method == "InvokeServer" and className == "RemoteFunction"
+        if not isFireServer and not isInvokeServer then
+            return oldNamecall(self, ...)
+        end
 
-		local packedArguments = table.pack(...)
-		local callStarted = os.clock()
-		local returns = table.pack(oldNamecall(self, ...))
-		local duration = os.clock() - callStarted
+        local packedArguments = table.pack(...)
+        local callStarted = os.clock()
+        local returns = table.pack(oldNamecall(self, ...))
+        local duration = os.clock() - callStarted
 
-		if observeRemote then
-			if isFireServer or isInvokeServer then
-				local callerInfo, _, callerIsExecutor, callerStack = F.getRuntimeCallerInfo()
-				local snapshotPath = F.safeFullName(self)
-				local record = F.appendRuntimeRemoteRecord(
-					self,
-					"ClientToServer",
-					isInvokeServer and "InvokeServer" or "FireServer",
-					packedArguments,
-					{
-						SnapshotPath = snapshotPath,
-						Caller = callerInfo,
-						CallerIsExecutor = callerIsExecutor,
-						CallerStack = callerStack,
-						Phase = "PostCall",
-						DurationSeconds = duration,
-						Returns = isInvokeServer
-							and CONFIG.RuntimeCaptureInvokeReturns
-							and returns
-							or nil
-					}
-				)
+        if observeRemote then
+            if isFireServer or isInvokeServer then
+                local callerInfo, _, callerIsExecutor, callerStack = F.getRuntimeCallerInfo()
+                local snapshotPath = F.safeFullName(self)
+                local record = F.appendRuntimeRemoteRecord(
+                    self,
+                    "ClientToServer",
+                    isInvokeServer and "InvokeServer" or "FireServer",
+                    packedArguments,
+                    {
+                        SnapshotPath = snapshotPath,
+                        Caller = callerInfo,
+                        CallerIsExecutor = callerIsExecutor,
+                        CallerStack = callerStack,
+                        Phase = "PostCall",
+                        DurationSeconds = duration,
+                        Returns = isInvokeServer
+                            and CONFIG.RuntimeCaptureInvokeReturns
+                            and returns
+                            or nil
+                    }
+                )
 
-				if isInvokeServer and record then
-					F.appendRuntimeTimeline({
-						Time = os.clock() - runtimeStartedAt,
-						Kind = "RemoteReturn",
-						Category = record.Category,
-						Direction = "ServerToClient",
-						Method = "InvokeServerReturn",
-						Name = record.Name,
-						Path = record.Path,
-						ReturnCount = returns.n,
-						DurationSeconds = duration
-					})
-					F.maybeFlushRuntimeTrace()
-				end
-			end
-		end
+                if isInvokeServer and record then
+                    F.appendRuntimeTimeline({
+                        Time = os.clock() - runtimeStartedAt,
+                        Kind = "RemoteReturn",
+                        Category = record.Category,
+                        Direction = "ServerToClient",
+                        Method = "InvokeServerReturn",
+                        Name = record.Name,
+                        Path = record.Path,
+                        ReturnCount = returns.n,
+                        DurationSeconds = duration
+                    })
+                    F.maybeFlushRuntimeTrace()
+                end
+            end
+        end
 
-		return table.unpack(returns, 1, returns.n)
-	end
+        return table.unpack(returns, 1, returns.n)
+    end
 
-	local wrappedHandler = capabilities.newcclosure and newcclosure(handler) or handler
-	local hookOk, hookResult = pcall(function()
-		oldNamecall = hookmetamethod(game, "__namecall", wrappedHandler)
-	end)
+    local wrappedHandler = capabilities.newcclosure and newcclosure(handler) or handler
+    local hookOk, hookResult = pcall(function()
+        oldNamecall = hookmetamethod(game, "__namecall", wrappedHandler)
+    end)
 
-	if not hookOk or type(oldNamecall) ~= "function" then
-		F.recordWarning("RuntimeOutgoingRemoteTrace", nil, hookResult or "failed to install __namecall hook")
-		return false
-	end
+    if not hookOk or type(oldNamecall) ~= "function" then
+        F.recordWarning("RuntimeOutgoingRemoteTrace", nil, hookResult or "failed to install __namecall hook")
+        return false
+    end
 
-	runtimeOutgoingHookInstalled = true
-	runtimeHookState.Active = true
-	return true
+    runtimeOutgoingHookInstalled = true
+    runtimeHookState.Active = true
+    return true
 end
 
 function F.shouldWatchRuntimeAttributes(object, name, path, attributes)
-	if not runtimeTraceActive then
-		return false
-	end
+    if not runtimeTraceActive then
+        return false
+    end
 
-	if CONFIG.RuntimeTraceToolAttributes and F.safeIsA(object, "Tool") then
-		return true
-	end
+    if CONFIG.RuntimeTraceToolAttributes and F.safeIsA(object, "Tool") then
+        return true
+    end
 
-	if not CONFIG.RuntimeTraceInterestingAttributes or next(attributes or {}) == nil then
-		return false
-	end
+    if not CONFIG.RuntimeTraceInterestingAttributes or next(attributes or {}) == nil then
+        return false
+    end
 
-	if F.safeIsA(object, "Player")
-		or F.safeIsA(object, "Humanoid")
-		or F.safeIsA(object, "BasePart")
-	then
-		return true
-	end
+    if F.safeIsA(object, "Player")
+        or F.safeIsA(object, "Humanoid")
+        or F.safeIsA(object, "BasePart")
+    then
+        return true
+    end
 
-	return F.isRuntimeInteresting(name, path)
+    return F.isRuntimeInteresting(name, path)
 end
 
 function F.watchRuntimeAttributes(object, id, name, className, path, attributes)
-	if not CONFIG.RuntimeTrace or not runtimeTraceActive then
-		return
-	end
+    if not CONFIG.RuntimeTrace or not runtimeTraceActive then
+        return
+    end
 
-	if runtimeObservedAttributes[object] then
-		return
-	end
+    if runtimeObservedAttributes[object] then
+        return
+    end
 
-	if not F.shouldWatchRuntimeAttributes(object, name, path, attributes) then
-		return
-	end
+    if not F.shouldWatchRuntimeAttributes(object, name, path, attributes) then
+        return
+    end
 
-	if not F.claimRuntimeObserver(
-		"Attributes",
-		object,
-		CONFIG.RuntimeMaxObservedAttributes,
-		"RuntimeAttributeObserverCap"
-	) then
-		return
-	end
+    if not F.claimRuntimeObserver(
+        "Attributes",
+        object,
+        CONFIG.RuntimeMaxObservedAttributes,
+        "RuntimeAttributeObserverCap"
+    ) then
+        return
+    end
 
-	runtimeObservedAttributes[object] = true
-	local initialValues = {}
-	local initialOk, initialAttributes = pcall(function()
-		return object:GetAttributes()
-	end)
+    runtimeObservedAttributes[object] = true
+    local initialValues = {}
+    local initialOk, initialAttributes = pcall(function()
+        return object:GetAttributes()
+    end)
 
-	if initialOk and type(initialAttributes) == "table" then
-		for attributeName, value in pairs(initialAttributes) do
-			initialValues[attributeName] = value
-		end
-	end
+    if initialOk and type(initialAttributes) == "table" then
+        for attributeName, value in pairs(initialAttributes) do
+            initialValues[attributeName] = value
+        end
+    end
 
-	runtimeAttributeLastValues[object] = initialValues
+    runtimeAttributeLastValues[object] = initialValues
 
-	local signalOk, signal = pcall(function()
-		return object.AttributeChanged
-	end)
-	if not signalOk or not signal then
-		return
-	end
+    local signalOk, signal = pcall(function()
+        return object.AttributeChanged
+    end)
+    if not signalOk or not signal then
+        return
+    end
 
-	local connectionOk, connection = pcall(function()
-		return signal:Connect(function(attributeName)
-			if not runtimeTraceActive then
-				return
-			end
+    local connectionOk, connection = pcall(function()
+        return signal:Connect(function(attributeName)
+            if not runtimeTraceActive then
+                return
+            end
 
-			local oldValue = runtimeAttributeLastValues[object]
-				and runtimeAttributeLastValues[object][attributeName]
-				or nil
+            local oldValue = runtimeAttributeLastValues[object]
+                and runtimeAttributeLastValues[object][attributeName]
+                or nil
 
-			local newOk, newValue = pcall(function()
-				return object:GetAttribute(attributeName)
-			end)
+            local newOk, newValue = pcall(function()
+                return object:GetAttribute(attributeName)
+            end)
 
-			if not newOk then
-				newValue = nil
-			end
+            if not newOk then
+                newValue = nil
+            end
 
-			if runtimeAttributeLastValues[object] then
-				runtimeAttributeLastValues[object][attributeName] = newValue
-			end
+            if runtimeAttributeLastValues[object] then
+                runtimeAttributeLastValues[object][attributeName] = newValue
+            end
 
-			local previousSerialized = nil
-			if oldValue ~= nil then
-				previousSerialized = F.serializeRuntimeValue(oldValue)
-			end
+            local previousSerialized = nil
+            if oldValue ~= nil then
+                previousSerialized = F.serializeRuntimeValue(oldValue)
+            end
 
-			local newSerialized = nil
-			if newValue ~= nil then
-				newSerialized = F.serializeRuntimeValue(newValue)
-			end
+            local newSerialized = nil
+            if newValue ~= nil then
+                newSerialized = F.serializeRuntimeValue(newValue)
+            end
 
-			local record = {
-				Time = os.clock() - runtimeStartedAt,
-				Id = instanceIds[object] or id,
-				Name = F.safeName(object),
-				ClassName = F.safeClassName(object),
-				Path = F.safeFullName(object),
-				SnapshotPath = path,
-				Attribute = F.sanitizeString(attributeName),
-				PreviousIsNil = oldValue == nil,
-				PreviousValue = previousSerialized,
-				ValueIsNil = newValue == nil,
-				Value = newSerialized
-			}
+            local record = {
+                Time = os.clock() - runtimeStartedAt,
+                Id = instanceIds[object] or id,
+                Name = F.safeName(object),
+                ClassName = F.safeClassName(object),
+                Path = F.safeFullName(object),
+                SnapshotPath = path,
+                Attribute = F.sanitizeString(attributeName),
+                PreviousIsNil = oldValue == nil,
+                PreviousValue = previousSerialized,
+                ValueIsNil = newValue == nil,
+                Value = newSerialized
+            }
 
-			table.insert(runtimeAttributeRecords, record)
-			if journalRecord then journalRecord("Runtime", { Kind = "Attribute", Data = record }) end
+            table.insert(runtimeAttributeRecords, record)
+            if journalRecord then journalRecord("Runtime", { Kind = "Attribute", Data = record }) end
 
-			F.appendRuntimeTimeline({
-				Time = record.Time,
-				Kind = "Attribute",
-				Name = record.Name,
-				Path = record.Path,
-				Field = record.Attribute
-			})
+            F.appendRuntimeTimeline({
+                Time = record.Time,
+                Kind = "Attribute",
+                Name = record.Name,
+                Path = record.Path,
+                Field = record.Attribute
+            })
 
-			F.maybeFlushRuntimeTrace()
-		end)
-	end)
+            F.maybeFlushRuntimeTrace()
+        end)
+    end)
 
-	if connectionOk and connection then
-		table.insert(runtimeConnections, connection)
-	else
-		F.recordWarning("RuntimeAttributeTrace", object, connection)
-	end
+    if connectionOk and connection then
+        table.insert(runtimeConnections, connection)
+    else
+        F.recordWarning("RuntimeAttributeTrace", object, connection)
+    end
 end
 
 function F.watchRuntimeValue(object, id, name, className, path)
-	if not CONFIG.RuntimeTrace or not runtimeTraceActive or not F.safeIsA(object, "ValueBase") then
-		return
-	end
+    if not CONFIG.RuntimeTrace or not runtimeTraceActive or not F.safeIsA(object, "ValueBase") then
+        return
+    end
 
-	if not CONFIG.RuntimeTraceAllValues and not F.isRuntimeInteresting(name, path) then
-		return
-	end
+    if not CONFIG.RuntimeTraceAllValues and not F.isRuntimeInteresting(name, path) then
+        return
+    end
 
-	if runtimeObservedValues[object] then
-		return
-	end
+    if runtimeObservedValues[object] then
+        return
+    end
 
-	if not F.claimRuntimeObserver(
-		"Values",
-		object,
-		CONFIG.RuntimeMaxObservedValues,
-		"RuntimeValueObserverCap"
-	) then
-		return
-	end
+    if not F.claimRuntimeObserver(
+        "Values",
+        object,
+        CONFIG.RuntimeMaxObservedValues,
+        "RuntimeValueObserverCap"
+    ) then
+        return
+    end
 
-	runtimeObservedValues[object] = true
+    runtimeObservedValues[object] = true
 
-	if runtimeValueLastValues[object] == nil then
-		local initialValue, initialReadable = F.safeGet(object, "Value")
-		if initialReadable then
-			runtimeValueLastValues[object] = {
-				HasValue = initialValue ~= nil,
-				Value = initialValue
-			}
-		else
-			runtimeValueLastValues[object] = {
-				HasValue = false,
-				Value = nil
-			}
-		end
-	end
+    if runtimeValueLastValues[object] == nil then
+        local initialValue, initialReadable = F.safeGet(object, "Value")
+        if initialReadable then
+            runtimeValueLastValues[object] = {
+                HasValue = initialValue ~= nil,
+                Value = initialValue
+            }
+        else
+            runtimeValueLastValues[object] = {
+                HasValue = false,
+                Value = nil
+            }
+        end
+    end
 
-	local signalOk, signal = pcall(function()
-		return object:GetPropertyChangedSignal("Value")
-	end)
+    local signalOk, signal = pcall(function()
+        return object:GetPropertyChangedSignal("Value")
+    end)
 
-	if not signalOk or not signal then
-		return
-	end
+    if not signalOk or not signal then
+        return
+    end
 
-	local connectionOk, connection = pcall(function()
-		return signal:Connect(function()
-			if not runtimeTraceActive then
-				return
-			end
+    local connectionOk, connection = pcall(function()
+        return signal:Connect(function()
+            if not runtimeTraceActive then
+                return
+            end
 
-			local previousState = runtimeValueLastValues[object]
-				or { HasValue = false, Value = nil }
-			local value, readable, readError = F.safeGet(object, "Value")
-			local serialized
-			local previousSerialized = previousState.HasValue
-				and F.serializeRuntimeValue(previousState.Value)
-				or nil
+            local previousState = runtimeValueLastValues[object]
+                or { HasValue = false, Value = nil }
+            local value, readable, readError = F.safeGet(object, "Value")
+            local serialized
+            local previousSerialized = previousState.HasValue
+                and F.serializeRuntimeValue(previousState.Value)
+                or nil
 
-			if readable then
-				serialized = value == nil
-					and { __type = "Nil" }
-					or F.serializeRuntimeValue(value)
+            if readable then
+                serialized = value == nil
+                    and { __type = "Nil" }
+                    or F.serializeRuntimeValue(value)
 
-				runtimeValueLastValues[object] = {
-					HasValue = value ~= nil,
-					Value = value
-				}
-			else
-				serialized = {
-					__type = "ReadError",
-					value = F.sanitizeString(readError)
-				}
-			end
+                runtimeValueLastValues[object] = {
+                    HasValue = value ~= nil,
+                    Value = value
+                }
+            else
+                serialized = {
+                    __type = "ReadError",
+                    value = F.sanitizeString(readError)
+                }
+            end
 
-			local record = {
-				Time = os.clock() - runtimeStartedAt,
-				Id = instanceIds[object] or id,
-				Name = name,
-				ClassName = className,
-				Path = F.safeFullName(object),
-				SnapshotPath = path,
-				PreviousIsNil = not previousState.HasValue,
-				PreviousValue = previousSerialized,
-				ValueIsNil = readable and value == nil or nil,
-				Value = serialized
-			}
+            local record = {
+                Time = os.clock() - runtimeStartedAt,
+                Id = instanceIds[object] or id,
+                Name = name,
+                ClassName = className,
+                Path = F.safeFullName(object),
+                SnapshotPath = path,
+                PreviousIsNil = not previousState.HasValue,
+                PreviousValue = previousSerialized,
+                ValueIsNil = readable and value == nil or nil,
+                Value = serialized
+            }
 
-			table.insert(runtimeValueRecords, record)
-			if journalRecord then journalRecord("Runtime", { Kind = "Value", Data = record }) end
+            table.insert(runtimeValueRecords, record)
+            if journalRecord then journalRecord("Runtime", { Kind = "Value", Data = record }) end
 
-			F.appendRuntimeTimeline({
-				Time = record.Time,
-				Kind = "Value",
-				Name = record.Name,
-				Path = record.Path
-			})
+            F.appendRuntimeTimeline({
+                Time = record.Time,
+                Kind = "Value",
+                Name = record.Name,
+                Path = record.Path
+            })
 
-			F.maybeFlushRuntimeTrace()
-		end)
-	end)
+            F.maybeFlushRuntimeTrace()
+        end)
+    end)
 
-	if connectionOk and connection then
-		table.insert(runtimeConnections, connection)
-	else
-		F.recordWarning("RuntimeValueTrace", object, connection)
-	end
+    if connectionOk and connection then
+        table.insert(runtimeConnections, connection)
+    else
+        F.recordWarning("RuntimeValueTrace", object, connection)
+    end
 end
 
 function F.disconnectConnections(connections)
-	for _, connection in ipairs(connections) do
-		pcall(function()
-			connection:Disconnect()
-		end)
-	end
+    for _, connection in ipairs(connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
 
-	table.clear(connections)
+    table.clear(connections)
 end
 
 function F.appendRuntimeCharacterRecord(eventName, object, details)
-	if not runtimeTraceActive then
-		return nil
-	end
+    if not runtimeTraceActive then
+        return nil
+    end
 
-	local record = {
-		Time = os.clock() - runtimeStartedAt,
-		Event = eventName,
-		Object = object and F.makeInstanceReference(object, false) or nil,
-		Details = details
-	}
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Event = eventName,
+        Object = object and F.makeInstanceReference(object, false) or nil,
+        Details = details
+    }
 
-	table.insert(runtimeCharacterRecords, record)
-	if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
+    table.insert(runtimeCharacterRecords, record)
+    if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
 
-	F.appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "Character",
-		Event = eventName,
-		Name = record.Object and record.Object.Name or nil,
-		Path = record.Object and record.Object.Path or nil
-	})
+    F.appendRuntimeTimeline({
+        Time = record.Time,
+        Kind = "Character",
+        Event = eventName,
+        Name = record.Object and record.Object.Name or nil,
+        Path = record.Object and record.Object.Path or nil
+    })
 
-	F.maybeFlushRuntimeTrace()
-	return record
+    F.maybeFlushRuntimeTrace()
+    return record
 end
 
 function F.readRuntimeProperty(object, property)
-	local value, readable, readError = F.safeGet(object, property)
+    local value, readable, readError = F.safeGet(object, property)
 
-	if not readable then
-		return {
-			__type = "ReadError",
-			value = F.sanitizeString(readError)
-		}
-	end
+    if not readable then
+        return {
+            __type = "ReadError",
+            value = F.sanitizeString(readError)
+        }
+    end
 
-	if value == nil then
-		return {
-			__type = "Nil"
-		}
-	end
+    if value == nil then
+        return {
+            __type = "Nil"
+        }
+    end
 
-	return F.serializeRuntimeValue(value)
+    return F.serializeRuntimeValue(value)
 end
 
 function F.watchCharacterObject(object)
-	if not object or not runtimeTraceActive then
-		return
-	end
+    if not object or not runtimeTraceActive then
+        return
+    end
 
-	if F.safeIsA(object, "Humanoid") then
-		local humanoidProperties = {
-			"Health",
-			"MaxHealth",
-			"WalkSpeed",
-			"JumpPower",
-			"JumpHeight",
-			"HipHeight",
-			"UseJumpPower",
-			"AutoRotate",
-			"PlatformStand",
-			"Sit"
-		}
+    if F.safeIsA(object, "Humanoid") then
+        local humanoidProperties = {
+            "Health",
+            "MaxHealth",
+            "WalkSpeed",
+            "JumpPower",
+            "JumpHeight",
+            "HipHeight",
+            "UseJumpPower",
+            "AutoRotate",
+            "PlatformStand",
+            "Sit"
+        }
 
-		for _, property in ipairs(humanoidProperties) do
-			local ok, signal = pcall(function()
-				return object:GetPropertyChangedSignal(property)
-			end)
+        for _, property in ipairs(humanoidProperties) do
+            local ok, signal = pcall(function()
+                return object:GetPropertyChangedSignal(property)
+            end)
 
-			if ok and signal then
-				local connected, connection = pcall(function()
-					return signal:Connect(function()
-						if not runtimeTraceActive then
-							return
-						end
+            if ok and signal then
+                local connected, connection = pcall(function()
+                    return signal:Connect(function()
+                        if not runtimeTraceActive then
+                            return
+                        end
 
-						F.appendRuntimeCharacterRecord(
-							"HumanoidPropertyChanged",
-							object,
-							{
-								Property = property,
-								Value = F.readRuntimeProperty(object, property)
-							}
-						)
-					end)
-				end)
+                        F.appendRuntimeCharacterRecord(
+                            "HumanoidPropertyChanged",
+                            object,
+                            {
+                                Property = property,
+                                Value = F.readRuntimeProperty(object, property)
+                            }
+                        )
+                    end)
+                end)
 
-				if connected and connection then
-					table.insert(runtimeCharacterConnections, connection)
-				end
-			end
-		end
+                if connected and connection then
+                    table.insert(runtimeCharacterConnections, connection)
+                end
+            end
+        end
 
-		local stateOk, stateConnection = pcall(function()
-			return object.StateChanged:Connect(function(oldState, newState)
-				if not runtimeTraceActive then
-					return
-				end
+        local stateOk, stateConnection = pcall(function()
+            return object.StateChanged:Connect(function(oldState, newState)
+                if not runtimeTraceActive then
+                    return
+                end
 
-				F.appendRuntimeCharacterRecord(
-					"HumanoidStateChanged",
-					object,
-					{
-						OldState = F.serializeRuntimeValue(oldState),
-						NewState = F.serializeRuntimeValue(newState)
-					}
-				)
-			end)
-		end)
+                F.appendRuntimeCharacterRecord(
+                    "HumanoidStateChanged",
+                    object,
+                    {
+                        OldState = F.serializeRuntimeValue(oldState),
+                        NewState = F.serializeRuntimeValue(newState)
+                    }
+                )
+            end)
+        end)
 
-		if stateOk and stateConnection then
-			table.insert(runtimeCharacterConnections, stateConnection)
-		end
-	elseif F.safeIsA(object, "BasePart") and F.safeName(object) == "HumanoidRootPart" then
-		for _, property in ipairs({ "Anchored", "CanCollide", "Massless" }) do
-			local ok, signal = pcall(function()
-				return object:GetPropertyChangedSignal(property)
-			end)
+        if stateOk and stateConnection then
+            table.insert(runtimeCharacterConnections, stateConnection)
+        end
+    elseif F.safeIsA(object, "BasePart") and F.safeName(object) == "HumanoidRootPart" then
+        for _, property in ipairs({ "Anchored", "CanCollide", "Massless" }) do
+            local ok, signal = pcall(function()
+                return object:GetPropertyChangedSignal(property)
+            end)
 
-			if ok and signal then
-				local connected, connection = pcall(function()
-					return signal:Connect(function()
-						if not runtimeTraceActive then
-							return
-						end
+            if ok and signal then
+                local connected, connection = pcall(function()
+                    return signal:Connect(function()
+                        if not runtimeTraceActive then
+                            return
+                        end
 
-						F.appendRuntimeCharacterRecord(
-							"RootPropertyChanged",
-							object,
-							{
-								Property = property,
-								Value = F.readRuntimeProperty(object, property)
-							}
-						)
-					end)
-				end)
+                        F.appendRuntimeCharacterRecord(
+                            "RootPropertyChanged",
+                            object,
+                            {
+                                Property = property,
+                                Value = F.readRuntimeProperty(object, property)
+                            }
+                        )
+                    end)
+                end)
 
-				if connected and connection then
-					table.insert(runtimeCharacterConnections, connection)
-				end
-			end
-		end
-	end
+                if connected and connection then
+                    table.insert(runtimeCharacterConnections, connection)
+                end
+            end
+        end
+    end
 end
 
 function F.watchLocalCharacter(character)
-	if not CONFIG.RuntimeTraceCharacter then
-		return
-	end
+    if not CONFIG.RuntimeTraceCharacter then
+        return
+    end
 
-	F.disconnectConnections(runtimeCharacterConnections)
+    F.disconnectConnections(runtimeCharacterConnections)
 
-	if not character then
-		F.appendRuntimeCharacterRecord("CharacterMissing", nil, nil)
-		return
-	end
+    if not character then
+        F.appendRuntimeCharacterRecord("CharacterMissing", nil, nil)
+        return
+    end
 
-	F.appendRuntimeCharacterRecord(
-		"CharacterAttached",
-		character,
-		{
-			CharacterId = instanceIds[character]
-		}
-	)
+    F.appendRuntimeCharacterRecord(
+        "CharacterAttached",
+        character,
+        {
+            CharacterId = instanceIds[character]
+        }
+    )
 
-	for _, descendant in ipairs(character:GetDescendants()) do
-		if F.safeIsA(descendant, "Humanoid")
-			or (F.safeIsA(descendant, "BasePart") and F.safeName(descendant) == "HumanoidRootPart")
-		then
-			F.watchCharacterObject(descendant)
-		end
-	end
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if F.safeIsA(descendant, "Humanoid")
+            or (F.safeIsA(descendant, "BasePart") and F.safeName(descendant) == "HumanoidRootPart")
+        then
+            F.watchCharacterObject(descendant)
+        end
+    end
 
-	local addedOk, addedConnection = pcall(function()
-		return character.DescendantAdded:Connect(function(object)
-			if not runtimeTraceActive then
-				return
-			end
+    local addedOk, addedConnection = pcall(function()
+        return character.DescendantAdded:Connect(function(object)
+            if not runtimeTraceActive then
+                return
+            end
 
-			F.appendRuntimeCharacterRecord(
-				"DescendantAdded",
-				object,
-				{
-					Parent = F.makeInstanceReference(object.Parent, false)
-				}
-			)
+            F.appendRuntimeCharacterRecord(
+                "DescendantAdded",
+                object,
+                {
+                    Parent = F.makeInstanceReference(object.Parent, false)
+                }
+            )
 
-			if F.safeIsA(object, "Humanoid")
-				or (F.safeIsA(object, "BasePart") and F.safeName(object) == "HumanoidRootPart")
-			then
-				F.watchCharacterObject(object)
-			end
-		end)
-	end)
+            if F.safeIsA(object, "Humanoid")
+                or (F.safeIsA(object, "BasePart") and F.safeName(object) == "HumanoidRootPart")
+            then
+                F.watchCharacterObject(object)
+            end
+        end)
+    end)
 
-	if addedOk and addedConnection then
-		table.insert(runtimeCharacterConnections, addedConnection)
-	end
+    if addedOk and addedConnection then
+        table.insert(runtimeCharacterConnections, addedConnection)
+    end
 
-	local removingOk, removingConnection = pcall(function()
-		return character.DescendantRemoving:Connect(function(object)
-			if not runtimeTraceActive then
-				return
-			end
+    local removingOk, removingConnection = pcall(function()
+        return character.DescendantRemoving:Connect(function(object)
+            if not runtimeTraceActive then
+                return
+            end
 
-			F.appendRuntimeCharacterRecord(
-				"DescendantRemoving",
-				object,
-				{
-					Parent = F.makeInstanceReference(object.Parent, false)
-				}
-			)
-		end)
-	end)
+            F.appendRuntimeCharacterRecord(
+                "DescendantRemoving",
+                object,
+                {
+                    Parent = F.makeInstanceReference(object.Parent, false)
+                }
+            )
+        end)
+    end)
 
-	if removingOk and removingConnection then
-		table.insert(runtimeCharacterConnections, removingConnection)
-	end
+    if removingOk and removingConnection then
+        table.insert(runtimeCharacterConnections, removingConnection)
+    end
 end
 
 function F.sampleLocalCharacter()
-	if not CONFIG.RuntimeTraceCharacter or not runtimeTraceActive or not LocalPlayer then
-		return
-	end
+    if not CONFIG.RuntimeTraceCharacter or not runtimeTraceActive or not LocalPlayer then
+        return
+    end
 
-	local character = LocalPlayer.Character
-	if not character then
-		return
-	end
+    local character = LocalPlayer.Character
+    if not character then
+        return
+    end
 
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local root = character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
 
-	local record = {
-		Time = os.clock() - runtimeStartedAt,
-		Event = "Sample",
-		Character = F.makeInstanceReference(character, false)
-	}
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Event = "Sample",
+        Character = F.makeInstanceReference(character, false)
+    }
 
-	if humanoid then
-		local stateOk, humanoidState = pcall(function()
-			return humanoid:GetState()
-		end)
+    if humanoid then
+        local stateOk, humanoidState = pcall(function()
+            return humanoid:GetState()
+        end)
 
-		record.Humanoid = {
-			Id = instanceIds[humanoid],
-			Path = F.safeFullName(humanoid),
-			Health = F.readRuntimeProperty(humanoid, "Health"),
-			MaxHealth = F.readRuntimeProperty(humanoid, "MaxHealth"),
-			WalkSpeed = F.readRuntimeProperty(humanoid, "WalkSpeed"),
-			JumpPower = F.readRuntimeProperty(humanoid, "JumpPower"),
-			JumpHeight = F.readRuntimeProperty(humanoid, "JumpHeight"),
-			HipHeight = F.readRuntimeProperty(humanoid, "HipHeight"),
-			MoveDirection = F.readRuntimeProperty(humanoid, "MoveDirection"),
-			FloorMaterial = F.readRuntimeProperty(humanoid, "FloorMaterial"),
-			State = stateOk and F.serializeRuntimeValue(humanoidState) or nil
-		}
-	end
+        record.Humanoid = {
+            Id = instanceIds[humanoid],
+            Path = F.safeFullName(humanoid),
+            Health = F.readRuntimeProperty(humanoid, "Health"),
+            MaxHealth = F.readRuntimeProperty(humanoid, "MaxHealth"),
+            WalkSpeed = F.readRuntimeProperty(humanoid, "WalkSpeed"),
+            JumpPower = F.readRuntimeProperty(humanoid, "JumpPower"),
+            JumpHeight = F.readRuntimeProperty(humanoid, "JumpHeight"),
+            HipHeight = F.readRuntimeProperty(humanoid, "HipHeight"),
+            MoveDirection = F.readRuntimeProperty(humanoid, "MoveDirection"),
+            FloorMaterial = F.readRuntimeProperty(humanoid, "FloorMaterial"),
+            State = stateOk and F.serializeRuntimeValue(humanoidState) or nil
+        }
+    end
 
-	if root and F.safeIsA(root, "BasePart") then
-		record.Root = {
-			Id = instanceIds[root],
-			Path = F.safeFullName(root),
-			CFrame = F.readRuntimeProperty(root, "CFrame"),
-			Position = F.readRuntimeProperty(root, "Position"),
-			AssemblyLinearVelocity = F.readRuntimeProperty(root, "AssemblyLinearVelocity"),
-			AssemblyAngularVelocity = F.readRuntimeProperty(root, "AssemblyAngularVelocity"),
-			Anchored = F.readRuntimeProperty(root, "Anchored"),
-			CanCollide = F.readRuntimeProperty(root, "CanCollide")
-		}
-	end
+    if root and F.safeIsA(root, "BasePart") then
+        record.Root = {
+            Id = instanceIds[root],
+            Path = F.safeFullName(root),
+            CFrame = F.readRuntimeProperty(root, "CFrame"),
+            Position = F.readRuntimeProperty(root, "Position"),
+            AssemblyLinearVelocity = F.readRuntimeProperty(root, "AssemblyLinearVelocity"),
+            AssemblyAngularVelocity = F.readRuntimeProperty(root, "AssemblyAngularVelocity"),
+            Anchored = F.readRuntimeProperty(root, "Anchored"),
+            CanCollide = F.readRuntimeProperty(root, "CanCollide")
+        }
+    end
 
-	table.insert(runtimeCharacterRecords, record)
-	if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
+    table.insert(runtimeCharacterRecords, record)
+    if journalRecord then journalRecord("Runtime", { Kind = "Character", Data = record }) end
 
-	F.appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "CharacterSample",
-		Path = record.Character and record.Character.Path or nil
-	})
+    F.appendRuntimeTimeline({
+        Time = record.Time,
+        Kind = "CharacterSample",
+        Path = record.Character and record.Character.Path or nil
+    })
 
-	F.maybeFlushRuntimeTrace()
+    F.maybeFlushRuntimeTrace()
 end
 
 function F.appendRuntimeLog(message, messageType)
-	if not runtimeTraceActive or not CONFIG.RuntimeCaptureLogs then
-		return
-	end
+    if not runtimeTraceActive or not CONFIG.RuntimeCaptureLogs then
+        return
+    end
 
-	local record = {
-		Time = os.clock() - runtimeStartedAt,
-		Message = F.sanitizeString(message),
-		MessageType = F.serializeRuntimeValue(messageType)
-	}
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Message = F.sanitizeString(message),
+        MessageType = F.serializeRuntimeValue(messageType)
+    }
 
-	table.insert(runtimeLogRecords, record)
-	if journalRecord then journalRecord("Runtime", { Kind = "Log", Data = record }) end
+    table.insert(runtimeLogRecords, record)
+    if journalRecord then journalRecord("Runtime", { Kind = "Log", Data = record }) end
 
-	if F.isRuntimeInteresting(record.Message, "") then
-		F.appendRuntimeTimeline({
-			Time = record.Time,
-			Kind = "Log",
-			Message = record.Message,
-			MessageType = record.MessageType
-		})
-	end
+    if F.isRuntimeInteresting(record.Message, "") then
+        F.appendRuntimeTimeline({
+            Time = record.Time,
+            Kind = "Log",
+            Message = record.Message,
+            MessageType = record.MessageType
+        })
+    end
 
-	F.maybeFlushRuntimeTrace()
+    F.maybeFlushRuntimeTrace()
 end
 
 function F.getCurrentGuiErrorMessage()
-	local ok, message = pcall(function()
-		return game:GetService("GuiService"):GetErrorMessage()
-	end)
+    local ok, message = pcall(function()
+        return game:GetService("GuiService"):GetErrorMessage()
+    end)
 
-	if ok and type(message) == "string" then
-		return F.sanitizeString(message)
-	end
+    if ok and type(message) == "string" then
+        return F.sanitizeString(message)
+    end
 
-	return nil
+    return nil
 end
 
 function F.shouldFreezeForErrorMessage(message)
-	if not CONFIG.RuntimeFreezeOnDisconnectError or type(message) ~= "string" then
-		return false
-	end
+    if not CONFIG.RuntimeFreezeOnDisconnectError or type(message) ~= "string" then
+        return false
+    end
 
-	local lowered = string.lower(message)
+    local lowered = string.lower(message)
 
-	for _, keyword in ipairs(CONFIG.RuntimeFreezeErrorKeywords or {}) do
-		if string.find(lowered, string.lower(keyword), 1, true) then
-			return true
-		end
-	end
+    for _, keyword in ipairs(CONFIG.RuntimeFreezeErrorKeywords or {}) do
+        if string.find(lowered, string.lower(keyword), 1, true) then
+            return true
+        end
+    end
 
-	return false
+    return false
 end
 
 function F.handleGuiErrorMessage(message, source)
-	if type(message) ~= "string" or message == "" then
-		return
-	end
+    if type(message) ~= "string" or message == "" then
+        return
+    end
 
-	message = F.sanitizeString(message)
+    message = F.sanitizeString(message)
 
-	if message == runtimeHookState.LastGuiErrorMessage then
-		return
-	end
+    if message == runtimeHookState.LastGuiErrorMessage then
+        return
+    end
 
-	runtimeHookState.LastGuiErrorMessage = message
+    runtimeHookState.LastGuiErrorMessage = message
 
-	local code = string.match(message, "[Ee]rror%s*[Cc]ode[^%d]*(%d+)")
-		or string.match(message, "Código%s+de%s+error[^%d]*(%d+)")
-		or string.match(message, "codigo%s+de%s+error[^%d]*(%d+)")
-		or string.match(message, "%f[%d]267%f[%D]")
+    local code = string.match(message, "[Ee]rror%s*[Cc]ode[^%d]*(%d+)")
+        or string.match(message, "Código%s+de%s+error[^%d]*(%d+)")
+        or string.match(message, "codigo%s+de%s+error[^%d]*(%d+)")
+        or string.match(message, "%f[%d]267%f[%D]")
 
-	local record = {
-		Time = os.clock() - runtimeStartedAt,
-		Source = source,
-		Message = message,
-		ErrorCode = code
-	}
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        Source = source,
+        Message = message,
+        ErrorCode = code
+    }
 
-	table.insert(runtimeErrorRecords, record)
-	if journalRecord then journalRecord("Runtime", { Kind = "GuiError", Data = record }) end
+    table.insert(runtimeErrorRecords, record)
+    if journalRecord then journalRecord("Runtime", { Kind = "GuiError", Data = record }) end
 
-	F.appendRuntimeTimeline({
-		Time = record.Time,
-		Kind = "GuiError",
-		Source = source,
-		Message = message,
-		ErrorCode = code
-	})
+    F.appendRuntimeTimeline({
+        Time = record.Time,
+        Kind = "GuiError",
+        Source = source,
+        Message = message,
+        ErrorCode = code
+    })
 
-	F.maybeFlushRuntimeTrace()
+    F.maybeFlushRuntimeTrace()
 
-	if F.shouldFreezeForErrorMessage(message) and freezeRuntimeTrace then
-		freezeRuntimeTrace(
-			"DisconnectError",
-			{
-				Source = source,
-				Message = message,
-				ErrorCode = code
-			}
-		)
-	end
+    if F.shouldFreezeForErrorMessage(message) and freezeRuntimeTrace then
+        freezeRuntimeTrace(
+            "DisconnectError",
+            {
+                Source = source,
+                Message = message,
+                ErrorCode = code
+            }
+        )
+    end
 end
 
 freezeRuntimeTrace = function(reason, details)
-	if runtimeHookState.Frozen then
-		return false
-	end
+    if runtimeHookState.Frozen then
+        return false
+    end
 
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		pcall(F.checkRuntimeHookIntegrity, true, "BeforeFreeze")
-	end
+    if CONFIG.RuntimeTraceHookDiagnostics then
+        pcall(F.checkRuntimeHookIntegrity, true, "BeforeFreeze")
+    end
 
-	local freezeTime = os.clock() - runtimeStartedAt
+    local freezeTime = os.clock() - runtimeStartedAt
 
-	runtimeHookState.Frozen = true
-	runtimeTraceActive = false
-	runtimeHookState.Active = false
-	runtimeHookState.FreezeInfo = {
-		Time = freezeTime,
-		Reason = F.sanitizeString(reason or "Unknown"),
-		Details = details
-	}
+    runtimeHookState.Frozen = true
+    runtimeTraceActive = false
+    runtimeHookState.Active = false
+    runtimeHookState.FreezeInfo = {
+        Time = freezeTime,
+        Reason = F.sanitizeString(reason or "Unknown"),
+        Details = details
+    }
 
-	F.appendRuntimeTimeline({
-		Time = freezeTime,
-		Kind = "TraceFrozen",
-		Reason = runtimeHookState.FreezeInfo.Reason
-	})
+    F.appendRuntimeTimeline({
+        Time = freezeTime,
+        Kind = "TraceFrozen",
+        Reason = runtimeHookState.FreezeInfo.Reason
+    })
 
-	F.pruneRuntimeCaches(true)
-	if journalRecord then journalRecord("Runtime", { Kind = "TraceFrozen", Data = runtimeHookState.FreezeInfo }) end
-	if flushRecovery then pcall(flushRecovery, true) end
-	if writeDiagnostics then pcall(writeDiagnostics, "Disconnected", runtimeHookState.FreezeInfo) end
+    F.pruneRuntimeCaches(true)
+    if journalRecord then journalRecord("Runtime", { Kind = "TraceFrozen", Data = runtimeHookState.FreezeInfo }) end
+    if flushRecovery then pcall(flushRecovery, true) end
+    if writeDiagnostics then pcall(writeDiagnostics, "Disconnected", runtimeHookState.FreezeInfo) end
 
-	for _, record in ipairs(runtimeTimelineRecords) do
-		if type(record.Time) == "number" then
-			record.SecondsBeforeFreeze = freezeTime - record.Time
-		end
-	end
+    for _, record in ipairs(runtimeTimelineRecords) do
+        if type(record.Time) == "number" then
+            record.SecondsBeforeFreeze = freezeTime - record.Time
+        end
+    end
 
-	for _, record in ipairs(runtimeHookState.HookRecords) do
-		if type(record.Time) == "number" then
-			record.SecondsBeforeFreeze = freezeTime - record.Time
-		end
-	end
+    for _, record in ipairs(runtimeHookState.HookRecords) do
+        if type(record.Time) == "number" then
+            record.SecondsBeforeFreeze = freezeTime - record.Time
+        end
+    end
 
-	for _, record in ipairs(runtimeHookState.HookIntegrityRecords) do
-		if type(record.Time) == "number" then
-			record.SecondsBeforeFreeze = freezeTime - record.Time
-		end
-	end
+    for _, record in ipairs(runtimeHookState.HookIntegrityRecords) do
+        if type(record.Time) == "number" then
+            record.SecondsBeforeFreeze = freezeTime - record.Time
+        end
+    end
 
-	if flushRuntimeTrace then
-		pcall(flushRuntimeTrace)
-	end
+    if flushRuntimeTrace then
+        pcall(flushRuntimeTrace)
+    end
 
-	task.defer(function()
-		F.disconnectConnections(runtimeCharacterConnections)
-		F.disconnectConnections(runtimeConnections)
-	end)
+    task.defer(function()
+        F.disconnectConnections(runtimeCharacterConnections)
+        F.disconnectConnections(runtimeConnections)
+    end)
 
-	return true
+    return true
 end
 
 function F.primeRuntimeObservers()
-	if not CONFIG.RuntimeTrace or not runtimeTraceActive then
-		return
-	end
+    if not CONFIG.RuntimeTrace or not runtimeTraceActive then
+        return
+    end
 
-	local childrenOk, rootChildren = pcall(function()
-		return game:GetChildren()
-	end)
-	if not childrenOk then
-		F.recordWarning("RuntimePrime", nil, rootChildren)
-		return
-	end
+    local childrenOk, rootChildren = pcall(function()
+        return game:GetChildren()
+    end)
+    if not childrenOk then
+        F.recordWarning("RuntimePrime", nil, rootChildren)
+        return
+    end
 
-	local stack = {}
-	for index = #rootChildren, 1, -1 do
-		stack[#stack + 1] = rootChildren[index]
-	end
-	rootChildren = nil
+    local stack = {}
+    for index = #rootChildren, 1, -1 do
+        stack[#stack + 1] = rootChildren[index]
+    end
+    rootChildren = nil
 
-	local processed = 0
-	local yieldEvery = math.max(25, tonumber(CONFIG.RuntimePrimeYieldEvery) or 150)
+    local processed = 0
+    local yieldEvery = math.max(25, tonumber(CONFIG.RuntimePrimeYieldEvery) or 150)
 
-	while #stack > 0 and runtimeTraceActive do
-		local object = stack[#stack]
-		stack[#stack] = nil
+    while #stack > 0 and runtimeTraceActive do
+        local object = stack[#stack]
+        stack[#stack] = nil
 
-		if object then
-			local className = F.safeClassName(object)
-			local name = F.safeName(object)
-			local path = F.safeFullName(object)
+        if object then
+            local className = F.safeClassName(object)
+            local name = F.safeName(object)
+            local path = F.safeFullName(object)
 
-			if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
-				F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
-			end
+            if className == "RemoteEvent" or className == "UnreliableRemoteEvent" then
+                F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
+            end
 
-			if CONFIG.RuntimeTraceToolAttributes
-				or CONFIG.RuntimeTraceInterestingAttributes
-			then
-				local shouldPrimeAttributes = F.safeIsA(object, "Tool")
-					or F.safeIsA(object, "Player")
-					or F.safeIsA(object, "Humanoid")
-					or F.safeIsA(object, "BasePart")
-					or F.isRuntimeInteresting(name, path)
+            if CONFIG.RuntimeTraceToolAttributes
+                or CONFIG.RuntimeTraceInterestingAttributes
+            then
+                local shouldPrimeAttributes = F.safeIsA(object, "Tool")
+                    or F.safeIsA(object, "Player")
+                    or F.safeIsA(object, "Humanoid")
+                    or F.safeIsA(object, "BasePart")
+                    or F.isRuntimeInteresting(name, path)
 
-				if shouldPrimeAttributes then
-					local attributes = F.getAttributes(object)
-					F.watchRuntimeAttributes(
-						object,
-						instanceIds[object],
-						name,
-						className,
-						path,
-						attributes
-					)
-				end
-			end
+                if shouldPrimeAttributes then
+                    local attributes = F.getAttributes(object)
+                    F.watchRuntimeAttributes(
+                        object,
+                        instanceIds[object],
+                        name,
+                        className,
+                        path,
+                        attributes
+                    )
+                end
+            end
 
-			if F.safeIsA(object, "ValueBase") then
-				F.watchRuntimeValue(object, instanceIds[object], name, className, path)
-			end
+            if F.safeIsA(object, "ValueBase") then
+                F.watchRuntimeValue(object, instanceIds[object], name, className, path)
+            end
             F.watchRuntimeGui(object)
 
-			local descendantsOk, children = pcall(function()
-				return object:GetChildren()
-			end)
+            local descendantsOk, children = pcall(function()
+                return object:GetChildren()
+            end)
 
-			if descendantsOk and type(children) == "table" then
-				for index = #children, 1, -1 do
-					stack[#stack + 1] = children[index]
-				end
-			elseif not descendantsOk then
-				F.recordWarning("RuntimePrimeGetChildren", object, children)
-			end
-		end
+            if descendantsOk and type(children) == "table" then
+                for index = #children, 1, -1 do
+                    stack[#stack + 1] = children[index]
+                end
+            elseif not descendantsOk then
+                F.recordWarning("RuntimePrimeGetChildren", object, children)
+            end
+        end
 
-		processed = processed + 1
-		if processed % yieldEvery == 0 then
-			task.wait()
-		end
-	end
+        processed = processed + 1
+        if processed % yieldEvery == 0 then
+            task.wait()
+        end
+    end
 end
 
 function F.startRuntimeTrace()
-	if not CONFIG.RuntimeTrace then
-		return
-	end
+    if not CONFIG.RuntimeTrace then
+        return
+    end
 
-	runtimeTraceActive = true
-	runtimeHookState.Frozen = false
-	runtimeHookState.Active = true
-	runtimeHookState.LastFlushAt = os.clock()
-	runtimeHookState.MutationsSinceFlush = 0
-	runtimeHookState.LastPruneAt = 0
-	runtimeHookState.HookIntegrityLastCheckAt = 0
-	runtimeHookState.HookIntegrityBaseline = nil
-	runtimeHookState.HookIntegrityLast = nil
-	runtimeHookState.FlushScheduled = false
+    runtimeTraceActive = true
+    runtimeHookState.Frozen = false
+    runtimeHookState.Active = true
+    runtimeHookState.LastFlushAt = os.clock()
+    runtimeHookState.MutationsSinceFlush = 0
+    runtimeHookState.LastPruneAt = 0
+    runtimeHookState.HookIntegrityLastCheckAt = 0
+    runtimeHookState.HookIntegrityBaseline = nil
+    runtimeHookState.HookIntegrityLast = nil
+    runtimeHookState.FlushScheduled = false
 
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		F.checkRuntimeHookIntegrity(true, "BeforeDumperNamecallHook")
-	end
+    if CONFIG.RuntimeTraceHookDiagnostics then
+        F.checkRuntimeHookIntegrity(true, "BeforeDumperNamecallHook")
+    end
 
-	F.installOutgoingRemoteHook()
+    F.installOutgoingRemoteHook()
 
-	if CONFIG.RuntimeTraceHookDiagnostics then
-		F.checkRuntimeHookIntegrity(true, "AfterDumperNamecallHook")
-	end
+    if CONFIG.RuntimeTraceHookDiagnostics then
+        F.checkRuntimeHookIntegrity(true, "AfterDumperNamecallHook")
+    end
 
-	if CONFIG.RuntimeTraceDynamicRemotes or CONFIG.RuntimeTraceGui then
-		local ok, connection = pcall(function()
-			return game.DescendantAdded:Connect(function(object)
-				if not runtimeTraceActive then
-					return
-				end
+    if CONFIG.RuntimeTraceDynamicRemotes or CONFIG.RuntimeTraceGui then
+        local ok, connection = pcall(function()
+            return game.DescendantAdded:Connect(function(object)
+                if not runtimeTraceActive then
+                    return
+                end
 
                 -- Snapshot short-lived notifications before they are removed.
                 if CONFIG.RuntimeTraceGui and GUI_CLASSES[F.safeClassName(object)] then
                     F.watchRuntimeGui(object, "Added")
                 end
 
-				task.defer(function()
-					if not runtimeTraceActive or not object or not object.Parent then
-						return
-					end
+                task.defer(function()
+                    if not runtimeTraceActive or not object or not object.Parent then
+                        return
+                    end
 
-					local className = F.safeClassName(object)
-					local name = F.safeName(object)
-					local path = F.safeFullName(object)
+                    local className = F.safeClassName(object)
+                    local name = F.safeName(object)
+                    local path = F.safeFullName(object)
 
                     if CONFIG.RuntimeTraceDynamicRemotes
                         and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
@@ -4275,32 +4293,32 @@ function F.startRuntimeTrace()
                         F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
                     end
 
-					if CONFIG.RuntimeTraceToolAttributes
-						or CONFIG.RuntimeTraceInterestingAttributes
-					then
-						F.watchRuntimeAttributes(
-							object,
-							instanceIds[object],
-							name,
-							className,
-							path,
-							F.getAttributes(object)
-						)
-					end
+                    if CONFIG.RuntimeTraceToolAttributes
+                        or CONFIG.RuntimeTraceInterestingAttributes
+                    then
+                        F.watchRuntimeAttributes(
+                            object,
+                            instanceIds[object],
+                            name,
+                            className,
+                            path,
+                            F.getAttributes(object)
+                        )
+                    end
 
-					if F.safeIsA(object, "ValueBase") then
-						F.watchRuntimeValue(object, instanceIds[object], name, className, path)
-					end
-				end)
-			end)
-		end)
+                    if F.safeIsA(object, "ValueBase") then
+                        F.watchRuntimeValue(object, instanceIds[object], name, className, path)
+                    end
+                end)
+            end)
+        end)
 
-		if ok and connection then
-			table.insert(runtimeConnections, connection)
-		else
-			F.recordWarning("RuntimeDynamicTrace", nil, connection)
-		end
-	end
+        if ok and connection then
+            table.insert(runtimeConnections, connection)
+        else
+            F.recordWarning("RuntimeDynamicTrace", nil, connection)
+        end
+    end
 
     if CONFIG.RuntimeTraceGui then
         local ok, connection = pcall(function()
@@ -4315,27 +4333,27 @@ function F.startRuntimeTrace()
         end
     end
 
-	if CONFIG.VisualCapture then
-		local visualOk, visualConnection = pcall(function()
-			return game.DescendantAdded:Connect(function(object)
-				if not runtimeTraceActive or not F.isVisualAsset(object) then return end
-				-- Capture immediately: short-lived effects may be destroyed next frame.
-				F.captureDynamicVisual(object, "OnAdded")
-				local delaySeconds = math.max(0, tonumber(CONFIG.VisualSecondPassDelay) or 0)
-				if delaySeconds > 0 then
-					task.delay(delaySeconds, function()
-						if runtimeTraceActive and object.Parent then
-							F.captureDynamicVisual(object, "AfterInitialization")
-						end
-					end)
-				end
-			end)
-		end)
-		if visualOk and visualConnection then
-			table.insert(runtimeConnections, visualConnection)
-		else
-			F.recordWarning("RuntimeVisualCapture", nil, visualConnection)
-		end
+    if CONFIG.VisualCapture then
+        local visualOk, visualConnection = pcall(function()
+            return game.DescendantAdded:Connect(function(object)
+                if not runtimeTraceActive or not F.isVisualAsset(object) then return end
+                -- Capture immediately: short-lived effects may be destroyed next frame.
+                F.captureDynamicVisual(object, "OnAdded")
+                local delaySeconds = math.max(0, tonumber(CONFIG.VisualSecondPassDelay) or 0)
+                if delaySeconds > 0 then
+                    task.delay(delaySeconds, function()
+                        if runtimeTraceActive and object.Parent then
+                            F.captureDynamicVisual(object, "AfterInitialization")
+                        end
+                    end)
+                end
+            end)
+        end)
+        if visualOk and visualConnection then
+            table.insert(runtimeConnections, visualConnection)
+        else
+            F.recordWarning("RuntimeVisualCapture", nil, visualConnection)
+        end
         local removingOk, removingConnection = pcall(function()
             return game.DescendantRemoving:Connect(function(object)
                 if runtimeTraceActive and visualDynamicByInstance[object] then
@@ -4360,1875 +4378,1955 @@ function F.startRuntimeTrace()
                 task.wait(sampleDelay)
             end
         end)
-	end
+    end
 
-	if CONFIG.RuntimePrimeBeforeSnapshot then
-		F.primeRuntimeObservers()
-	end
+    if CONFIG.RuntimePrimeBeforeSnapshot then
+        F.primeRuntimeObservers()
+    end
 
-	if LocalPlayer then
-		F.watchLocalCharacter(LocalPlayer.Character)
+    if LocalPlayer then
+        F.watchLocalCharacter(LocalPlayer.Character)
 
-		local addedOk, addedConnection = pcall(function()
-			return LocalPlayer.CharacterAdded:Connect(function(newCharacter)
-				if not runtimeTraceActive then
-					return
-				end
+        local addedOk, addedConnection = pcall(function()
+            return LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+                if not runtimeTraceActive then
+                    return
+                end
 
-				F.watchLocalCharacter(newCharacter)
-			end)
-		end)
+                F.watchLocalCharacter(newCharacter)
+            end)
+        end)
 
-		if addedOk and addedConnection then
-			table.insert(runtimeConnections, addedConnection)
-		end
+        if addedOk and addedConnection then
+            table.insert(runtimeConnections, addedConnection)
+        end
 
-		local removingOk, removingConnection = pcall(function()
-			return LocalPlayer.CharacterRemoving:Connect(function(oldCharacter)
-				if not runtimeTraceActive then
-					return
-				end
+        local removingOk, removingConnection = pcall(function()
+            return LocalPlayer.CharacterRemoving:Connect(function(oldCharacter)
+                if not runtimeTraceActive then
+                    return
+                end
 
-				F.appendRuntimeCharacterRecord(
-					"CharacterRemoving",
-					oldCharacter,
-					nil
-				)
-			end)
-		end)
+                F.appendRuntimeCharacterRecord(
+                    "CharacterRemoving",
+                    oldCharacter,
+                    nil
+                )
+            end)
+        end)
 
-		if removingOk and removingConnection then
-			table.insert(runtimeConnections, removingConnection)
-		end
-	end
+        if removingOk and removingConnection then
+            table.insert(runtimeConnections, removingConnection)
+        end
+    end
 
-	if CONFIG.RuntimeCaptureLogs then
-		local logOk, logConnection = pcall(function()
-			return game:GetService("LogService").MessageOut:Connect(function(message, messageType)
-				if not runtimeTraceActive then
-					return
-				end
+    if CONFIG.RuntimeCaptureLogs then
+        local logOk, logConnection = pcall(function()
+            return game:GetService("LogService").MessageOut:Connect(function(message, messageType)
+                if not runtimeTraceActive then
+                    return
+                end
 
-				F.appendRuntimeLog(message, messageType)
-			end)
-		end)
+                F.appendRuntimeLog(message, messageType)
+            end)
+        end)
 
-		if logOk and logConnection then
-			table.insert(runtimeConnections, logConnection)
-		else
-			F.recordWarning("RuntimeLogTrace", nil, logConnection)
-		end
-	end
+        if logOk and logConnection then
+            table.insert(runtimeConnections, logConnection)
+        else
+            F.recordWarning("RuntimeLogTrace", nil, logConnection)
+        end
+    end
 
-	local errorSignalOk, errorSignal = pcall(function()
-		return game:GetService("GuiService").ErrorMessageChanged
-	end)
+    local errorSignalOk, errorSignal = pcall(function()
+        return game:GetService("GuiService").ErrorMessageChanged
+    end)
 
-	if errorSignalOk and errorSignal then
-		local connectionOk, connection = pcall(function()
-			return errorSignal:Connect(function(message)
-				if runtimeHookState.Frozen then
-					return
-				end
+    if errorSignalOk and errorSignal then
+        local connectionOk, connection = pcall(function()
+            return errorSignal:Connect(function(message)
+                if runtimeHookState.Frozen then
+                    return
+                end
 
-				local current = F.getCurrentGuiErrorMessage()
-				if (not current or current == "") and type(message) == "string" then
-					current = message
-				end
+                local current = F.getCurrentGuiErrorMessage()
+                if (not current or current == "") and type(message) == "string" then
+                    current = message
+                end
 
-				F.handleGuiErrorMessage(current, "GuiService.ErrorMessageChanged")
-			end)
-		end)
+                F.handleGuiErrorMessage(current, "GuiService.ErrorMessageChanged")
+            end)
+        end)
 
-		if connectionOk and connection then
-			table.insert(runtimeConnections, connection)
-		else
-			F.recordWarning("RuntimeDisconnectTrace", nil, connection)
-		end
-	else
-		F.recordWarning(
-			"RuntimeDisconnectTrace",
-			nil,
-			"GuiService.ErrorMessageChanged unavailable; polling fallback will be used"
-		)
-	end
+        if connectionOk and connection then
+            table.insert(runtimeConnections, connection)
+        else
+            F.recordWarning("RuntimeDisconnectTrace", nil, connection)
+        end
+    else
+        F.recordWarning(
+            "RuntimeDisconnectTrace",
+            nil,
+            "GuiService.ErrorMessageChanged unavailable; polling fallback will be used"
+        )
+    end
 
-	local sampleAccumulator = 0
-	local errorAccumulator = 0
-	local hookIntegrityAccumulator = 0
-	local recoveryAccumulator = 0
+    local sampleAccumulator = 0
+    local errorAccumulator = 0
+    local hookIntegrityAccumulator = 0
+    local recoveryAccumulator = 0
 
-	local heartbeatOk, heartbeatConnection = pcall(function()
-		return game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
-			recoveryAccumulator = recoveryAccumulator + deltaTime
-			if recoveryAccumulator >= CONFIG.RecoveryFlushSeconds then
-				recoveryAccumulator = 0
-				if flushRecovery then pcall(flushRecovery, false) end
-				if writeDiagnostics and currentStage ~= "complete" then
-					pcall(writeDiagnostics, runtimeHookState.Frozen and "Disconnected" or "InProgress")
-				end
-			end
-			if not runtimeTraceActive then
-				return
-			end
+    local heartbeatOk, heartbeatConnection = pcall(function()
+        return game:GetService("RunService").Heartbeat:Connect(function(deltaTime)
+            recoveryAccumulator = recoveryAccumulator + deltaTime
+            if recoveryAccumulator >= CONFIG.RecoveryFlushSeconds then
+                recoveryAccumulator = 0
+                if flushRecovery then pcall(flushRecovery, false) end
+                if writeDiagnostics and currentStage ~= "complete" then
+                    pcall(writeDiagnostics, runtimeHookState.Frozen and "Disconnected" or "InProgress")
+                end
+            end
+            if not runtimeTraceActive then
+                return
+            end
 
-			sampleAccumulator = sampleAccumulator + deltaTime
-			errorAccumulator = errorAccumulator + deltaTime
-			hookIntegrityAccumulator = hookIntegrityAccumulator + deltaTime
+            sampleAccumulator = sampleAccumulator + deltaTime
+            errorAccumulator = errorAccumulator + deltaTime
+            hookIntegrityAccumulator = hookIntegrityAccumulator + deltaTime
 
-			local sampleInterval = math.max(
-				0.03,
-				tonumber(CONFIG.RuntimeCharacterSampleInterval) or 0.15
-			)
+            local sampleInterval = math.max(
+                0.03,
+                tonumber(CONFIG.RuntimeCharacterSampleInterval) or 0.15
+            )
 
-			if CONFIG.RuntimeTraceCharacter and sampleAccumulator >= sampleInterval then
-				sampleAccumulator = 0
-				F.sampleLocalCharacter()
-			end
+            if CONFIG.RuntimeTraceCharacter and sampleAccumulator >= sampleInterval then
+                sampleAccumulator = 0
+                F.sampleLocalCharacter()
+            end
 
-			if errorAccumulator >= 0.25 then
-				errorAccumulator = 0
-				local message = F.getCurrentGuiErrorMessage()
-				if message and message ~= "" then
-					F.handleGuiErrorMessage(message, "GuiServicePoll")
-				end
-			end
+            if errorAccumulator >= 0.25 then
+                errorAccumulator = 0
+                local message = F.getCurrentGuiErrorMessage()
+                if message and message ~= "" then
+                    F.handleGuiErrorMessage(message, "GuiServicePoll")
+                end
+            end
 
-			local hookInterval =
-				math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
-			if CONFIG.RuntimeTraceHookDiagnostics
-				and hookIntegrityAccumulator >= hookInterval
-			then
-				hookIntegrityAccumulator = 0
-				F.checkRuntimeHookIntegrity(false, "Heartbeat")
-			end
-		end)
-	end)
+            local hookInterval =
+                math.max(0.03, tonumber(CONFIG.RuntimeHookIntegrityInterval) or 0.20)
+            if CONFIG.RuntimeTraceHookDiagnostics
+                and hookIntegrityAccumulator >= hookInterval
+            then
+                hookIntegrityAccumulator = 0
+                F.checkRuntimeHookIntegrity(false, "Heartbeat")
+            end
+        end)
+    end)
 
-	if heartbeatOk and heartbeatConnection then
-		table.insert(runtimeConnections, heartbeatConnection)
-	else
-		F.recordWarning("RuntimeHeartbeatTrace", nil, heartbeatConnection)
-	end
+    if heartbeatOk and heartbeatConnection then
+        table.insert(runtimeConnections, heartbeatConnection)
+    else
+        F.recordWarning("RuntimeHeartbeatTrace", nil, heartbeatConnection)
+    end
 end
 
 function F.getSortedChildren(object)
-	local ok, children = pcall(function()
-		return object:GetChildren()
-	end)
-	if not ok then
-		F.recordError("GetChildren", object, children)
-		return {}
-	end
-	local keys = {}
-	for _, child in ipairs(children) do
-		keys[child] = { Class = F.safeClassName(child):lower(), Name = F.safeName(child):lower() }
-	end
-	table.sort(children, function(a, b)
-		local left, right = keys[a], keys[b]
-		if left.Class ~= right.Class then return left.Class < right.Class end
-		return left.Name < right.Name
-	end)
-	return children
+    local ok, children = pcall(function()
+        return object:GetChildren()
+    end)
+    if not ok then
+        F.recordError("GetChildren", object, children)
+        return {}
+    end
+    local keys = {}
+    for _, child in ipairs(children) do
+        keys[child] = { Class = F.safeClassName(child):lower(), Name = F.safeName(child):lower() }
+    end
+    table.sort(children, function(a, b)
+        local left, right = keys[a], keys[b]
+        if left.Class ~= right.Class then return left.Class < right.Class end
+        return left.Name < right.Name
+    end)
+    return children
 end
 
 function F.makeFailedNode(object, parentId, dumpError)
-	local id = F.assignInstanceId(object)
-	local name = F.safeName(object)
-	local className = F.safeClassName(object)
-	local path = F.safeFullName(object)
-	F.updateInstanceMeta(object, id, parentId, name, className, path)
+    local id = F.assignInstanceId(object)
+    local name = F.safeName(object)
+    local className = F.safeClassName(object)
+    local path = F.safeFullName(object)
+    F.updateInstanceMeta(object, id, parentId, name, className, path)
 
-	return {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		ParentId = parentId,
-		DumpError = F.sanitizeString(dumpError),
-		Tags = {},
-		Children = {}
-	}
+    return {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId,
+        DumpError = F.sanitizeString(dumpError),
+        Tags = {},
+        Children = {}
+    }
 end
 
 local dumpNode
 
 dumpNode = function(object, parentId, context)
-	local previousVisitId = traversedInstances[object]
-	if previousVisitId then
-		local previousMeta = instanceMetaById[previousVisitId]
-		F.recordWarning(
-			"RevisitedInstance",
-			object,
-			string.format(
-				"Instance #%d was already traversed at %s and was skipped on a later encounter",
-				previousVisitId,
-				previousMeta and previousMeta.Path or "<unknown>"
-			)
-		)
-		return nil, "revisited"
-	end
+    if (selectedSnapshotNodes and not selectedSnapshotNodes[object])
+        or (selectionGui and (object == selectionGui or F.safeIsDescendantOf(object, selectionGui))) then
+        return nil, "filtered"
+    end
+    local previousVisitId = traversedInstances[object]
+    if previousVisitId then
+        local previousMeta = instanceMetaById[previousVisitId]
+        F.recordWarning(
+            "RevisitedInstance",
+            object,
+            string.format(
+                "Instance #%d was already traversed at %s and was skipped on a later encounter",
+                previousVisitId,
+                previousMeta and previousMeta.Path or "<unknown>"
+            )
+        )
+        return nil, "revisited"
+    end
 
-	local id = F.assignInstanceId(object)
-	local expectedParent = context and context.ParentObject or nil
-	if expectedParent then
-		local actualParent, parentReadable = F.safeGet(object, "Parent")
-		if parentReadable and actualParent ~= expectedParent then
-			F.recordWarning(
-				"ParentChangedBeforeVisit",
-				object,
-				"Instance changed parent after GetChildren() and was skipped from the stale parent snapshot"
-			)
-			return nil, "parent_changed"
-		end
-	end
+    local id = F.assignInstanceId(object)
+    local expectedParent = context and context.ParentObject or nil
+    if expectedParent then
+        local actualParent, parentReadable = F.safeGet(object, "Parent")
+        if parentReadable and actualParent ~= expectedParent then
+            F.recordWarning(
+                "ParentChangedBeforeVisit",
+                object,
+                "Instance changed parent after GetChildren() and was skipped from the stale parent snapshot"
+            )
+            return nil, "parent_changed"
+        end
+    end
 
-	local name = F.safeName(object)
-	local className = F.safeClassName(object)
-	local path = F.safeFullName(object)
-	recoveryLastPath = path
-	recoveryLastClass = className
+    local name = F.safeName(object)
+    local className = F.safeClassName(object)
+    local path = F.safeFullName(object)
+    recoveryLastPath = path
+    recoveryLastClass = className
 
-	if invalidClassObjects[object] and not invalidClassWarned[object] then
-		invalidClassWarned[object] = true
-		F.recordWarning(
-			"InvalidClassName",
-			object,
-			"ClassName was empty or unreadable and was replaced with Instance"
-		)
-	end
+    if invalidClassObjects[object] and not invalidClassWarned[object] then
+        invalidClassWarned[object] = true
+        F.recordWarning(
+            "InvalidClassName",
+            object,
+            "ClassName was empty or unreadable and was replaced with Instance"
+        )
+    end
 
-	traversedInstances[object] = id
-	F.updateInstanceMeta(object, id, parentId, name, className, path)
+    traversedInstances[object] = id
+    F.updateInstanceMeta(object, id, parentId, name, className, path)
 
-	nodeCount = nodeCount + 1
+    nodeCount = nodeCount + 1
 
-	local checkpointEvery = math.max(0, tonumber(CONFIG.ProgressCheckpointEvery) or 0)
-	if checkpointEvery > 0
-		and nodeCount % checkpointEvery == 0
-		and checkpointStage
-	then
-		checkpointStage("snapshot_traversal")
-	end
+    local checkpointEvery = math.max(0, tonumber(CONFIG.ProgressCheckpointEvery) or 0)
+    if checkpointEvery > 0
+        and nodeCount % checkpointEvery == 0
+        and checkpointStage
+    then
+        checkpointStage("snapshot_traversal")
+    end
 
-	if nodeCount % YIELD_EVERY == 0 then
-		local heavy = CONFIG.HeavyGameYieldAfterNodes or 12000
-		task.wait(nodeCount >= heavy and (CONFIG.HeavyGameYieldSeconds or 0.025) or 0)
-	end
-	local source = F.resolveInventorySource(object, context and context.InventorySource or nil)
-	local parentToolState = context and context.ToolState or nil
+    if nodeCount % YIELD_EVERY == 0 then
+        local heavy = CONFIG.HeavyGameYieldAfterNodes or 12000
+        task.wait(nodeCount >= heavy and (CONFIG.HeavyGameYieldSeconds or 0.025) or 0)
+    end
+    local source = F.resolveInventorySource(object, context and context.InventorySource or nil)
+    local parentToolState = context and context.ToolState or nil
 
-	classCounts[className] = (classCounts[className] or 0) + 1
+    classCounts[className] = (classCounts[className] or 0) + 1
 
-	local attributes = F.getAttributes(object)
-	local tags = F.getTags(object)
-	local properties = F.getUsefulProperties(object, className)
+    local attributes = F.getAttributes(object)
+    local tags = F.getTags(object)
+    local properties = F.getUsefulProperties(object, className)
 
-	if #tags > 0 then
-		for _, tag in ipairs(tags) do tagCounts[tag] = (tagCounts[tag] or 0) + 1 end
-		if #tagRecords < CONFIG.MaxTagRecords then
-			tagRecords[#tagRecords + 1] = { Id = id, Path = path, ClassName = className, Tags = tags }
-		else
-			tagOmitted = tagOmitted + 1
-		end
-	end
-	if INTERACTION_CLASSES[className] then
-		if #interactionRecords < CONFIG.MaxInteractionRecords then
-			interactionRecords[#interactionRecords + 1] = {
-				Id = id, ParentId = parentId, Name = name, Path = path,
-				ClassName = className,
-				Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
-				Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil,
-				Tags = tags
-			}
-		else interactionOmitted = interactionOmitted + 1 end
-	end
-	if PHYSICS_CLASSES[className] then
-		if #physicsRecords < CONFIG.MaxPhysicsRecords then
-			physicsRecords[#physicsRecords + 1] = {
-				Id = id, ParentId = parentId, Name = name, Path = path,
-				ClassName = className,
-				Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
-				Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil
-			}
-		else physicsOmitted = physicsOmitted + 1 end
-	end
-	if journalRecord then
-		journalRecord("Snapshot", {
-			Id = id, ParentId = parentId, Name = name, ClassName = className,
-			Path = path, Attributes = F.optionalMap(attributes), Tags = tags,
-			Properties = F.optionalMap(properties)
-		})
-	end
-	if flushRecovery and nodeCount % math.max(1, CONFIG.RecoverySnapshotBatch) == 0 then
-		flushRecovery(true)
-	end
+    if SELECTION.Structure and #tags > 0 then
+        for _, tag in ipairs(tags) do tagCounts[tag] = (tagCounts[tag] or 0) + 1 end
+        if #tagRecords < CONFIG.MaxTagRecords then
+            tagRecords[#tagRecords + 1] = { Id = id, Path = path, ClassName = className, Tags = tags }
+        else
+            tagOmitted = tagOmitted + 1
+        end
+    end
+    if SELECTION.Structure and INTERACTION_CLASSES[className] then
+        if #interactionRecords < CONFIG.MaxInteractionRecords then
+            interactionRecords[#interactionRecords + 1] = {
+                Id = id, ParentId = parentId, Name = name, Path = path,
+                ClassName = className,
+                Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
+                Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil,
+                Tags = tags
+            }
+        else interactionOmitted = interactionOmitted + 1 end
+    end
+    if SELECTION.Structure and PHYSICS_CLASSES[className] then
+        if #physicsRecords < CONFIG.MaxPhysicsRecords then
+            physicsRecords[#physicsRecords + 1] = {
+                Id = id, ParentId = parentId, Name = name, Path = path,
+                ClassName = className,
+                Properties = not CONFIG.CompactSecondaryIndexes and properties or nil,
+                Attributes = not CONFIG.CompactSecondaryIndexes and F.optionalMap(attributes) or nil
+            }
+        else physicsOmitted = physicsOmitted + 1 end
+    end
+    if journalRecord then
+        journalRecord("Snapshot", {
+            Id = id, ParentId = parentId, Name = name, ClassName = className,
+            Path = path, Attributes = F.optionalMap(attributes), Tags = tags,
+            Properties = F.optionalMap(properties)
+        })
+    end
+    if flushRecovery and nodeCount % math.max(1, CONFIG.RecoverySnapshotBatch) == 0 then
+        flushRecovery(true)
+    end
 
     if className == "Animator" and CONFIG.VisualCapture then
         F.registerVisualAnimator(object)
         F.captureAnimatorPlayback(object, "Snapshot")
     end
 
-	if CONFIG.VisualCapture and F.isVisualAsset(object, className) then
-		if #visualSnapshotRecords < math.max(0, CONFIG.VisualMaxSnapshotEntries) then
-			visualSnapshotSaved = visualSnapshotSaved + 1
-			visualSnapshotRecords[#visualSnapshotRecords + 1] = F.makeVisualRecord(
-				object, id, parentId, name, className, path, attributes, tags, properties
-			)
-		else
-			visualSnapshotOmitted = visualSnapshotOmitted + 1
-		end
-	end
-
-	F.registerAttributes(id, name, className, path, attributes)
-	F.captureSnapshotGui(object, id, parentId, name, className, path, properties)
-	F.registerRemote(object, id, name, className, parentId, path, attributes, tags)
-	F.registerScript(object, id, name, className, parentId, path, properties)
-	F.registerValue(object, id, name, className, parentId, path, attributes, tags)
-	F.registerToolDescendant(parentToolState, object, id, className, name)
-
-	F.scanAttributesForPlayerReferences(id, attributes)
-    F.scanValueForPlayerReferences(id, "Name", name)
-    for property, value in pairs(properties) do
-        if type(value) == "string" then
-            F.scanValueForPlayerReferences(id, "Property:" .. property, value)
+    if CONFIG.VisualCapture and F.isVisualAsset(object, className) then
+        if #visualSnapshotRecords < math.max(0, CONFIG.VisualMaxSnapshotEntries) then
+            visualSnapshotSaved = visualSnapshotSaved + 1
+            visualSnapshotRecords[#visualSnapshotRecords + 1] = F.makeVisualRecord(
+                object, id, parentId, name, className, path, attributes, tags, properties
+            )
+        else
+            visualSnapshotOmitted = visualSnapshotOmitted + 1
         end
     end
-	if F.safeIsA(object, "ValueBase") then
-		local rawValue, readable = F.safeGet(object, "Value")
-		if readable then
-			F.scanValueForPlayerReferences(id, "Value", rawValue)
-		end
-	end
 
-	F.watchRuntimeRemote(object, id, name, className, path)
-	F.watchRuntimeAttributes(object, id, name, className, path, attributes)
-	F.watchRuntimeValue(object, id, name, className, path)
+    if SELECTION.Values then F.registerAttributes(id, name, className, path, attributes) end
+    if SELECTION.GUI then F.captureSnapshotGui(object, id, parentId, name, className, path, properties) end
+    if SELECTION.Remotes then F.registerRemote(object, id, name, className, parentId, path, attributes, tags) end
+    if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
+        F.registerScript(object, id, name, className, parentId, path, properties)
+    end
+    if SELECTION.Values then F.registerValue(object, id, name, className, parentId, path, attributes, tags) end
+    if SELECTION.PlayersTools then F.registerToolDescendant(parentToolState, object, id, className, name) end
+
+    if SELECTION.PlayersTools then
+        F.scanAttributesForPlayerReferences(id, attributes)
+        F.scanValueForPlayerReferences(id, "Name", name)
+        for property, value in pairs(properties) do
+            if type(value) == "string" then
+                F.scanValueForPlayerReferences(id, "Property:" .. property, value)
+            end
+        end
+        if F.safeIsA(object, "ValueBase") then
+            local rawValue, readable = F.safeGet(object, "Value")
+            if readable then F.scanValueForPlayerReferences(id, "Value", rawValue) end
+        end
+    end
+
+    F.watchRuntimeRemote(object, id, name, className, path)
+    F.watchRuntimeAttributes(object, id, name, className, path, attributes)
+    F.watchRuntimeValue(object, id, name, className, path)
     F.watchRuntimeGui(object)
 
-	local currentToolState = parentToolState
-	if className == "Tool" or F.safeIsA(object, "Tool") then
-		currentToolState = F.createToolRecord(
-			object,
-			id,
-			name,
-			className,
-			path,
-			source,
-			attributes,
-			properties
-		)
-	end
+    local currentToolState = parentToolState
+    if SELECTION.PlayersTools and (className == "Tool" or F.safeIsA(object, "Tool")) then
+        currentToolState = F.createToolRecord(
+            object,
+            id,
+            name,
+            className,
+            path,
+            source,
+            attributes,
+            properties
+        )
+    end
 
-	local node = {
-		Id = id,
-		Name = name,
-		ClassName = className,
-		Path = path,
-		ParentId = parentId,
-		Attributes = F.optionalMap(attributes),
-		Tags = tags,
-		Properties = F.optionalMap(properties),
-		Children = {}
-	}
+    local node = {
+        Id = id,
+        Name = name,
+        ClassName = className,
+        Path = path,
+        ParentId = parentId,
+        Attributes = F.optionalMap(attributes),
+        Tags = tags,
+        Properties = F.optionalMap(properties),
+        Children = {}
+    }
 
-	for _, child in ipairs(F.getSortedChildren(object)) do
-		local ok, childData, childStatus = pcall(
-			dumpNode,
-			child,
-			id,
-			{
-				InventorySource = source,
-				ToolState = currentToolState,
-				ParentObject = object
-			}
-		)
+    for _, child in ipairs(F.getSortedChildren(object)) do
+        local ok, childData, childStatus = pcall(
+            dumpNode,
+            child,
+            id,
+            {
+                InventorySource = source,
+                ToolState = currentToolState,
+                ParentObject = object
+            }
+        )
 
-		if ok then
-			if childData then
-				table.insert(node.Children, childData)
-			elseif childStatus == nil then
-				F.recordError("DumpNode", child, "dumpNode returned no data")
-			end
-		else
-			F.recordError("DumpNode", child, childData)
-			table.insert(node.Children, F.makeFailedNode(child, id, childData))
-		end
-	end
+        if ok then
+            if childData then
+                table.insert(node.Children, childData)
+            elseif childStatus == nil then
+                F.recordError("DumpNode", child, "dumpNode returned no data")
+            end
+        else
+            F.recordError("DumpNode", child, childData)
+            table.insert(node.Children, F.makeFailedNode(child, id, childData))
+        end
+    end
 
-	if expectedParent then
-		local finalParent, parentReadable = F.safeGet(object, "Parent")
-		if parentReadable and finalParent ~= expectedParent then
-			F.recordWarning(
-				"ParentChangedDuringVisit",
-				object,
-				"Instance changed parent while it was being dumped; the node keeps its first-seen snapshot location"
-			)
-		end
-	end
+    if expectedParent then
+        local finalParent, parentReadable = F.safeGet(object, "Parent")
+        if parentReadable and finalParent ~= expectedParent then
+            F.recordWarning(
+                "ParentChangedDuringVisit",
+                object,
+                "Instance changed parent while it was being dumped; the node keeps its first-seen snapshot location"
+            )
+        end
+    end
 
-	return node
+    return node
 end
 
 function F.makeTree(node)
-	local output = {}
-	local nodeStack = { node }
-	local depthStack = { 0 }
-	local processed = 0
+    local output = {}
+    local nodeStack = { node }
+    local depthStack = { 0 }
+    local processed = 0
 
-	while #nodeStack > 0 do
-		local stackIndex = #nodeStack
-		local current = nodeStack[stackIndex]
-		local depth = depthStack[stackIndex]
-		nodeStack[stackIndex] = nil
-		depthStack[stackIndex] = nil
+    while #nodeStack > 0 do
+        local stackIndex = #nodeStack
+        local current = nodeStack[stackIndex]
+        local depth = depthStack[stackIndex]
+        nodeStack[stackIndex] = nil
+        depthStack[stackIndex] = nil
 
-		local prefix = string.rep("    ", depth)
-		local suffix = current.DumpError and " [dump error]" or ""
+        local prefix = string.rep("    ", depth)
+        local suffix = current.DumpError and " [dump error]" or ""
 
-		output[#output + 1] = string.format(
-			"%s%s [%s] (#%s)%s",
-			prefix,
-			F.escapeText(current.Name),
-			F.escapeText(current.ClassName),
-			tostring(current.Id),
-			suffix
-		)
+        output[#output + 1] = string.format(
+            "%s%s [%s] (#%s)%s",
+            prefix,
+            F.escapeText(current.Name),
+            F.escapeText(current.ClassName),
+            tostring(current.Id),
+            suffix
+        )
 
-		for index = #current.Children, 1, -1 do
-			nodeStack[#nodeStack + 1] = current.Children[index]
-			depthStack[#depthStack + 1] = depth + 1
-		end
+        for index = #current.Children, 1, -1 do
+            nodeStack[#nodeStack + 1] = current.Children[index]
+            depthStack[#depthStack + 1] = depth + 1
+        end
 
-		processed = processed + 1
-		if processed % 2000 == 0 then
-			task.wait()
-		end
-	end
+        processed = processed + 1
+        if processed % 2000 == 0 then
+            task.wait()
+        end
+    end
 
-	return output
+    return output
 end
 
 function F.sortRecordsByPath(records)
-	table.sort(records, function(a, b)
-		if a.Path ~= b.Path then
-			return a.Path < b.Path
-		end
+    table.sort(records, function(a, b)
+        if a.Path ~= b.Path then
+            return a.Path < b.Path
+        end
 
-		return a.Id < b.Id
-	end)
+        return a.Id < b.Id
+    end)
 end
 
 function F.tokenizeText(value)
-	local text = F.sanitizeString(value or "")
-	text = string.gsub(text, "([a-z0-9])([A-Z])", "%1 %2")
-	text = string.gsub(text, "[^%w]+", " ")
+    local text = F.sanitizeString(value or "")
+    text = string.gsub(text, "([a-z0-9])([A-Z])", "%1 %2")
+    text = string.gsub(text, "[^%w]+", " ")
 
-	local tokens = {}
-	local seen = {}
+    local tokens = {}
+    local seen = {}
 
-	for token in string.gmatch(text, "%w+") do
-		local lowered = string.lower(token)
-		if not seen[lowered] then
-			seen[lowered] = true
-			table.insert(tokens, token)
-		end
-	end
+    for token in string.gmatch(text, "%w+") do
+        local lowered = string.lower(token)
+        if not seen[lowered] then
+            seen[lowered] = true
+            table.insert(tokens, token)
+        end
+    end
 
-	return tokens
+    return tokens
 end
 
 function F.buildAncestorNames(parentId)
-	local reverse = {}
-	local currentId = parentId
-	local guard = 0
+    local reverse = {}
+    local currentId = parentId
+    local guard = 0
 
-	while currentId and guard < 128 do
-		guard = guard + 1
-		local meta = instanceMetaById[currentId]
-		if not meta then
-			break
-		end
+    while currentId and guard < 128 do
+        guard = guard + 1
+        local meta = instanceMetaById[currentId]
+        if not meta then
+            break
+        end
 
-		table.insert(reverse, meta.Name)
-		currentId = meta.ParentId
-	end
+        table.insert(reverse, meta.Name)
+        currentId = meta.ParentId
+    end
 
-	local result = {}
-	for index = #reverse, 1, -1 do
-		table.insert(result, reverse[index])
-	end
+    local result = {}
+    for index = #reverse, 1, -1 do
+        table.insert(result, reverse[index])
+    end
 
-	return result
+    return result
 end
 
 function F.enrichRemoteRecords()
-	for _, bucket in pairs(remoteIndex) do
-		for _, record in ipairs(bucket) do
-			record.Ancestors = F.buildAncestorNames(record.ParentId)
+    for _, bucket in pairs(remoteIndex) do
+        for _, record in ipairs(bucket) do
+            record.Ancestors = F.buildAncestorNames(record.ParentId)
 
-			local tokenMap = {}
-			local tokens = {}
+            local tokenMap = {}
+            local tokens = {}
 
-			local function addTokens(value)
-				for _, token in ipairs(F.tokenizeText(value)) do
-					local lowered = string.lower(token)
-					if not tokenMap[lowered] then
-						tokenMap[lowered] = true
-						table.insert(tokens, token)
-					end
-				end
-			end
+            local function addTokens(value)
+                for _, token in ipairs(F.tokenizeText(value)) do
+                    local lowered = string.lower(token)
+                    if not tokenMap[lowered] then
+                        tokenMap[lowered] = true
+                        table.insert(tokens, token)
+                    end
+                end
+            end
 
-			addTokens(record.Name)
-			for _, ancestorName in ipairs(record.Ancestors) do
-				addTokens(ancestorName)
-			end
+            addTokens(record.Name)
+            for _, ancestorName in ipairs(record.Ancestors) do
+                addTokens(ancestorName)
+            end
 
-			table.sort(tokens, function(a, b)
-				return string.lower(a) < string.lower(b)
-			end)
+            table.sort(tokens, function(a, b)
+                return string.lower(a) < string.lower(b)
+            end)
 
-			record.Tokens = tokens
-		end
-	end
+            record.Tokens = tokens
+        end
+    end
 end
 
 function F.buildPathStats(instanceIndex)
-	local counts = {}
+    local counts = {}
 
-	for _, meta in ipairs(instanceIndex) do
-		counts[meta.Path] = (counts[meta.Path] or 0) + 1
-	end
+    for _, meta in ipairs(instanceIndex) do
+        counts[meta.Path] = (counts[meta.Path] or 0) + 1
+    end
 
-	local collisions = {}
-	local groups = 0
-	local affected = 0
+    local collisions = {}
+    local groups = 0
+    local affected = 0
 
-	for path, count in pairs(counts) do
-		if count > 1 then
-			groups = groups + 1
-			affected = affected + count
-			table.insert(collisions, {
-				Path = path,
-				Count = count
-			})
-		end
-	end
+    for path, count in pairs(counts) do
+        if count > 1 then
+            groups = groups + 1
+            affected = affected + count
+            table.insert(collisions, {
+                Path = path,
+                Count = count
+            })
+        end
+    end
 
-	table.sort(collisions, function(a, b)
-		if a.Count ~= b.Count then
-			return a.Count > b.Count
-		end
+    table.sort(collisions, function(a, b)
+        if a.Count ~= b.Count then
+            return a.Count > b.Count
+        end
 
-		return a.Path < b.Path
-	end)
+        return a.Path < b.Path
+    end)
 
-	local top = {}
-	for index = 1, math.min(50, #collisions) do
-		top[index] = collisions[index]
-	end
+    local top = {}
+    for index = 1, math.min(50, #collisions) do
+        top[index] = collisions[index]
+    end
 
-	return {
-		DuplicatePathGroups = groups,
-		InstancesInDuplicatePaths = affected,
-		TopCollisions = top
-	}
+    return {
+        DuplicatePathGroups = groups,
+        InstancesInDuplicatePaths = affected,
+        TopCollisions = top
+    }
 end
 
 function F.buildPlayerIndex()
-	local referenceCounts = {}
-	for _, reference in ipairs(playerReferences) do
-		referenceCounts[reference.UserId] = (referenceCounts[reference.UserId] or 0) + 1
-	end
+    local referenceCounts = {}
+    for _, reference in ipairs(playerReferences) do
+        referenceCounts[reference.UserId] = (referenceCounts[reference.UserId] or 0) + 1
+    end
 
-	local records = {}
+    local records = {}
 
-	for _, descriptor in ipairs(playerDescriptors) do
-		local player = descriptor.Player
-		local team, teamReadable = F.safeGet(player, "Team")
-		local teamColor, teamColorReadable = F.safeGet(player, "TeamColor")
-		local neutral, neutralReadable = F.safeGet(player, "Neutral")
+    for _, descriptor in ipairs(playerDescriptors) do
+        local player = descriptor.Player
+        local team, teamReadable = F.safeGet(player, "Team")
+        local teamColor, teamColorReadable = F.safeGet(player, "TeamColor")
+        local neutral, neutralReadable = F.safeGet(player, "Neutral")
 
-		local record = {
-			Name = F.sanitizeString(descriptor.Name),
-			DisplayName = F.sanitizeString(descriptor.DisplayName),
-			UserId = descriptor.UserId,
-			PlayerId = instanceIds[player],
-			CharacterId = descriptor.Character and instanceIds[descriptor.Character] or nil,
-			BackpackId = descriptor.Backpack and instanceIds[descriptor.Backpack] or nil,
-			PlayerGuiId = descriptor.PlayerGui and instanceIds[descriptor.PlayerGui] or nil,
-			StarterGearId = descriptor.StarterGear and instanceIds[descriptor.StarterGear] or nil,
-			ReferenceCount = referenceCounts[descriptor.UserId] or 0
-		}
+        local record = {
+            Name = F.sanitizeString(descriptor.Name),
+            DisplayName = F.sanitizeString(descriptor.DisplayName),
+            UserId = descriptor.UserId,
+            PlayerId = instanceIds[player],
+            CharacterId = descriptor.Character and instanceIds[descriptor.Character] or nil,
+            BackpackId = descriptor.Backpack and instanceIds[descriptor.Backpack] or nil,
+            PlayerGuiId = descriptor.PlayerGui and instanceIds[descriptor.PlayerGui] or nil,
+            StarterGearId = descriptor.StarterGear and instanceIds[descriptor.StarterGear] or nil,
+            ReferenceCount = referenceCounts[descriptor.UserId] or 0
+        }
 
-		if teamReadable and team then
-			record.NativeTeam = F.makeInstanceReference(team)
-		end
+        if teamReadable and team then
+            record.NativeTeam = F.makeInstanceReference(team)
+        end
 
-		if teamColorReadable and teamColor ~= nil then
-			record.TeamColor = serializeValue(teamColor)
-		end
+        if teamColorReadable and teamColor ~= nil then
+            record.TeamColor = serializeValue(teamColor)
+        end
 
-		if neutralReadable and neutral ~= nil then
-			record.Neutral = neutral
-		end
+        if neutralReadable and neutral ~= nil then
+            record.Neutral = neutral
+        end
 
-		table.insert(records, record)
-	end
+        table.insert(records, record)
+    end
 
-	return {
-		Total = #records,
-		Players = records
-	}
+    return {
+        Total = #records,
+        Players = records
+    }
 end
 
 local STATE_BUCKETS = {
-	Team = { "team", "teams", "red", "blue", "ally", "allies", "enemy", "enemies" },
-	Match = { "match", "round", "duel", "gamephase", "gamestate" },
-	Player = { "player", "players", "owner", "userid", "username" },
-	Teleport = { "teleport", "teleporting", "spawn", "respawn", "respawned" },
-	Score = { "score", "kills", "kill", "deaths", "death", "winner", "win" }
+    Team = { "team", "teams", "red", "blue", "ally", "allies", "enemy", "enemies" },
+    Match = { "match", "round", "duel", "gamephase", "gamestate" },
+    Player = { "player", "players", "owner", "userid", "username" },
+    Teleport = { "teleport", "teleporting", "spawn", "respawn", "respawned" },
+    Score = { "score", "kills", "kill", "deaths", "death", "winner", "win" }
 }
 
 function F.stateRecordFromMeta(meta, valueById)
-	local record = {
-		Id = meta.Id,
-		Name = meta.Name,
-		ClassName = meta.ClassName,
-		Path = meta.Path,
-		ParentId = meta.ParentId
-	}
+    local record = {
+        Id = meta.Id,
+        Name = meta.Name,
+        ClassName = meta.ClassName,
+        Path = meta.Path,
+        ParentId = meta.ParentId
+    }
 
-	local valueRecord = valueById[meta.Id]
-	if valueRecord then
-		record.Value = valueRecord.Value
-	end
+    local valueRecord = valueById[meta.Id]
+    if valueRecord then
+        record.Value = valueRecord.Value
+    end
 
-	return record
+    return record
 end
 
 function F.buildStateIndex(instanceIndex)
-	local buckets = {}
-	local counts = {}
-	local valueById = {}
+    local buckets = {}
+    local counts = {}
+    local valueById = {}
 
-	for _, valueRecord in ipairs(valueRecords) do
-		valueById[valueRecord.Id] = valueRecord
-	end
+    for _, valueRecord in ipairs(valueRecords) do
+        valueById[valueRecord.Id] = valueRecord
+    end
 
-	for bucketName in pairs(STATE_BUCKETS) do
-		buckets[bucketName] = {}
-		counts[bucketName] = 0
-	end
+    for bucketName in pairs(STATE_BUCKETS) do
+        buckets[bucketName] = {}
+        counts[bucketName] = 0
+    end
 
-	for _, meta in ipairs(instanceIndex) do
-		local tokenSet = {}
-		local nameTokenSet = {}
+    for _, meta in ipairs(instanceIndex) do
+        local tokenSet = {}
+        local nameTokenSet = {}
 
-		for _, token in ipairs(F.tokenizeText(meta.Name or "")) do
-			local lowered = string.lower(token)
-			tokenSet[lowered] = true
-			nameTokenSet[lowered] = true
-		end
+        for _, token in ipairs(F.tokenizeText(meta.Name or "")) do
+            local lowered = string.lower(token)
+            tokenSet[lowered] = true
+            nameTokenSet[lowered] = true
+        end
 
-		for _, token in ipairs(F.tokenizeText(meta.Path or "")) do
-			tokenSet[string.lower(token)] = true
-		end
+        for _, token in ipairs(F.tokenizeText(meta.Path or "")) do
+            tokenSet[string.lower(token)] = true
+        end
 
-		for bucketName, keywords in pairs(STATE_BUCKETS) do
-			local matched = bucketName == "Player" and meta.ClassName == "Player"
-			local searchSet = bucketName == "Player" and nameTokenSet or tokenSet
+        for bucketName, keywords in pairs(STATE_BUCKETS) do
+            local matched = bucketName == "Player" and meta.ClassName == "Player"
+            local searchSet = bucketName == "Player" and nameTokenSet or tokenSet
 
-			if not matched then
-				for _, keyword in ipairs(keywords) do
-					if searchSet[keyword] then
-						matched = true
-						break
-					end
-				end
-			end
+            if not matched then
+                for _, keyword in ipairs(keywords) do
+                    if searchSet[keyword] then
+                        matched = true
+                        break
+                    end
+                end
+            end
 
-			if matched then
-				counts[bucketName] = counts[bucketName] + 1
-				if #buckets[bucketName] < CONFIG.StateIndexMaxPerBucket then
-					table.insert(buckets[bucketName], F.stateRecordFromMeta(meta, valueById))
-				end
-			end
-		end
-	end
+            if matched then
+                counts[bucketName] = counts[bucketName] + 1
+                if #buckets[bucketName] < CONFIG.StateIndexMaxPerBucket then
+                    table.insert(buckets[bucketName], F.stateRecordFromMeta(meta, valueById))
+                end
+            end
+        end
+    end
 
-	return {
-		Counts = counts,
-		Buckets = buckets
-	}
+    return {
+        Counts = counts,
+        Buckets = buckets
+    }
 end
 
 function F.finalizeIndexes()
-	F.sortRecordsByPath(attributeIndex)
-	F.sortRecordsByPath(toolRecords)
-	F.sortRecordsByPath(valueRecords)
+    F.sortRecordsByPath(attributeIndex)
+    F.sortRecordsByPath(toolRecords)
+    F.sortRecordsByPath(valueRecords)
 
-	table.sort(playerReferences, function(a, b)
-		if a.UserId ~= b.UserId then
-			return a.UserId < b.UserId
-		end
+    table.sort(playerReferences, function(a, b)
+        if a.UserId ~= b.UserId then
+            return a.UserId < b.UserId
+        end
 
-		if a.ObjectId ~= b.ObjectId then
-			return a.ObjectId < b.ObjectId
-		end
+        if a.ObjectId ~= b.ObjectId then
+            return a.ObjectId < b.ObjectId
+        end
 
-		if a.Field ~= b.Field then
-			return a.Field < b.Field
-		end
+        if a.Field ~= b.Field then
+            return a.Field < b.Field
+        end
 
-		return a.MatchKind < b.MatchKind
-	end)
+        return a.MatchKind < b.MatchKind
+    end)
 
-	for _, bucket in pairs(remoteIndex) do
-		F.sortRecordsByPath(bucket)
-	end
+    for _, bucket in pairs(remoteIndex) do
+        F.sortRecordsByPath(bucket)
+    end
 
-	for _, bucket in pairs(scriptIndex) do
-		F.sortRecordsByPath(bucket)
-	end
+    for _, bucket in pairs(scriptIndex) do
+        F.sortRecordsByPath(bucket)
+    end
 
-	for _, record in ipairs(toolRecords) do
-		table.sort(record.AnimationIds)
-		table.sort(record.SoundIds)
-		table.sort(record.ValueIds)
-		table.sort(record.DescendantIds)
-	end
+    for _, record in ipairs(toolRecords) do
+        table.sort(record.AnimationIds)
+        table.sort(record.SoundIds)
+        table.sort(record.ValueIds)
+        table.sort(record.DescendantIds)
+    end
 
-	for _, ids in pairs(inventoryToolIds) do
-		table.sort(ids)
-	end
+    for _, ids in pairs(inventoryToolIds) do
+        table.sort(ids)
+    end
 
-	F.enrichRemoteRecords()
+    F.enrichRemoteRecords()
 end
 
 function F.buildInstanceIndex()
-	local list = {}
+    local list = {}
 
-	for id = 1, nextInstanceId do
-		local meta = instanceMetaById[id]
-		if meta then
-			table.insert(list, meta)
-		end
-	end
+    for id = 1, nextInstanceId do
+        local meta = instanceMetaById[id]
+        if meta then
+            table.insert(list, meta)
+        end
+    end
 
-	return list
+    return list
 end
 
 function F.buildInventory()
-	return {
-		Player = LocalPlayer and F.makeInstanceReference(LocalPlayer) or nil,
-		Backpack = F.makeInstanceReference(backpack),
-		Character = F.makeInstanceReference(character),
-		StarterGear = F.makeInstanceReference(starterGear),
-		ToolIds = inventoryToolIds
-	}
+    return {
+        Player = LocalPlayer and F.makeInstanceReference(LocalPlayer) or nil,
+        Backpack = F.makeInstanceReference(backpack),
+        Character = F.makeInstanceReference(character),
+        StarterGear = F.makeInstanceReference(starterGear),
+        ToolIds = inventoryToolIds
+    }
 end
 
 function F.totalBucketCount(index)
-	local total = 0
-	for _, bucket in pairs(index) do
-		total = total + #bucket
-	end
-	return total
+    local total = 0
+    for _, bucket in pairs(index) do
+        total = total + #bucket
+    end
+    return total
 end
 
 function F.totalRemoteCount()
-	return F.totalBucketCount(remoteIndex)
+    return F.totalBucketCount(remoteIndex)
 end
 
 function F.totalScriptCount()
-	return F.totalBucketCount(scriptIndex)
+    return F.totalBucketCount(scriptIndex)
 end
 
 function F.buildSummary(elapsed, pathStats)
-	local classes = {}
+    local classes = {}
 
-	for className, count in pairs(classCounts) do
-		table.insert(classes, {
-			ClassName = className,
-			Count = count
-		})
-	end
+    for className, count in pairs(classCounts) do
+        table.insert(classes, {
+            ClassName = className,
+            Count = count
+        })
+    end
 
-	table.sort(classes, function(a, b)
-		if a.Count ~= b.Count then
-			return a.Count > b.Count
-		end
+    table.sort(classes, function(a, b)
+        if a.Count ~= b.Count then
+            return a.Count > b.Count
+        end
 
-		return a.ClassName < b.ClassName
-	end)
+        return a.ClassName < b.ClassName
+    end)
 
-	local lines = {
-		"Schema: " .. SCHEMA_NAME,
-		"Schema Version: " .. tostring(SCHEMA_VERSION),
-		"Game: " .. F.sanitizeString(game.Name),
-		"PlaceId: " .. tostring(game.PlaceId),
-		"GameId: " .. tostring(game.GameId),
-		"JobId: " .. F.sanitizeString(game.JobId),
-		"Serialized Instance Records: " .. tostring(nextInstanceId),
-		"Traversed Descendants: " .. tostring(nodeCount),
-		"Registered IDs: " .. tostring(nextInstanceId),
-		"Remotes / Bindables: " .. tostring(F.totalRemoteCount()),
-		"Scripts: " .. tostring(F.totalScriptCount()),
-		"LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued),
-		"LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded),
-		"LocalScripts decompile failed: " .. tostring(clientDecompileStats.Failed),
-		"LocalScripts decompile skipped: " .. tostring(clientDecompileStats.Skipped),
-		"ModuleScripts queued for decompile: " .. tostring(moduleDecompileStats.Queued),
-		"ModuleScripts decompiled: " .. tostring(moduleDecompileStats.Succeeded),
-		"ModuleScripts decompile failed: " .. tostring(moduleDecompileStats.Failed),
-		"ModuleScripts decompile timed out: " .. tostring(moduleDecompileStats.TimedOut),
-		"ModuleScripts ignored by DecompileIgnore: " .. tostring(moduleDecompileStats.Ignored),
-		"ModuleScripts decompile skipped: " .. tostring(moduleDecompileStats.Skipped),
-		"Objects With Attributes: " .. tostring(#attributeIndex),
-		"ValueBase Records: " .. tostring(#valueRecords),
+    local lines = {
+        "Schema: " .. SCHEMA_NAME,
+        "Schema Version: " .. tostring(SCHEMA_VERSION),
+        "Game: " .. F.sanitizeString(game.Name),
+        "PlaceId: " .. tostring(game.PlaceId),
+        "GameId: " .. tostring(game.GameId),
+        "JobId: " .. F.sanitizeString(game.JobId),
+        "Serialized Instance Records: " .. tostring(nextInstanceId),
+        "Traversed Descendants: " .. tostring(nodeCount),
+        "Registered IDs: " .. tostring(nextInstanceId),
+        "Remotes / Bindables: " .. tostring(F.totalRemoteCount()),
+        "Scripts: " .. tostring(F.totalScriptCount()),
+        "LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued),
+        "LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded),
+        "LocalScripts decompile failed: " .. tostring(clientDecompileStats.Failed),
+        "LocalScripts decompile skipped: " .. tostring(clientDecompileStats.Skipped),
+        "ModuleScripts queued for decompile: " .. tostring(moduleDecompileStats.Queued),
+        "ModuleScripts decompiled: " .. tostring(moduleDecompileStats.Succeeded),
+        "ModuleScripts decompile failed: " .. tostring(moduleDecompileStats.Failed),
+        "ModuleScripts decompile timed out: " .. tostring(moduleDecompileStats.TimedOut),
+        "ModuleScripts ignored by DecompileIgnore: " .. tostring(moduleDecompileStats.Ignored),
+        "ModuleScripts decompile skipped: " .. tostring(moduleDecompileStats.Skipped),
+        "Objects With Attributes: " .. tostring(#attributeIndex),
+        "ValueBase Records: " .. tostring(#valueRecords),
         "GUI Elements: " .. tostring(guiCapture.SnapshotSaved),
         "GUI Snapshot Omitted: " .. tostring(guiCapture.SnapshotOmitted),
-		"Player References: " .. tostring(#playerReferences),
-		"Tools: " .. tostring(#toolRecords),
-		"Duplicate Path Groups: " .. tostring(pathStats.DuplicatePathGroups),
-		"Instances In Duplicate Paths: " .. tostring(pathStats.InstancesInDuplicatePaths),
-		"Errors: " .. tostring(#errors),
-		"Warnings: " .. tostring(#warnings),
-		"Sanitized invalid UTF-8 unique strings: " .. tostring(invalidUtf8StringCount),
-		"Invalid / empty class names: " .. tostring(invalidClassNameCount),
-		"Time: " .. string.format("%.2fs", elapsed),
-		"Runtime Trace: " .. tostring(CONFIG.RuntimeTrace),
-		"Runtime Trace Frozen: " .. tostring(runtimeHookState.Frozen),
-		"Runtime Ring Window: " .. tostring(CONFIG.RuntimeRingWindowSeconds) .. "s",
-		"Runtime Remote Events: " .. tostring(#runtimeEventRecords),
-		"  Game: " .. tostring(#runtimeEventCategoryRecords.Game),
-		"  Replicator: " .. tostring(#runtimeEventCategoryRecords.Replicator),
-		"  Analytics: " .. tostring(#runtimeEventCategoryRecords.Analytics),
-		"  Other: " .. tostring(#runtimeEventCategoryRecords.Other),
-		"Runtime Value Changes: " .. tostring(#runtimeValueRecords),
-		"Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
+        "Player References: " .. tostring(#playerReferences),
+        "Tools: " .. tostring(#toolRecords),
+        "Duplicate Path Groups: " .. tostring(pathStats.DuplicatePathGroups),
+        "Instances In Duplicate Paths: " .. tostring(pathStats.InstancesInDuplicatePaths),
+        "Errors: " .. tostring(#errors),
+        "Warnings: " .. tostring(#warnings),
+        "Sanitized invalid UTF-8 unique strings: " .. tostring(invalidUtf8StringCount),
+        "Invalid / empty class names: " .. tostring(invalidClassNameCount),
+        "Time: " .. string.format("%.2fs", elapsed),
+        "Runtime Trace: " .. tostring(CONFIG.RuntimeTrace),
+        "Runtime Trace Frozen: " .. tostring(runtimeHookState.Frozen),
+        "Runtime Ring Window: " .. tostring(CONFIG.RuntimeRingWindowSeconds) .. "s",
+        "Runtime Remote Events: " .. tostring(#runtimeEventRecords),
+        "  Game: " .. tostring(#runtimeEventCategoryRecords.Game),
+        "  Replicator: " .. tostring(#runtimeEventCategoryRecords.Replicator),
+        "  Analytics: " .. tostring(#runtimeEventCategoryRecords.Analytics),
+        "  Other: " .. tostring(#runtimeEventCategoryRecords.Other),
+        "Runtime Value Changes: " .. tostring(#runtimeValueRecords),
+        "Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
         "Runtime GUI Changes: " .. tostring(#guiCapture.Records),
-		"Runtime Character Records: " .. tostring(#runtimeCharacterRecords),
-		"Runtime Log Records: " .. tostring(#runtimeLogRecords),
-		"Runtime Timeline Records: " .. tostring(#runtimeTimelineRecords),
-		"Runtime Error Messages: " .. tostring(#runtimeErrorRecords),
-		"Runtime Hook Observations: " .. tostring(#runtimeHookState.HookRecords),
-		"Runtime Hook Integrity Records: " .. tostring(#runtimeHookState.HookIntegrityRecords),
-		"Buffer Capture: " .. tostring(CONFIG.RuntimeCaptureBuffers and capabilities.buffer_len),
-		"Outgoing Remote Hook: " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod and capabilities.getnamecallmethod),
-		"",
-		"Top Duplicate Paths:"
-	}
+        "Runtime Character Records: " .. tostring(#runtimeCharacterRecords),
+        "Runtime Log Records: " .. tostring(#runtimeLogRecords),
+        "Runtime Timeline Records: " .. tostring(#runtimeTimelineRecords),
+        "Runtime Error Messages: " .. tostring(#runtimeErrorRecords),
+        "Runtime Hook Observations: " .. tostring(#runtimeHookState.HookRecords),
+        "Runtime Hook Integrity Records: " .. tostring(#runtimeHookState.HookIntegrityRecords),
+        "Buffer Capture: " .. tostring(CONFIG.RuntimeCaptureBuffers and capabilities.buffer_len),
+        "Outgoing Remote Hook: " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod and capabilities.getnamecallmethod),
+        "",
+        "Top Duplicate Paths:"
+    }
 
-	if #pathStats.TopCollisions == 0 then
-		table.insert(lines, "(none)")
-	else
-		for index = 1, math.min(10, #pathStats.TopCollisions) do
-			local collision = pathStats.TopCollisions[index]
-			table.insert(
-				lines,
-				string.format("%dx %s", collision.Count, F.escapeText(collision.Path))
-			)
-		end
-	end
+    if #pathStats.TopCollisions == 0 then
+        table.insert(lines, "(none)")
+    else
+        for index = 1, math.min(10, #pathStats.TopCollisions) do
+            local collision = pathStats.TopCollisions[index]
+            table.insert(
+                lines,
+                string.format("%dx %s", collision.Count, F.escapeText(collision.Path))
+            )
+        end
+    end
 
-	table.insert(lines, "")
-	table.insert(lines, "Class Counts:")
+    table.insert(lines, "")
+    table.insert(lines, "Class Counts:")
 
-	for _, entry in ipairs(classes) do
-		table.insert(
-			lines,
-			string.format("%s: %d", entry.ClassName, entry.Count)
-		)
-	end
+    for _, entry in ipairs(classes) do
+        table.insert(
+            lines,
+            string.format("%s: %d", entry.ClassName, entry.Count)
+        )
+    end
 
-	return table.concat(lines, "\n")
+    return table.concat(lines, "\n")
 end
 
 function F.encodeJSON(data, label)
-	local ok, result = pcall(function()
-		return HttpService:JSONEncode(data)
-	end)
+    local ok, result = pcall(function()
+        return HttpService:JSONEncode(data)
+    end)
 
-	if ok then
-		return result, true
-	end
+    if ok then
+        return result, true
+    end
 
-	F.recordError("JSONEncode", nil, result, label)
+    F.recordError("JSONEncode", nil, result, label)
 
-	local fallbackOk, fallback = pcall(function()
-		return HttpService:JSONEncode({
-			Error = F.sanitizeString(result),
-			Message = F.sanitizeString(label .. " export failed")
-		})
-	end)
+    local fallbackOk, fallback = pcall(function()
+        return HttpService:JSONEncode({
+            Error = F.sanitizeString(result),
+            Message = F.sanitizeString(label .. " export failed")
+        })
+    end)
 
-	if fallbackOk then
-		return fallback, false
-	end
+    if fallbackOk then
+        return fallback, false
+    end
 
-	return "{}", false
+    return "{}", false
 end
 
 function F.ensureFolder(path)
-	if capabilities.isfolder then
-		local ok, exists = pcall(isfolder, path)
-		if ok and exists then
-			return true
-		end
-	end
+    if capabilities.isfolder then
+        local ok, exists = pcall(isfolder, path)
+        if ok and exists then
+            return true
+        end
+    end
 
-	if capabilities.makefolder then
-		local ok = pcall(makefolder, path)
-		if ok then
-			return true
-		end
+    if capabilities.makefolder then
+        local ok = pcall(makefolder, path)
+        if ok then
+            return true
+        end
 
-		if capabilities.isfolder then
-			local checkOk, exists = pcall(isfolder, path)
-			if checkOk and exists then
-				return true
-			end
-		end
+        if capabilities.isfolder then
+            local checkOk, exists = pcall(isfolder, path)
+            if checkOk and exists then
+                return true
+            end
+        end
 
-		if not capabilities.isfolder then
-			return true
-		end
-	end
+        if not capabilities.isfolder then
+            return true
+        end
+    end
 
-	return false
+    return false
+end
+
+function F.selectOutputFolder()
+    local base = "GameStructureDump"
+    local chosen = base
+    if capabilities.isfolder then
+        local count = 1
+        while count <= 100000 do
+            local ok, exists = pcall(isfolder, chosen)
+            if not ok then
+                return false, "isfolder failed: " .. tostring(exists)
+            end
+            if not exists then break end
+            count = count + 1
+            chosen = base .. tostring(count)
+        end
+        if count > 100000 then
+            return false, "unable to find an unused dump folder"
+        end
+    else
+        -- Without isfolder, never risk silently overwriting an existing dump.
+        local ok, guid = pcall(function() return HttpService:GenerateGUID(false) end)
+        if not ok then return false, "isfolder unavailable and could not generate a unique fallback name" end
+        chosen = base .. "_" .. tostring(guid):gsub("%-", "")
+    end
+
+    local old = OUTPUT_FOLDER
+    local function move(path)
+        if type(path) == "string" and path:sub(1, #old + 1) == old .. "/" then
+            return chosen .. path:sub(#old + 1)
+        end
+        return path
+    end
+    META_FILE = move(META_FILE)
+    TREE_FILE = move(TREE_FILE)
+    STRUCTURE_FILE = move(STRUCTURE_FILE)
+    INSTANCES_FILE = move(INSTANCES_FILE)
+    VISUAL_ASSETS_FILE = move(VISUAL_ASSETS_FILE)
+    GUI_FILE = move(GUI_FILE)
+    RUNTIME_VISUAL_ASSETS_FILE = move(RUNTIME_VISUAL_ASSETS_FILE)
+    REMOTES_FILE = move(REMOTES_FILE)
+    SCRIPTS_FILE = move(SCRIPTS_FILE)
+    SUMMARY_FILE = move(SUMMARY_FILE)
+    INVENTORY_FILE = move(INVENTORY_FILE)
+    ATTRIBUTES_FILE = move(ATTRIBUTES_FILE)
+    TOOLS_FILE = move(TOOLS_FILE)
+    VALUES_FILE = move(VALUES_FILE)
+    PLAYERS_FILE = move(PLAYERS_FILE)
+    PLAYER_REFERENCES_FILE = move(PLAYER_REFERENCES_FILE)
+    STATE_FILE = move(STATE_FILE)
+    MANIFEST_FILE = move(MANIFEST_FILE)
+    ERRORS_FILE = move(ERRORS_FILE)
+    WARNINGS_FILE = move(WARNINGS_FILE)
+    DIAGNOSTICS_FILE = move(DIAGNOSTICS_FILE)
+    CRASH_FILE = move(CRASH_FILE)
+    PREVIOUS_RUN_FILE = move(PREVIOUS_RUN_FILE)
+    RECOVERY_FOLDER = move(RECOVERY_FOLDER)
+    TAGS_FILE = move(TAGS_FILE)
+    INTERACTIONS_FILE = move(INTERACTIONS_FILE)
+    PHYSICS_FILE = move(PHYSICS_FILE)
+    REMOTE_USAGE_FILE = move(REMOTE_USAGE_FILE)
+    MODULE_SOURCES_FOLDER = move(MODULE_SOURCES_FOLDER)
+    CLIENT_SOURCES_FOLDER = move(CLIENT_SOURCES_FOLDER)
+    for kind, path in pairs(RUNTIME_FILES) do
+        RUNTIME_FILES[kind] = move(path)
+    end
+    OUTPUT_FOLDER = chosen
+    if not F.ensureOutputFolder() then
+        return false, "failed to create: " .. chosen
+    end
+    return true
 end
 
 function F.ensureOutputFolder()
-	return F.ensureFolder(OUTPUT_FOLDER)
+    return F.ensureFolder(OUTPUT_FOLDER)
 end
 
 function F.writeSafe(path, contents)
-	local ok, writeError = pcall(writefile, path, contents)
-	if not ok then
-		F.recordError("WriteFile", nil, writeError, path)
-		return false
-	end
+    local ok, writeError = pcall(writefile, path, contents)
+    if not ok then
+        F.recordError("WriteFile", nil, writeError, path)
+        return false
+    end
 
-	return true
+    return true
 end
 
 
 initRecovery = function()
-	if not CONFIG.RecoveryEnabled or not capabilities.writefile then return end
-	if not F.ensureFolder(RECOVERY_FOLDER) then
-		F.recordWarning("RecoveryInit", nil, "Recovery folder unavailable")
-		return
-	end
-	local leaf = string.gsub(tostring(currentDumpId or os.time()), "[^%w%-_]", "_")
-	local folder = RECOVERY_FOLDER .. "/" .. leaf
-	if not F.ensureFolder(folder) then
-		F.recordWarning("RecoveryInit", nil, "Recovery run folder unavailable: " .. folder)
-		return
-	end
-	recoveryState.Folder = folder
-	recoveryLastFlush = os.clock()
-	recoveryLastDiagnostics = 0
+    if not CONFIG.RecoveryEnabled or not capabilities.writefile then return end
+    if not F.ensureFolder(RECOVERY_FOLDER) then
+        F.recordWarning("RecoveryInit", nil, "Recovery folder unavailable")
+        return
+    end
+    local leaf = string.gsub(tostring(currentDumpId or os.time()), "[^%w%-_]", "_")
+    local folder = RECOVERY_FOLDER .. "/" .. leaf
+    if not F.ensureFolder(folder) then
+        F.recordWarning("RecoveryInit", nil, "Recovery run folder unavailable: " .. folder)
+        return
+    end
+    recoveryState.Folder = folder
+    recoveryLastFlush = os.clock()
+    recoveryLastDiagnostics = 0
 end
 
 journalRecord = function(stream, entry)
-	if not recoveryState.Folder then return end
-	local bufferEntries = recoveryState.Buffers[stream]
-	if bufferEntries then bufferEntries[#bufferEntries + 1] = entry end
+    if not recoveryState.Folder then return end
+    local bufferEntries = recoveryState.Buffers[stream]
+    if bufferEntries then bufferEntries[#bufferEntries + 1] = entry end
 end
 
 writeDiagnostics = function(status, extra)
-	if not currentDumpId or not capabilities.writefile then return end
-	local now = os.clock()
-	local memoryOk, memoryKb = pcall(collectgarbage, "count")
-	local payload = {
-		Schema = SCHEMA_NAME,
-		SchemaVersion = SCHEMA_VERSION,
-		DumpId = currentDumpId,
-		Status = status or "InProgress",
-		Stage = currentStage,
-		LastObjectPath = recoveryLastPath,
-		LastObjectClass = recoveryLastClass,
-		LastError = recoveryLastError,
-		SnapshotBusy = snapshotBusy,
-		RuntimeTraceActive = runtimeTraceActive,
-		ElapsedSeconds = now - started,
-		UpdatedAtUnix = os.time(),
-		MemoryKilobytes = memoryOk and memoryKb or nil,
-		Counts = { Traversed = nodeCount, RegisteredIds = nextInstanceId,
-			Errors = #errors, Warnings = #warnings,
-			RemoteEvents = #runtimeEventRecords,
-			RuntimeValues = #runtimeValueRecords,
-			RuntimeAttributes = #runtimeAttributeRecords,
-			LocalDecompiled = clientDecompileStats.Succeeded,
-			ModuleDecompiled = moduleDecompileStats.Succeeded },
-		Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
-			SavedRecords = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites,
-			LastWriteFailure = recoveryState.LastFailure },
-		Details = extra
-	}
-	local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
-	if encodedOk then
-		local savedOk = pcall(writefile, DIAGNOSTICS_FILE, encoded)
-		if savedOk then recoveryLastDiagnostics = now end
-	end
+    if not currentDumpId or not capabilities.writefile then return end
+    local now = os.clock()
+    local memoryOk, memoryKb = pcall(collectgarbage, "count")
+    local payload = {
+        Schema = SCHEMA_NAME,
+        SchemaVersion = SCHEMA_VERSION,
+        DumpId = currentDumpId,
+        Status = status or "InProgress",
+        Stage = currentStage,
+        LastObjectPath = recoveryLastPath,
+        LastObjectClass = recoveryLastClass,
+        LastError = recoveryLastError,
+        SnapshotBusy = snapshotBusy,
+        RuntimeTraceActive = runtimeTraceActive,
+        ElapsedSeconds = now - started,
+        UpdatedAtUnix = os.time(),
+        MemoryKilobytes = memoryOk and memoryKb or nil,
+        Counts = { Traversed = nodeCount, RegisteredIds = nextInstanceId,
+            Errors = #errors, Warnings = #warnings,
+            RemoteEvents = #runtimeEventRecords,
+            RuntimeValues = #runtimeValueRecords,
+            RuntimeAttributes = #runtimeAttributeRecords,
+            LocalDecompiled = clientDecompileStats.Succeeded,
+            ModuleDecompiled = moduleDecompileStats.Succeeded },
+        Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
+            SavedRecords = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites,
+            LastWriteFailure = recoveryState.LastFailure },
+        Details = extra
+    }
+    local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+    if encodedOk then
+        local savedOk = pcall(writefile, DIAGNOSTICS_FILE, encoded)
+        if savedOk then recoveryLastDiagnostics = now end
+    end
 end
 
 flushRecovery = function(force)
-	if not recoveryState.Folder or recoveryFlushBusy then return end
-	local now = os.clock()
-	local interval = math.max(0.2, tonumber(CONFIG.RecoveryFlushSeconds) or 2)
-	if not force and now - recoveryLastFlush < interval then return end
-	recoveryLastFlush = now
-	recoveryFlushBusy = true
-	local flushOk, flushError = pcall(function()
-	for _, stream in ipairs({ "Snapshot", "Runtime", "Issues" }) do
-		local bufferEntries = recoveryState.Buffers[stream]
-		if #bufferEntries > 0 then
-			local batchSize = stream == "Snapshot" and CONFIG.RecoverySnapshotBatch
-				or (stream == "Runtime" and CONFIG.RecoveryRuntimeBatch or CONFIG.RecoveryIssueBatch)
-			batchSize = math.max(1, math.floor(tonumber(batchSize) or 100))
-			local entryIndex = 1
-			local written = 0
-			while entryIndex <= #bufferEntries do
-				local stopIndex = math.min(#bufferEntries, entryIndex + batchSize - 1)
-				local batch = {}
-				for index = entryIndex, stopIndex do
-					batch[#batch + 1] = bufferEntries[index]
-				end
-				local sequence = recoveryState.Sequences[stream] + 1
-				local path = string.format("%s/%s_%06d.json", recoveryState.Folder,
-					string.lower(stream), sequence)
-				local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, {
-					DumpId = currentDumpId, Stream = stream, Sequence = sequence,
-					SavedAtUnix = os.time(), Count = #batch, Entries = batch
-				})
-				local savedOk, saveError = false, nil
-				if encodedOk then savedOk, saveError = pcall(writefile, path, encoded) end
-				if not encodedOk or not savedOk then
-					recoveryState.FailedWrites = recoveryState.FailedWrites + 1
-					recoveryState.LastFailure = tostring(encodedOk and saveError or encoded)
-					break
-				end
-				recoveryState.Sequences[stream] = sequence
-				recoveryState.Saved[stream] = recoveryState.Saved[stream] + #batch
-				written = stopIndex
-				entryIndex = stopIndex + 1
-			end
-			if written > 0 then
-				local remaining = {}
-				for index = written + 1, #bufferEntries do
-					remaining[#remaining + 1] = bufferEntries[index]
-				end
-				recoveryState.Buffers[stream] = remaining
-			end
-		end
-	end
-	local indexOk, indexJson = pcall(HttpService.JSONEncode, HttpService, {
-		DumpId = currentDumpId, Stage = currentStage,
-		Status = currentStage == "complete" and "Complete" or "InProgress",
-		Sequences = recoveryState.Sequences, Saved = recoveryState.Saved,
-		FailedWrites = recoveryState.FailedWrites, LastFailure = recoveryState.LastFailure,
-		LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
-		UpdatedAtUnix = os.time()
-	})
-	if indexOk then
-		pcall(writefile, recoveryState.Folder .. "/index.json", indexJson)
-	end
-	end)
-	recoveryFlushBusy = false
-	if not flushOk then
-		recoveryState.FailedWrites = recoveryState.FailedWrites + 1
-		recoveryState.LastFailure = tostring(flushError)
-	end
+    if not recoveryState.Folder or recoveryFlushBusy then return end
+    local now = os.clock()
+    local interval = math.max(0.2, tonumber(CONFIG.RecoveryFlushSeconds) or 2)
+    if not force and now - recoveryLastFlush < interval then return end
+    recoveryLastFlush = now
+    recoveryFlushBusy = true
+    local flushOk, flushError = pcall(function()
+    for _, stream in ipairs({ "Snapshot", "Runtime", "Issues" }) do
+        local bufferEntries = recoveryState.Buffers[stream]
+        if #bufferEntries > 0 then
+            local batchSize = stream == "Snapshot" and CONFIG.RecoverySnapshotBatch
+                or (stream == "Runtime" and CONFIG.RecoveryRuntimeBatch or CONFIG.RecoveryIssueBatch)
+            batchSize = math.max(1, math.floor(tonumber(batchSize) or 100))
+            local entryIndex = 1
+            local written = 0
+            while entryIndex <= #bufferEntries do
+                local stopIndex = math.min(#bufferEntries, entryIndex + batchSize - 1)
+                local batch = {}
+                for index = entryIndex, stopIndex do
+                    batch[#batch + 1] = bufferEntries[index]
+                end
+                local sequence = recoveryState.Sequences[stream] + 1
+                local path = string.format("%s/%s_%06d.json", recoveryState.Folder,
+                    string.lower(stream), sequence)
+                local encodedOk, encoded = pcall(HttpService.JSONEncode, HttpService, {
+                    DumpId = currentDumpId, Stream = stream, Sequence = sequence,
+                    SavedAtUnix = os.time(), Count = #batch, Entries = batch
+                })
+                local savedOk, saveError = false, nil
+                if encodedOk then savedOk, saveError = pcall(writefile, path, encoded) end
+                if not encodedOk or not savedOk then
+                    recoveryState.FailedWrites = recoveryState.FailedWrites + 1
+                    recoveryState.LastFailure = tostring(encodedOk and saveError or encoded)
+                    break
+                end
+                recoveryState.Sequences[stream] = sequence
+                recoveryState.Saved[stream] = recoveryState.Saved[stream] + #batch
+                written = stopIndex
+                entryIndex = stopIndex + 1
+            end
+            if written > 0 then
+                local remaining = {}
+                for index = written + 1, #bufferEntries do
+                    remaining[#remaining + 1] = bufferEntries[index]
+                end
+                recoveryState.Buffers[stream] = remaining
+            end
+        end
+    end
+    local indexOk, indexJson = pcall(HttpService.JSONEncode, HttpService, {
+        DumpId = currentDumpId, Stage = currentStage,
+        Status = currentStage == "complete" and "Complete" or "InProgress",
+        Sequences = recoveryState.Sequences, Saved = recoveryState.Saved,
+        FailedWrites = recoveryState.FailedWrites, LastFailure = recoveryState.LastFailure,
+        LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
+        UpdatedAtUnix = os.time()
+    })
+    if indexOk then
+        pcall(writefile, recoveryState.Folder .. "/index.json", indexJson)
+    end
+    end)
+    recoveryFlushBusy = false
+    if not flushOk then
+        recoveryState.FailedWrites = recoveryState.FailedWrites + 1
+        recoveryState.LastFailure = tostring(flushError)
+    end
 end
 
 function F.base64Encode(data)
-	if type(nativeBase64Encoder) == "function" then
-		local ok, encoded = pcall(nativeBase64Encoder, data)
-		if ok and type(encoded) == "string" and encoded ~= "" then
-			return encoded
-		end
-	end
+    if type(nativeBase64Encoder) == "function" then
+        local ok, encoded = pcall(nativeBase64Encoder, data)
+        if ok and type(encoded) == "string" and encoded ~= "" then
+            return encoded
+        end
+    end
 
-	local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	return ((data:gsub(".", function(char)
-		local bits = ""
-		local byte = string.byte(char)
-		for bit = 8, 1, -1 do
-			bits = bits .. (byte % 2 ^ bit - byte % 2 ^ (bit - 1) > 0 and "1" or "0")
-		end
-		return bits
-	end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(bits)
-		if #bits < 6 then
-			return ""
-		end
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return ((data:gsub(".", function(char)
+        local bits = ""
+        local byte = string.byte(char)
+        for bit = 8, 1, -1 do
+            bits = bits .. (byte % 2 ^ bit - byte % 2 ^ (bit - 1) > 0 and "1" or "0")
+        end
+        return bits
+    end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(bits)
+        if #bits < 6 then
+            return ""
+        end
 
-		local value = 0
-		for index = 1, 6 do
-			if bits:sub(index, index) == "1" then
-				value = value + 2 ^ (6 - index)
-			end
-		end
+        local value = 0
+        for index = 1, 6 do
+            if bits:sub(index, index) == "1" then
+                value = value + 2 ^ (6 - index)
+            end
+        end
 
-		return alphabet:sub(value + 1, value + 1)
-	end) .. ({ "", "==", "=" })[#data % 3 + 1])
+        return alphabet:sub(value + 1, value + 1)
+    end) .. ({ "", "==", "=" })[#data % 3 + 1])
 end
 
 function F.sanitizeFileComponent(value)
-	local text = F.sanitizeString(value or "ModuleScript")
-	text = text:gsub("%c", "_")
-	text = text:gsub('[/:*?"<>|]', "_")
-	text = text:gsub("\\", "_")
-	text = text:gsub("%s+$", "")
-	text = text:gsub("^%s+", "")
+    local text = F.sanitizeString(value or "ModuleScript")
+    text = text:gsub("%c", "_")
+    text = text:gsub('[/:*?"<>|]', "_")
+    text = text:gsub("\\", "_")
+    text = text:gsub("%s+$", "")
+    text = text:gsub("^%s+", "")
 
-	if text == "" or text == "." or text == ".." then
-		text = "ModuleScript"
-	end
+    if text == "" or text == "." or text == ".." then
+        text = "ModuleScript"
+    end
 
-	if #text > 96 then
-		text = text:sub(1, 96)
-	end
+    if #text > 96 then
+        text = text:sub(1, 96)
+    end
 
-	return text
+    return text
 end
 
 function F.moduleSourcePath(record)
-	local safeName = F.sanitizeFileComponent(record and record.Name or "ModuleScript")
-	local id = record and record.Id or 0
-	local folder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER
-	return string.format("%s/%06d_%s.luau", folder, id, safeName)
+    local safeName = F.sanitizeFileComponent(record and record.Name or "ModuleScript")
+    local id = record and record.Id or 0
+    local folder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER
+    return string.format("%s/%06d_%s.luau", folder, id, safeName)
 end
 
 function F.compactDecompilerError(value)
-	local text = F.sanitizeString(value or "unknown decompiler error")
-	if #text > 2048 then
-		return text:sub(1, 2048) .. "..."
-	end
-	return text
+    local text = F.sanitizeString(value or "unknown decompiler error")
+    if #text > 2048 then
+        return text:sub(1, 2048) .. "..."
+    end
+    return text
 end
 
 function F.requestByteFall(bytecode)
-	if type(executorRequest) ~= "function" then
-		return false, nil, 0, "no HTTP request function available", 0
-	end
+    if type(executorRequest) ~= "function" then
+        return false, nil, 0, "no HTTP request function available", 0
+    end
 
-	local encodeOk, encodedBytecode = pcall(F.base64Encode, bytecode)
-	if not encodeOk or type(encodedBytecode) ~= "string" or encodedBytecode == "" then
-		return false, nil, 0, "failed to base64 encode bytecode: " .. tostring(encodedBytecode), 0
-	end
+    local encodeOk, encodedBytecode = pcall(F.base64Encode, bytecode)
+    if not encodeOk or type(encodedBytecode) ~= "string" or encodedBytecode == "" then
+        return false, nil, 0, "failed to base64 encode bytecode: " .. tostring(encodedBytecode), 0
+    end
 
-	local jsonOk, body = pcall(HttpService.JSONEncode, HttpService, {
-		script = encodedBytecode
-	})
-	encodedBytecode = nil
+    local jsonOk, body = pcall(HttpService.JSONEncode, HttpService, {
+        script = encodedBytecode
+    })
+    encodedBytecode = nil
 
-	if not jsonOk then
-		return false, nil, 0, "failed to encode ByteFall request body: " .. tostring(body), 0
-	end
+    if not jsonOk then
+        return false, nil, 0, "failed to encode ByteFall request body: " .. tostring(body), 0
+    end
 
-	local maxAttempts = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerRetryCount) or 0) + 1)
-	local lastError = "request failed"
-	local lastStatus = 0
+    local maxAttempts = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerRetryCount) or 0) + 1)
+    local lastError = "request failed"
+    local lastStatus = 0
 
-	for attempt = 1, maxAttempts do
-		local requestOk, result = pcall(executorRequest, {
-			Url = CONFIG.ModuleDecompilerEndpoint,
-			Method = "POST",
-			Headers = {
-				["Content-Type"] = "application/json"
-			},
-			Body = body
-		})
+    for attempt = 1, maxAttempts do
+        local requestOk, result = pcall(executorRequest, {
+            Url = CONFIG.ModuleDecompilerEndpoint,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            },
+            Body = body
+        })
 
-		if requestOk and type(result) == "table" then
-			local statusCode = tonumber(result.StatusCode or result.Status) or 0
-			local responseBody = tostring(result.Body or "")
-			lastStatus = statusCode
+        if requestOk and type(result) == "table" then
+            local statusCode = tonumber(result.StatusCode or result.Status) or 0
+            local responseBody = tostring(result.Body or "")
+            lastStatus = statusCode
 
-			if statusCode == 200 then
-				if responseBody ~= "" then
-					return true, responseBody, statusCode, nil, attempt
-				end
-				lastError = "ByteFall returned an empty 200 response"
-			elseif statusCode == 400 then
-				lastError = "ByteFall 400 bad request: " .. responseBody
-			elseif statusCode == 404 then
-				lastError = "ByteFall 404 not found: wrong endpoint?"
-			elseif statusCode == 500 then
-				lastError = "ByteFall 500 decompilation failed: " .. responseBody
-			else
-				lastError = "ByteFall HTTP " .. tostring(statusCode) .. ": " .. responseBody
-			end
+            if statusCode == 200 then
+                if responseBody ~= "" then
+                    return true, responseBody, statusCode, nil, attempt
+                end
+                lastError = "ByteFall returned an empty 200 response"
+            elseif statusCode == 400 then
+                lastError = "ByteFall 400 bad request: " .. responseBody
+            elseif statusCode == 404 then
+                lastError = "ByteFall 404 not found: wrong endpoint?"
+            elseif statusCode == 500 then
+                lastError = "ByteFall 500 decompilation failed: " .. responseBody
+            else
+                lastError = "ByteFall HTTP " .. tostring(statusCode) .. ": " .. responseBody
+            end
 
-			local retryable = statusCode == 0
-				or statusCode == 408
-				or statusCode == 425
-				or statusCode == 429
-				or statusCode >= 500
+            local retryable = statusCode == 0
+                or statusCode == 408
+                or statusCode == 425
+                or statusCode == 429
+                or statusCode >= 500
 
-			if not retryable then
-				return false, nil, statusCode, lastError, attempt
-			end
-		elseif requestOk then
-			lastError = "ByteFall returned an invalid response"
-		else
-			lastError = "ByteFall request failed: " .. tostring(result)
-		end
+            if not retryable then
+                return false, nil, statusCode, lastError, attempt
+            end
+        elseif requestOk then
+            lastError = "ByteFall returned an invalid response"
+        else
+            lastError = "ByteFall request failed: " .. tostring(result)
+        end
 
-		if attempt < maxAttempts then
-			task.wait(math.max(0, tonumber(CONFIG.ModuleDecompilerRetryDelay) or 0) * attempt)
-		end
-	end
+        if attempt < maxAttempts then
+            task.wait(math.max(0, tonumber(CONFIG.ModuleDecompilerRetryDelay) or 0) * attempt)
+        end
+    end
 
-	return false, nil, lastStatus, lastError, maxAttempts
+    return false, nil, lastStatus, lastError, maxAttempts
 end
 
 function F.buildModuleDecompileResult(entry, guard)
-	local object = entry and entry.Object or nil
-	local record = entry and entry.Record or nil
-	if not record then
-		return {
-			Status = "Failed",
-			Reason = "module record is unavailable"
-		}
-	end
+    local object = entry and entry.Object or nil
+    local record = entry and entry.Record or nil
+    if not record then
+        return {
+            Status = "Failed",
+            Reason = "module record is unavailable"
+        }
+    end
 
-	local bytecodeOk, bytecode = pcall(getscriptbytecode, object)
-	if guard and guard.Cancelled then
-		return nil
-	end
+    local bytecodeOk, bytecode = pcall(getscriptbytecode, object)
+    if guard and guard.Cancelled then
+        return nil
+    end
 
-	if not bytecodeOk or type(bytecode) ~= "string" or bytecode == "" then
-		local reason = bytecodeOk
-			and "getscriptbytecode returned empty or non-string data"
-			or ("getscriptbytecode failed: " .. tostring(bytecode))
-		return {
-			Status = "Failed",
-			Reason = F.compactDecompilerError(reason)
-		}
-	end
+    if not bytecodeOk or type(bytecode) ~= "string" or bytecode == "" then
+        local reason = bytecodeOk
+            and "getscriptbytecode returned empty or non-string data"
+            or ("getscriptbytecode failed: " .. tostring(bytecode))
+        return {
+            Status = "Failed",
+            Reason = F.compactDecompilerError(reason)
+        }
+    end
 
-	local bytecodeBytes = #bytecode
-	local success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
-	bytecode = nil
+    local bytecodeBytes = #bytecode
+    local success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
+    bytecode = nil
 
-	if guard and guard.Cancelled then
-		source = nil
-		return nil
-	end
+    if guard and guard.Cancelled then
+        source = nil
+        return nil
+    end
 
-	if not success then
-		return {
-			Status = "Failed",
-			HttpStatus = statusCode,
-			Attempts = attempts,
-			BytecodeBytes = bytecodeBytes,
-			Reason = F.compactDecompilerError(requestError)
-		}
-	end
+    if not success then
+        return {
+            Status = "Failed",
+            HttpStatus = statusCode,
+            Attempts = attempts,
+            BytecodeBytes = bytecodeBytes,
+            Reason = F.compactDecompilerError(requestError)
+        }
+    end
 
-	return {
-		Status = "Success",
-		Source = source,
-		HttpStatus = statusCode,
-		Attempts = attempts,
-		BytecodeBytes = bytecodeBytes,
-		SourceBytes = #source
-	}
+    return {
+        Status = "Success",
+        Source = source,
+        HttpStatus = statusCode,
+        Attempts = attempts,
+        BytecodeBytes = bytecodeBytes,
+        SourceBytes = #source
+    }
 end
 
 function F.applyModuleDecompileResult(entry, result)
-	local object = entry and entry.Object or nil
-	local record = entry and entry.Record or nil
-	if not record then
-		return
-	end
+    local object = entry and entry.Object or nil
+    local record = entry and entry.Record or nil
+    if not record then
+        return
+    end
 
-	if type(result) ~= "table" then
-		local reason = "module decompiler returned no result"
-		record.Decompile = {
-			Status = "Failed",
-			Reason = reason
-		}
-		moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
-		F.recordWarning("ModuleDecompile", object, reason)
-		return
-	end
+    if type(result) ~= "table" then
+        local reason = "module decompiler returned no result"
+        record.Decompile = {
+            Status = "Failed",
+            Reason = reason
+        }
+        moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
+        F.recordWarning("ModuleDecompile", object, reason)
+        return
+    end
 
-	local bytecodeBytes = tonumber(result.BytecodeBytes) or 0
-	moduleDecompileStats.BytecodeBytes = moduleDecompileStats.BytecodeBytes + bytecodeBytes
+    local bytecodeBytes = tonumber(result.BytecodeBytes) or 0
+    moduleDecompileStats.BytecodeBytes = moduleDecompileStats.BytecodeBytes + bytecodeBytes
 
-	if result.Status ~= "Success" then
-		record.Decompile = {
-			Status = result.Status or "Failed",
-			HttpStatus = result.HttpStatus,
-			Attempts = result.Attempts,
-			BytecodeBytes = result.BytecodeBytes,
-			Reason = result.Reason
-		}
-		moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
-		F.recordWarning("ModuleDecompile", object, result.Reason or "module decompilation failed")
-		return
-	end
+    if result.Status ~= "Success" then
+        record.Decompile = {
+            Status = result.Status or "Failed",
+            HttpStatus = result.HttpStatus,
+            Attempts = result.Attempts,
+            BytecodeBytes = result.BytecodeBytes,
+            Reason = result.Reason
+        }
+        moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
+        F.recordWarning("ModuleDecompile", object, result.Reason or "module decompilation failed")
+        return
+    end
 
-	local source = result.Source
-	local path = F.moduleSourcePath(record)
-	local writeOk = type(source) == "string" and F.writeSafe(path, source)
-	if not writeOk then
-		record.Decompile = {
-			Status = "Failed",
-			HttpStatus = result.HttpStatus,
-			Attempts = result.Attempts,
-			BytecodeBytes = result.BytecodeBytes,
-			SourceBytes = result.SourceBytes,
-			Reason = "decompiled source could not be written"
-		}
-		moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
-		return
-	end
+    local source = result.Source
+    local path = F.moduleSourcePath(record)
+    local writeOk = type(source) == "string" and F.writeSafe(path, source)
+    if not writeOk then
+        record.Decompile = {
+            Status = "Failed",
+            HttpStatus = result.HttpStatus,
+            Attempts = result.Attempts,
+            BytecodeBytes = result.BytecodeBytes,
+            SourceBytes = result.SourceBytes,
+            Reason = "decompiled source could not be written"
+        }
+        moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
+        return
+    end
 
-	record.Decompile = {
-		Status = "Success",
-		File = path,
-		HttpStatus = result.HttpStatus,
-		Attempts = result.Attempts,
-		BytecodeBytes = result.BytecodeBytes,
-		SourceBytes = result.SourceBytes
-	}
+    record.Decompile = {
+        Status = "Success",
+        File = path,
+        HttpStatus = result.HttpStatus,
+        Attempts = result.Attempts,
+        BytecodeBytes = result.BytecodeBytes,
+        SourceBytes = result.SourceBytes
+    }
 
-	moduleDecompileStats.Succeeded = moduleDecompileStats.Succeeded + 1
-	moduleDecompileStats.Written = moduleDecompileStats.Written + 1
-	moduleDecompileStats.SourceBytes = moduleDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
-	result.Source = nil
+    moduleDecompileStats.Succeeded = moduleDecompileStats.Succeeded + 1
+    moduleDecompileStats.Written = moduleDecompileStats.Written + 1
+    moduleDecompileStats.SourceBytes = moduleDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
+    result.Source = nil
 end
 
 function F.runModuleDecompileWithTimeout(entry, timeoutSeconds)
-	local guard = {
-		Cancelled = false,
-		Done = false,
-		Ok = false,
-		Result = nil,
-		Error = nil
-	}
+    local guard = {
+        Cancelled = false,
+        Done = false,
+        Ok = false,
+        Result = nil,
+        Error = nil
+    }
 
-	task.spawn(function()
-		local ok, result = pcall(F.buildModuleDecompileResult, entry, guard)
-		if guard.Cancelled then
-			return
-		end
-		guard.Ok = ok
-		if ok then
-			guard.Result = result
-		else
-			guard.Error = result
-		end
-		guard.Done = true
-	end)
+    task.spawn(function()
+        local ok, result = pcall(F.buildModuleDecompileResult, entry, guard)
+        if guard.Cancelled then
+            return
+        end
+        guard.Ok = ok
+        if ok then
+            guard.Result = result
+        else
+            guard.Error = result
+        end
+        guard.Done = true
+    end)
 
-	local startedAt = os.clock()
-	local timeout = math.max(0.1, tonumber(timeoutSeconds) or 10)
-	while not guard.Done and os.clock() - startedAt < timeout do
-		task.wait(0.05)
-	end
+    local startedAt = os.clock()
+    local timeout = math.max(0.1, tonumber(timeoutSeconds) or 10)
+    while not guard.Done and os.clock() - startedAt < timeout do
+        task.wait(0.05)
+    end
 
-	if not guard.Done then
-		guard.Cancelled = true
-		return false, nil, "decompile timed out after " .. tostring(timeout) .. "s"
-	end
+    if not guard.Done then
+        guard.Cancelled = true
+        return false, nil, "decompile timed out after " .. tostring(timeout) .. "s"
+    end
 
-	if not guard.Ok then
-		return true, nil, "unexpected module decompiler error: " .. tostring(guard.Error)
-	end
+    if not guard.Ok then
+        return true, nil, "unexpected module decompiler error: " .. tostring(guard.Error)
+    end
 
-	return true, guard.Result, nil
+    return true, guard.Result, nil
 end
 
 function F.clientScriptSourcePath(record)
-	local safeName = F.sanitizeFileComponent(record and record.Name or "LocalScript")
-	local id = record and record.Id or 0
-	local folder = currentClientSourcesFolder or CLIENT_SOURCES_FOLDER
-	return string.format("%s/%06d_%s.luau", folder, id, safeName)
+    local safeName = F.sanitizeFileComponent(record and record.Name or "LocalScript")
+    local id = record and record.Id or 0
+    local folder = currentClientSourcesFolder or CLIENT_SOURCES_FOLDER
+    return string.format("%s/%06d_%s.luau", folder, id, safeName)
 end
 
 function F.applyClientDecompileResult(entry, result)
-	local record = entry and entry.Record
-	local object = entry and entry.Object
-	if not record then
-		return
-	end
-	if type(result) ~= "table" then
-		result = {Status = "Failed", Reason = "client decompiler returned no result"}
-	end
+    local record = entry and entry.Record
+    local object = entry and entry.Object
+    if not record then
+        return
+    end
+    if type(result) ~= "table" then
+        result = {Status = "Failed", Reason = "client decompiler returned no result"}
+    end
 
-	local bytecodeBytes = tonumber(result.BytecodeBytes) or 0
-	clientDecompileStats.BytecodeBytes = clientDecompileStats.BytecodeBytes + bytecodeBytes
+    local bytecodeBytes = tonumber(result.BytecodeBytes) or 0
+    clientDecompileStats.BytecodeBytes = clientDecompileStats.BytecodeBytes + bytecodeBytes
 
-	if result.Status ~= "Success" then
-		record.Decompile = {
-			Status = result.Status or "Failed",
-			HttpStatus = result.HttpStatus,
-			Attempts = result.Attempts,
-			BytecodeBytes = result.BytecodeBytes,
-			Reason = result.Reason or "client decompilation failed"
-		}
-		clientDecompileStats.Failed = clientDecompileStats.Failed + 1
-		F.recordWarning("LocalScriptDecompile", object, record.Decompile.Reason)
-		return
-	end
+    if result.Status ~= "Success" then
+        record.Decompile = {
+            Status = result.Status or "Failed",
+            HttpStatus = result.HttpStatus,
+            Attempts = result.Attempts,
+            BytecodeBytes = result.BytecodeBytes,
+            Reason = result.Reason or "client decompilation failed"
+        }
+        clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+        F.recordWarning("LocalScriptDecompile", object, record.Decompile.Reason)
+        return
+    end
 
-	local path = F.clientScriptSourcePath(record)
-	local ok = type(result.Source) == "string" and F.writeSafe(path, result.Source)
-	if not ok then
-		record.Decompile = {
-			Status = "Failed",
-			BytecodeBytes = result.BytecodeBytes,
-			SourceBytes = result.SourceBytes,
-			Reason = "failed to write decompiled client source"
-		}
-		clientDecompileStats.Failed = clientDecompileStats.Failed + 1
-		F.recordWarning("LocalScriptDecompileWrite", object, record.Decompile.Reason)
-		return
-	end
+    local path = F.clientScriptSourcePath(record)
+    local ok = type(result.Source) == "string" and F.writeSafe(path, result.Source)
+    if not ok then
+        record.Decompile = {
+            Status = "Failed",
+            BytecodeBytes = result.BytecodeBytes,
+            SourceBytes = result.SourceBytes,
+            Reason = "failed to write decompiled client source"
+        }
+        clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+        F.recordWarning("LocalScriptDecompileWrite", object, record.Decompile.Reason)
+        return
+    end
 
-	record.Decompile = {
-		Status = "Success",
-		File = path,
-		HttpStatus = result.HttpStatus,
-		Attempts = result.Attempts,
-		BytecodeBytes = result.BytecodeBytes,
-		SourceBytes = result.SourceBytes
-	}
-	clientDecompileStats.Succeeded = clientDecompileStats.Succeeded + 1
-	clientDecompileStats.Written = clientDecompileStats.Written + 1
-	clientDecompileStats.SourceBytes = clientDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
-	result.Source = nil
+    record.Decompile = {
+        Status = "Success",
+        File = path,
+        HttpStatus = result.HttpStatus,
+        Attempts = result.Attempts,
+        BytecodeBytes = result.BytecodeBytes,
+        SourceBytes = result.SourceBytes
+    }
+    clientDecompileStats.Succeeded = clientDecompileStats.Succeeded + 1
+    clientDecompileStats.Written = clientDecompileStats.Written + 1
+    clientDecompileStats.SourceBytes = clientDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
+    result.Source = nil
 end
 
 function F.markClientScriptsSkipped(reason, startIndex, countAsAborted)
-	for i = math.max(1, tonumber(startIndex) or 1), #clientScriptQueue do
-		local entry = clientScriptQueue[i]
-		local record = entry and entry.Record
-		if record and not record.Decompile then
-			record.Decompile = {Status = "Skipped", Reason = reason}
-			clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
-			if countAsAborted then
-				clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
-			end
-		end
-	end
+    for i = math.max(1, tonumber(startIndex) or 1), #clientScriptQueue do
+        local entry = clientScriptQueue[i]
+        local record = entry and entry.Record
+        if record and not record.Decompile then
+            record.Decompile = {Status = "Skipped", Reason = reason}
+            clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
+            if countAsAborted then
+                clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
+            end
+        end
+    end
 end
 
 function F.decompileQueuedClientScripts(scriptsDocument)
-	local started = os.clock()
-	if not CONFIG.DecompileLocalScripts or #clientScriptQueue == 0 then
-		clientDecompileStats.ElapsedSeconds = os.clock() - started
-		return
-	end
-	if not capabilities.getscriptbytecode or not capabilities.http_request then
-		F.markClientScriptsSkipped("getscriptbytecode or HTTP API unavailable")
-		clientDecompileStats.ElapsedSeconds = os.clock() - started
-		table.clear(clientScriptQueue)
-		return
-	end
+    local started = os.clock()
+    if not CONFIG.DecompileLocalScripts or #clientScriptQueue == 0 then
+        clientDecompileStats.ElapsedSeconds = os.clock() - started
+        return
+    end
+    if not capabilities.getscriptbytecode or not capabilities.http_request then
+        F.markClientScriptsSkipped("getscriptbytecode or HTTP API unavailable")
+        clientDecompileStats.ElapsedSeconds = os.clock() - started
+        table.clear(clientScriptQueue)
+        return
+    end
 
-	currentClientSourcesFolder = CLIENT_SOURCES_FOLDER .. "/" .. F.sanitizeFileComponent(currentDumpId or "dump")
-	clientDecompileStats.OutputFolder = currentClientSourcesFolder
-	if not F.ensureFolder(CLIENT_SOURCES_FOLDER) or not F.ensureFolder(currentClientSourcesFolder) then
-		F.markClientScriptsSkipped("client scripts output folder could not be created")
-		clientDecompileStats.ElapsedSeconds = os.clock() - started
-		table.clear(clientScriptQueue)
-		return
-	end
+    currentClientSourcesFolder = CLIENT_SOURCES_FOLDER .. "/" .. F.sanitizeFileComponent(currentDumpId or "dump")
+    clientDecompileStats.OutputFolder = currentClientSourcesFolder
+    if not F.ensureFolder(CLIENT_SOURCES_FOLDER) or not F.ensureFolder(currentClientSourcesFolder) then
+        F.markClientScriptsSkipped("client scripts output folder could not be created")
+        clientDecompileStats.ElapsedSeconds = os.clock() - started
+        table.clear(clientScriptQueue)
+        return
+    end
 
-	local priorityNames = {}
-	for i, name in ipairs(CONFIG.LocalDecompilerPriorityNames or {}) do
-		priorityNames[string.lower(name)] = i
-	end
-	local function priority(entry)
-		return priorityNames[string.lower(entry.Record.Name or "")] or 9999
-	end
-	table.sort(clientScriptQueue, function(a, b)
-		local pa, pb = priority(a), priority(b)
-		if pa ~= pb then
-			return pa < pb
-		end
-		return (a.Record.Id or 0) < (b.Record.Id or 0)
-	end)
+    local priorityNames = {}
+    for i, name in ipairs(CONFIG.LocalDecompilerPriorityNames or {}) do
+        priorityNames[string.lower(name)] = i
+    end
+    local function priority(entry)
+        return priorityNames[string.lower(entry.Record.Name or "")] or 9999
+    end
+    table.sort(clientScriptQueue, function(a, b)
+        local pa, pb = priority(a), priority(b)
+        if pa ~= pb then
+            return pa < pb
+        end
+        return (a.Record.Id or 0) < (b.Record.Id or 0)
+    end)
 
-	local maxScripts = math.max(0, math.floor(tonumber(CONFIG.LocalDecompilerMaxScripts) or 0))
-	local total = math.min(#clientScriptQueue, maxScripts)
-	if total < #clientScriptQueue then
-		F.markClientScriptsSkipped("LocalDecompilerMaxScripts limit reached", total + 1)
-	end
-	if total == 0 then
-		clientDecompileStats.ElapsedSeconds = os.clock() - started
-		table.clear(clientScriptQueue)
-		return
-	end
+    local maxScripts = math.max(0, math.floor(tonumber(CONFIG.LocalDecompilerMaxScripts) or 0))
+    local total = math.min(#clientScriptQueue, maxScripts)
+    if total < #clientScriptQueue then
+        F.markClientScriptsSkipped("LocalDecompilerMaxScripts limit reached", total + 1)
+    end
+    if total == 0 then
+        clientDecompileStats.ElapsedSeconds = os.clock() - started
+        table.clear(clientScriptQueue)
+        return
+    end
 
-	local nextIndex, completed, activeWorkers = 0, 0, 0
-	local timeouts, abortRequested = 0, false
-	local workerCount = math.max(1, math.min(total, math.floor(tonumber(CONFIG.LocalDecompilerWorkers) or 2)))
-	local timeoutSeconds = math.max(0.1, tonumber(CONFIG.LocalDecompilerTimeout) or 10)
-	local abortAfter = math.max(1, math.floor(tonumber(CONFIG.LocalDecompilerAbortAfterTimeouts) or 4))
-	print("local script decompile candidates:", total, "workers:", workerCount)
+    local nextIndex, completed, activeWorkers = 0, 0, 0
+    local timeouts, abortRequested = 0, false
+    local workerCount = math.max(1, math.min(total, math.floor(tonumber(CONFIG.LocalDecompilerWorkers) or 2)))
+    local timeoutSeconds = math.max(0.1, tonumber(CONFIG.LocalDecompilerTimeout) or 10)
+    local abortAfter = math.max(1, math.floor(tonumber(CONFIG.LocalDecompilerAbortAfterTimeouts) or 4))
+    print("local script decompile candidates:", total, "workers:", workerCount)
 
-	for _ = 1, workerCount do
-		activeWorkers = activeWorkers + 1
-		task.spawn(function()
-			local ok, err = pcall(function()
-				while not abortRequested do
-					nextIndex = nextIndex + 1
-					local index = nextIndex
-					if index > total then
-						break
-					end
-					local entry = clientScriptQueue[index]
-					clientDecompileStats.Attempted = clientDecompileStats.Attempted + 1
-					local finished, result, errorText = F.runModuleDecompileWithTimeout(entry, timeoutSeconds)
-					if not finished then
-						local record = entry.Record
-						record.Decompile = {Status = "TimedOut", Reason = F.compactDecompilerError(errorText)}
-						clientDecompileStats.Failed = clientDecompileStats.Failed + 1
-						clientDecompileStats.TimedOut = clientDecompileStats.TimedOut + 1
-						timeouts = timeouts + 1
-						F.recordWarning("LocalScriptDecompileTimeout", entry.Object, errorText)
-						if timeouts >= abortAfter then
-							abortRequested = true
-						end
-					elseif errorText then
-						F.applyClientDecompileResult(entry, {
-							Status = "Failed",
-							Reason = F.compactDecompilerError(errorText)
-						})
-					else
-						F.applyClientDecompileResult(entry, result)
-					end
-					completed = completed + 1
-					if completed % 20 == 0 or completed == total then
-						print("local script decompile:", completed, "/", total)
-					end
-					if scriptsDocument and completed % 25 == 0 then
-						pcall(function()
-							F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_local_checkpoint.json", nil, false)
-							checkpointStage("decompile_localscripts")
-						end)
-					end
-					task.wait()
-				end
-			end)
-			if not ok then
-				F.recordWarning("LocalScriptDecompileWorker", nil, tostring(err))
-				abortRequested = true
-			end
-			activeWorkers = activeWorkers - 1
-		end)
-	end
-	while activeWorkers > 0 do
-		task.wait(0.05)
-	end
-	if abortRequested then
-		local reason = "client decompilation aborted after " .. tostring(timeouts) .. " timeout(s)"
-		for i = nextIndex + 1, total do
-			local record = clientScriptQueue[i] and clientScriptQueue[i].Record
-			if record and not record.Decompile then
-				record.Decompile = {Status = "Skipped", Reason = reason}
-				clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
-				clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
-			end
-		end
-		F.recordWarning("LocalScriptDecompileCircuitBreaker", nil, reason)
-	end
-	clientDecompileStats.ElapsedSeconds = os.clock() - started
-	table.clear(clientScriptQueue)
-	F.releaseTemporaryMemory()
+    for _ = 1, workerCount do
+        activeWorkers = activeWorkers + 1
+        task.spawn(function()
+            local ok, err = pcall(function()
+                while not abortRequested do
+                    nextIndex = nextIndex + 1
+                    local index = nextIndex
+                    if index > total then
+                        break
+                    end
+                    local entry = clientScriptQueue[index]
+                    clientDecompileStats.Attempted = clientDecompileStats.Attempted + 1
+                    local finished, result, errorText = F.runModuleDecompileWithTimeout(entry, timeoutSeconds)
+                    if not finished then
+                        local record = entry.Record
+                        record.Decompile = {Status = "TimedOut", Reason = F.compactDecompilerError(errorText)}
+                        clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+                        clientDecompileStats.TimedOut = clientDecompileStats.TimedOut + 1
+                        timeouts = timeouts + 1
+                        F.recordWarning("LocalScriptDecompileTimeout", entry.Object, errorText)
+                        if timeouts >= abortAfter then
+                            abortRequested = true
+                        end
+                    elseif errorText then
+                        F.applyClientDecompileResult(entry, {
+                            Status = "Failed",
+                            Reason = F.compactDecompilerError(errorText)
+                        })
+                    else
+                        F.applyClientDecompileResult(entry, result)
+                    end
+                    completed = completed + 1
+                    if completed % 20 == 0 or completed == total then
+                        print("local script decompile:", completed, "/", total)
+                    end
+                    if scriptsDocument and completed % 25 == 0 then
+                        pcall(function()
+                            F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_local_checkpoint.json", nil, false)
+                            checkpointStage("decompile_localscripts")
+                        end)
+                    end
+                    task.wait()
+                end
+            end)
+            if not ok then
+                F.recordWarning("LocalScriptDecompileWorker", nil, tostring(err))
+                abortRequested = true
+            end
+            activeWorkers = activeWorkers - 1
+        end)
+    end
+    while activeWorkers > 0 do
+        task.wait(0.05)
+    end
+    if abortRequested then
+        local reason = "client decompilation aborted after " .. tostring(timeouts) .. " timeout(s)"
+        for i = nextIndex + 1, total do
+            local record = clientScriptQueue[i] and clientScriptQueue[i].Record
+            if record and not record.Decompile then
+                record.Decompile = {Status = "Skipped", Reason = reason}
+                clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
+                clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
+            end
+        end
+        F.recordWarning("LocalScriptDecompileCircuitBreaker", nil, reason)
+    end
+    clientDecompileStats.ElapsedSeconds = os.clock() - started
+    table.clear(clientScriptQueue)
+    F.releaseTemporaryMemory()
 end
 
 function F.markQueuedModulesSkipped(reason, startIndex, countAsAborted)
-	local first = math.max(1, tonumber(startIndex) or 1)
-	for index = first, #moduleScriptQueue do
-		local entry = moduleScriptQueue[index]
-		local record = entry and entry.Record or nil
-		if record and record.Decompile == nil then
-			record.Decompile = {
-				Status = "Skipped",
-				Reason = reason
-			}
-			moduleDecompileStats.Skipped = moduleDecompileStats.Skipped + 1
-			if countAsAborted then
-				moduleDecompileStats.Aborted = moduleDecompileStats.Aborted + 1
-			end
-		end
-	end
+    local first = math.max(1, tonumber(startIndex) or 1)
+    for index = first, #moduleScriptQueue do
+        local entry = moduleScriptQueue[index]
+        local record = entry and entry.Record or nil
+        if record and record.Decompile == nil then
+            record.Decompile = {
+                Status = "Skipped",
+                Reason = reason
+            }
+            moduleDecompileStats.Skipped = moduleDecompileStats.Skipped + 1
+            if countAsAborted then
+                moduleDecompileStats.Aborted = moduleDecompileStats.Aborted + 1
+            end
+        end
+    end
 end
 
 function F.decompileQueuedModules(scriptsDocument)
-	local decompileStartedAt = os.clock()
+    local decompileStartedAt = os.clock()
 
-	if not CONFIG.DecompileModuleScripts then
-		F.markQueuedModulesSkipped("module decompilation disabled by configuration")
-		moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-		table.clear(moduleScriptQueue)
-		return
-	end
+    if not CONFIG.DecompileModuleScripts then
+        F.markQueuedModulesSkipped("module decompilation disabled by configuration")
+        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+        table.clear(moduleScriptQueue)
+        return
+    end
 
-	if #moduleScriptQueue == 0 then
-		moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-		return
-	end
+    if #moduleScriptQueue == 0 then
+        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+        return
+    end
 
-	if not capabilities.getscriptbytecode then
-		F.markQueuedModulesSkipped("getscriptbytecode is unavailable")
-		moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-		table.clear(moduleScriptQueue)
-		return
-	end
+    if not capabilities.getscriptbytecode then
+        F.markQueuedModulesSkipped("getscriptbytecode is unavailable")
+        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+        table.clear(moduleScriptQueue)
+        return
+    end
 
-	if not capabilities.http_request then
-		F.markQueuedModulesSkipped("executor HTTP request API is unavailable")
-		moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-		table.clear(moduleScriptQueue)
-		return
-	end
+    if not capabilities.http_request then
+        F.markQueuedModulesSkipped("executor HTTP request API is unavailable")
+        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+        table.clear(moduleScriptQueue)
+        return
+    end
 
-	currentModuleSourcesFolder = MODULE_SOURCES_FOLDER .. "/" .. F.sanitizeFileComponent(currentDumpId or "dump")
-	moduleDecompileStats.OutputFolder = currentModuleSourcesFolder
+    currentModuleSourcesFolder = MODULE_SOURCES_FOLDER .. "/" .. F.sanitizeFileComponent(currentDumpId or "dump")
+    moduleDecompileStats.OutputFolder = currentModuleSourcesFolder
 
-	if not F.ensureFolder(MODULE_SOURCES_FOLDER) or not F.ensureFolder(currentModuleSourcesFolder) then
-		F.markQueuedModulesSkipped("modules output folder could not be created")
-		moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-		table.clear(moduleScriptQueue)
-		return
-	end
+    if not F.ensureFolder(MODULE_SOURCES_FOLDER) or not F.ensureFolder(currentModuleSourcesFolder) then
+        F.markQueuedModulesSkipped("modules output folder could not be created")
+        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+        table.clear(moduleScriptQueue)
+        return
+    end
 
-	local total = #moduleScriptQueue
-	local nextIndex = 0
-	local completed = 0
-	local activeWorkers = 0
-	local timeoutCount = 0
-	local abortRequested = false
-	local workerCount = math.max(1, math.min(total, math.floor(tonumber(CONFIG.ModuleDecompilerWorkers) or 1)))
-	local progressEvery = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerProgressEvery) or 10))
-	local checkpointEvery = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerCheckpointEvery) or 25))
-	local timeoutSeconds = math.max(0.1, tonumber(CONFIG.ModuleDecompilerTimeout) or 10)
-	local abortAfterTimeouts = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerAbortAfterTimeouts) or workerCount))
+    local total = #moduleScriptQueue
+    local nextIndex = 0
+    local completed = 0
+    local activeWorkers = 0
+    local timeoutCount = 0
+    local abortRequested = false
+    local workerCount = math.max(1, math.min(total, math.floor(tonumber(CONFIG.ModuleDecompilerWorkers) or 1)))
+    local progressEvery = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerProgressEvery) or 10))
+    local checkpointEvery = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerCheckpointEvery) or 25))
+    local timeoutSeconds = math.max(0.1, tonumber(CONFIG.ModuleDecompilerTimeout) or 10)
+    local abortAfterTimeouts = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerAbortAfterTimeouts) or workerCount))
 
-	print("module decompile candidates:", total, "workers:", workerCount, "timeout:", timeoutSeconds)
+    print("module decompile candidates:", total, "workers:", workerCount, "timeout:", timeoutSeconds)
 
-	for _ = 1, workerCount do
-		activeWorkers = activeWorkers + 1
-		task.spawn(function()
-			local workerOk, workerError = pcall(function()
-				while not abortRequested do
-					nextIndex = nextIndex + 1
-					local index = nextIndex
-					if index > total then
-						break
-					end
+    for _ = 1, workerCount do
+        activeWorkers = activeWorkers + 1
+        task.spawn(function()
+            local workerOk, workerError = pcall(function()
+                while not abortRequested do
+                    nextIndex = nextIndex + 1
+                    local index = nextIndex
+                    if index > total then
+                        break
+                    end
 
-					local entry = moduleScriptQueue[index]
-					moduleDecompileStats.Attempted = moduleDecompileStats.Attempted + 1
-					local finished, result, err = F.runModuleDecompileWithTimeout(entry, timeoutSeconds)
+                    local entry = moduleScriptQueue[index]
+                    moduleDecompileStats.Attempted = moduleDecompileStats.Attempted + 1
+                    local finished, result, err = F.runModuleDecompileWithTimeout(entry, timeoutSeconds)
 
-					if not finished then
-						local record = entry and entry.Record or nil
-						local object = entry and entry.Object or nil
-						if record then
-							record.Decompile = {
-								Status = "TimedOut",
-								Reason = F.compactDecompilerError(err)
-							}
-						end
-						moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
-						moduleDecompileStats.TimedOut = moduleDecompileStats.TimedOut + 1
-						timeoutCount = timeoutCount + 1
-						F.recordWarning("ModuleDecompileTimeout", object, err)
-						if timeoutCount >= abortAfterTimeouts then
-							abortRequested = true
-						end
-					elseif err then
-						F.applyModuleDecompileResult(entry, {
-							Status = "Failed",
-							Reason = F.compactDecompilerError(err)
-						})
-					else
-						F.applyModuleDecompileResult(entry, result)
-					end
+                    if not finished then
+                        local record = entry and entry.Record or nil
+                        local object = entry and entry.Object or nil
+                        if record then
+                            record.Decompile = {
+                                Status = "TimedOut",
+                                Reason = F.compactDecompilerError(err)
+                            }
+                        end
+                        moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
+                        moduleDecompileStats.TimedOut = moduleDecompileStats.TimedOut + 1
+                        timeoutCount = timeoutCount + 1
+                        F.recordWarning("ModuleDecompileTimeout", object, err)
+                        if timeoutCount >= abortAfterTimeouts then
+                            abortRequested = true
+                        end
+                    elseif err then
+                        F.applyModuleDecompileResult(entry, {
+                            Status = "Failed",
+                            Reason = F.compactDecompilerError(err)
+                        })
+                    else
+                        F.applyModuleDecompileResult(entry, result)
+                    end
 
-					completed = completed + 1
-					if completed % progressEvery == 0 or completed == total then
-						print("module decompile:", completed, "/", total)
-					end
+                    completed = completed + 1
+                    if completed % progressEvery == 0 or completed == total then
+                        print("module decompile:", completed, "/", total)
+                    end
 
-					if scriptsDocument and completed % checkpointEvery == 0 then
-						pcall(function()
-							F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_checkpoint.json", nil, false)
-							checkpointStage("decompile_modules")
-						end)
-					end
+                    if scriptsDocument and completed % checkpointEvery == 0 then
+                        pcall(function()
+                            F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_checkpoint.json", nil, false)
+                            checkpointStage("decompile_modules")
+                        end)
+                    end
 
-					task.wait()
-				end
-			end)
+                    task.wait()
+                end
+            end)
 
-			if not workerOk then
-				F.recordWarning("ModuleDecompileWorker", nil, "worker crashed: " .. tostring(workerError))
-				abortRequested = true
-			end
-			activeWorkers = activeWorkers - 1
-		end)
-	end
+            if not workerOk then
+                F.recordWarning("ModuleDecompileWorker", nil, "worker crashed: " .. tostring(workerError))
+                abortRequested = true
+            end
+            activeWorkers = activeWorkers - 1
+        end)
+    end
 
-	while activeWorkers > 0 do
-		task.wait(0.05)
-	end
+    while activeWorkers > 0 do
+        task.wait(0.05)
+    end
 
-	if abortRequested then
-		local reason = "module decompilation aborted after " .. tostring(timeoutCount) .. " timeout(s); remaining modules skipped"
-		F.markQueuedModulesSkipped(reason, nextIndex + 1, true)
-		F.recordWarning("ModuleDecompileCircuitBreaker", nil, reason)
-	end
+    if abortRequested then
+        local reason = "module decompilation aborted after " .. tostring(timeoutCount) .. " timeout(s); remaining modules skipped"
+        F.markQueuedModulesSkipped(reason, nextIndex + 1, true)
+        F.recordWarning("ModuleDecompileCircuitBreaker", nil, reason)
+    end
 
-	moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-	table.clear(moduleScriptQueue)
-	F.releaseTemporaryMemory()
+    moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
+    table.clear(moduleScriptQueue)
+    F.releaseTemporaryMemory()
 end
 
 checkpointStage = function(stage)
-	currentStage = stage
+    currentStage = stage
+    if selectionStatus and selectionStatus.Parent then
+        selectionStatus.Text = "Stage: " .. tostring(stage) .. " · " .. OUTPUT_FOLDER
+    end
 
-	if not currentDumpId or not capabilities.writefile then
-		return
-	end
+    if not currentDumpId or not capabilities.writefile then
+        return
+    end
 
-	local checkpoint = {
-		Schema = SCHEMA_NAME,
-		SchemaVersion = SCHEMA_VERSION,
-		DumpId = currentDumpId,
-		Complete = false,
-		Status = "InProgress",
-		Stage = currentStage,
-		GeneratedAtUnix = os.time(),
-		Stats = {
-			TraversedDescendants = nodeCount,
-			RegisteredIds = nextInstanceId,
-			Errors = #errors,
-			Warnings = #warnings,
-			ModuleDecompileQueued = moduleDecompileStats.Queued,
-			ModuleDecompileAttempted = moduleDecompileStats.Attempted,
-			ModuleDecompileSucceeded = moduleDecompileStats.Succeeded,
-			ModuleDecompileFailed = moduleDecompileStats.Failed,
-			ModuleDecompileTimedOut = moduleDecompileStats.TimedOut,
-			ModuleDecompileIgnored = moduleDecompileStats.Ignored
-		}
-	}
+    local checkpoint = {
+        Schema = SCHEMA_NAME,
+        SchemaVersion = SCHEMA_VERSION,
+        DumpId = currentDumpId,
+        Complete = false,
+        Status = "InProgress",
+        Stage = currentStage,
+        GeneratedAtUnix = os.time(),
+        Stats = {
+            TraversedDescendants = nodeCount,
+            RegisteredIds = nextInstanceId,
+            Errors = #errors,
+            Warnings = #warnings,
+            ModuleDecompileQueued = moduleDecompileStats.Queued,
+            ModuleDecompileAttempted = moduleDecompileStats.Attempted,
+            ModuleDecompileSucceeded = moduleDecompileStats.Succeeded,
+            ModuleDecompileFailed = moduleDecompileStats.Failed,
+            ModuleDecompileTimedOut = moduleDecompileStats.TimedOut,
+            ModuleDecompileIgnored = moduleDecompileStats.Ignored
+        }
+    }
 
-	local encoded = F.encodeJSON(checkpoint, "manifest_checkpoint.json")
-	F.writeSafe(MANIFEST_FILE, encoded)
-	if flushRecovery then flushRecovery(true) end
-	if writeDiagnostics then writeDiagnostics("InProgress") end
+    local encoded = F.encodeJSON(checkpoint, "manifest_checkpoint.json")
+    F.writeSafe(MANIFEST_FILE, encoded)
+    if flushRecovery then flushRecovery(true) end
+    if writeDiagnostics then writeDiagnostics("InProgress") end
 end
 
 function F.fileNameFromPath(path)
-	return string.match(path, "[^/]+$") or path
+    return string.match(path, "[^/]+$") or path
 end
 
 function F.writeJSONDocument(path, data, label, writtenFiles, required)
-	local encoded, encodeSuccess = F.encodeJSON(data, label)
-	local bytes = #encoded
-	local writeSuccess = F.writeSafe(path, encoded)
-	local success = encodeSuccess and writeSuccess
+    local encoded, encodeSuccess = F.encodeJSON(data, label)
+    local bytes = #encoded
+    local writeSuccess = F.writeSafe(path, encoded)
+    local success = encodeSuccess and writeSuccess
 
-	if writtenFiles then
-		table.insert(writtenFiles, {
-			File = F.fileNameFromPath(path),
-			Bytes = bytes,
-			Encoded = encodeSuccess,
-			Written = writeSuccess,
-			Success = success,
-			Required = required ~= false
-		})
-	end
+    if writtenFiles then
+        table.insert(writtenFiles, {
+            File = F.fileNameFromPath(path),
+            Bytes = bytes,
+            Encoded = encodeSuccess,
+            Written = writeSuccess,
+            Success = success,
+            Required = required ~= false
+        })
+    end
 
-	return success, bytes
+    return success, bytes
 end
 
 function F.releaseTemporaryMemory()
-	if type(collectgarbage) == "function" then
-		pcall(collectgarbage, "collect")
-	end
+    if type(collectgarbage) == "function" then
+        pcall(collectgarbage, "collect")
+    end
 end
 
 function F.writeTextDocument(path, contents, writtenFiles, required)
-	local bytes = #contents
-	local success = F.writeSafe(path, contents)
+    local bytes = #contents
+    local success = F.writeSafe(path, contents)
 
-	if writtenFiles then
-		table.insert(writtenFiles, {
-			File = F.fileNameFromPath(path),
-			Bytes = bytes,
-			Success = success,
-			Required = required ~= false
-		})
-	end
+    if writtenFiles then
+        table.insert(writtenFiles, {
+            File = F.fileNameFromPath(path),
+            Bytes = bytes,
+            Success = success,
+            Required = required ~= false
+        })
+    end
 
-	return success, bytes
+    return success, bytes
 end
 
 function F.backfillRuntimeIds()
-	if not snapshotFinalized then
-		return
-	end
+    if not snapshotFinalized then
+        return
+    end
 
-	local pathToId = {}
-	local duplicatePaths = {}
+    local pathToId = {}
+    local duplicatePaths = {}
 
-	for id, meta in pairs(instanceMetaById) do
-		local path = meta and meta.Path
-		if path then
-			if pathToId[path] ~= nil then
-				duplicatePaths[path] = true
-				pathToId[path] = nil
-			elseif not duplicatePaths[path] then
-				pathToId[path] = id
-			end
-		end
-	end
+    for id, meta in pairs(instanceMetaById) do
+        local path = meta and meta.Path
+        if path then
+            if pathToId[path] ~= nil then
+                duplicatePaths[path] = true
+                pathToId[path] = nil
+            elseif not duplicatePaths[path] then
+                pathToId[path] = id
+            end
+        end
+    end
 
-	local function backfillReference(reference)
-		if type(reference) ~= "table" or reference.Id ~= nil then
-			return
-		end
+    local function backfillReference(reference)
+        if type(reference) ~= "table" or reference.Id ~= nil then
+            return
+        end
 
-		local path = reference.Path
-		if path and not duplicatePaths[path] then
-			reference.Id = pathToId[path]
-		end
-	end
+        local path = reference.Path
+        if path and not duplicatePaths[path] then
+            reference.Id = pathToId[path]
+        end
+    end
 
-	for _, record in ipairs(runtimeEventRecords) do
-		if record.RemoteId == nil then
-			local path = record.Path or record.SnapshotPath
-			if path and not duplicatePaths[path] then
-				record.RemoteId = pathToId[path]
-			end
-		end
+    for _, record in ipairs(runtimeEventRecords) do
+        if record.RemoteId == nil then
+            local path = record.Path or record.SnapshotPath
+            if path and not duplicatePaths[path] then
+                record.RemoteId = pathToId[path]
+            end
+        end
 
-		backfillReference(record.Caller)
-	end
+        backfillReference(record.Caller)
+    end
 
-	for _, record in ipairs(runtimeAttributeRecords) do
-		if record.Id == nil then
-			local path = record.Path or record.SnapshotPath
-			if path and not duplicatePaths[path] then
-				record.Id = pathToId[path]
-			end
-		end
-	end
+    for _, record in ipairs(runtimeAttributeRecords) do
+        if record.Id == nil then
+            local path = record.Path or record.SnapshotPath
+            if path and not duplicatePaths[path] then
+                record.Id = pathToId[path]
+            end
+        end
+    end
 
     for _, record in ipairs(guiCapture.Records) do
         if record.Id == nil then
@@ -6237,285 +6335,335 @@ function F.backfillRuntimeIds()
         end
     end
 
-	for _, record in ipairs(runtimeValueRecords) do
-		if record.Id == nil then
-			local path = record.Path or record.SnapshotPath
-			if path and not duplicatePaths[path] then
-				record.Id = pathToId[path]
-			end
-		end
-	end
+    for _, record in ipairs(runtimeValueRecords) do
+        if record.Id == nil then
+            local path = record.Path or record.SnapshotPath
+            if path and not duplicatePaths[path] then
+                record.Id = pathToId[path]
+            end
+        end
+    end
 
-	for _, record in ipairs(runtimeCharacterRecords) do
-		backfillReference(record.Object)
-		backfillReference(record.Character)
+    for _, record in ipairs(runtimeCharacterRecords) do
+        backfillReference(record.Object)
+        backfillReference(record.Character)
 
-		if record.Humanoid and record.Humanoid.Id == nil then
-			local path = record.Humanoid.Path
-			if path and not duplicatePaths[path] then
-				record.Humanoid.Id = pathToId[path]
-			end
-		end
+        if record.Humanoid and record.Humanoid.Id == nil then
+            local path = record.Humanoid.Path
+            if path and not duplicatePaths[path] then
+                record.Humanoid.Id = pathToId[path]
+            end
+        end
 
-		if record.Root and record.Root.Id == nil then
-			local path = record.Root.Path
-			if path and not duplicatePaths[path] then
-				record.Root.Id = pathToId[path]
-			end
-		end
-	end
+        if record.Root and record.Root.Id == nil then
+            local path = record.Root.Path
+            if path and not duplicatePaths[path] then
+                record.Root.Id = pathToId[path]
+            end
+        end
+    end
 end
 
 function F.makeRuntimeEventDocument(records, category)
-	return {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		Category = category,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #records,
-		DroppedDueToCategoryCap = category
-			and runtimeEventCategoryDropped[category]
-			or nil,
-		Events = records
-	}
+    return {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        Category = category,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #records,
+        DroppedDueToCategoryCap = category
+            and runtimeEventCategoryDropped[category]
+            or nil,
+        Events = records
+    }
 end
 
 flushRuntimeTrace = function()
-	if not capabilities.writefile then
-		return
-	end
+    if not capabilities.writefile then
+        return
+    end
 
-	F.pruneRuntimeCaches(true)
-	F.backfillRuntimeIds()
+    F.pruneRuntimeCaches(true)
+    F.backfillRuntimeIds()
 
-	local eventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
-	eventsDocument.CategoryTotals = {
-		Game = #runtimeEventCategoryRecords.Game,
-		Replicator = #runtimeEventCategoryRecords.Replicator,
-		Analytics = #runtimeEventCategoryRecords.Analytics,
-		Other = #runtimeEventCategoryRecords.Other
-	}
-	eventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
+    local eventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
+    eventsDocument.CategoryTotals = {
+        Game = #runtimeEventCategoryRecords.Game,
+        Replicator = #runtimeEventCategoryRecords.Replicator,
+        Analytics = #runtimeEventCategoryRecords.Analytics,
+        Other = #runtimeEventCategoryRecords.Other
+    }
+    eventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
 
-	local valuesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeValueRecords,
-		Changes = runtimeValueRecords
-	}
+    local valuesDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeValueRecords,
+        Changes = runtimeValueRecords
+    }
 
-	local attributesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeAttributeRecords,
-		Changes = runtimeAttributeRecords
-	}
+    local attributesDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeAttributeRecords,
+        Changes = runtimeAttributeRecords
+    }
 
-	local characterDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceCharacter,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeCharacterRecords,
-		Records = runtimeCharacterRecords
-	}
+    local characterDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceCharacter,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeCharacterRecords,
+        Records = runtimeCharacterRecords
+    }
 
-	local logsDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeCaptureLogs,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeLogRecords,
-		Records = runtimeLogRecords
-	}
+    local logsDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeCaptureLogs,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeLogRecords,
+        Records = runtimeLogRecords
+    }
 
-	local timelineDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeTimelineRecords,
-		Timeline = runtimeTimelineRecords
-	}
+    local timelineDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeTimelineRecords,
+        Timeline = runtimeTimelineRecords
+    }
 
-	local disconnectDocument = {
-		DumpId = currentDumpId,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		ErrorMessages = runtimeErrorRecords
-	}
+    local disconnectDocument = {
+        DumpId = currentDumpId,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        ErrorMessages = runtimeErrorRecords
+    }
 
-	local hooksDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeHookState.HookRecords,
-		Records = runtimeHookState.HookRecords
-	}
+    local hooksDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceHookDiagnostics,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeHookState.HookRecords,
+        Records = runtimeHookState.HookRecords
+    }
 
-	local hookIntegrityDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Baseline = runtimeHookState.HookIntegrityBaseline,
-		LastSnapshot = runtimeHookState.HookIntegrityLast,
-		Total = #runtimeHookState.HookIntegrityRecords,
-		Records = runtimeHookState.HookIntegrityRecords
-	}
+    local hookIntegrityDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceHookDiagnostics,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Baseline = runtimeHookState.HookIntegrityBaseline,
+        LastSnapshot = runtimeHookState.HookIntegrityLast,
+        Total = #runtimeHookState.HookIntegrityRecords,
+        Records = runtimeHookState.HookIntegrityRecords
+    }
 
-	F.writeSafe(RUNTIME_FILES.Events, F.encodeJSON(eventsDocument, "runtime_events.json"))
-	F.writeSafe(
-		RUNTIME_FILES.EventsGame,
-		F.encodeJSON(
-			F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
-			"runtime_events_game.json"
-		)
-	)
-	F.writeSafe(
-		RUNTIME_FILES.EventsReplicator,
-		F.encodeJSON(
-			F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
-			"runtime_events_replicator.json"
-		)
-	)
-	F.writeSafe(
-		RUNTIME_FILES.EventsAnalytics,
-		F.encodeJSON(
-			F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
-			"runtime_events_analytics.json"
-		)
-	)
-	F.writeSafe(
-		RUNTIME_FILES.EventsOther,
-		F.encodeJSON(
-			F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
-			"runtime_events_other.json"
-		)
-	)
-	if CONFIG.VisualCapture then
-		F.writeSafe(
-			RUNTIME_VISUAL_ASSETS_FILE,
-			F.encodeJSON(F.buildVisualDocument(visualDynamicRecords, true), "runtime_visual_assets.json")
-		)
-	end
+    F.writeSafe(RUNTIME_FILES.Events, F.encodeJSON(eventsDocument, "runtime_events.json"))
+    F.writeSafe(
+        RUNTIME_FILES.EventsGame,
+        F.encodeJSON(
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
+            "runtime_events_game.json"
+        )
+    )
+    F.writeSafe(
+        RUNTIME_FILES.EventsReplicator,
+        F.encodeJSON(
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
+            "runtime_events_replicator.json"
+        )
+    )
+    F.writeSafe(
+        RUNTIME_FILES.EventsAnalytics,
+        F.encodeJSON(
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
+            "runtime_events_analytics.json"
+        )
+    )
+    F.writeSafe(
+        RUNTIME_FILES.EventsOther,
+        F.encodeJSON(
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
+            "runtime_events_other.json"
+        )
+    )
+    if CONFIG.VisualCapture then
+        F.writeSafe(
+            RUNTIME_VISUAL_ASSETS_FILE,
+            F.encodeJSON(F.buildVisualDocument(visualDynamicRecords, true), "runtime_visual_assets.json")
+        )
+    end
     F.writeSafe(RUNTIME_FILES.Gui, F.encodeJSON({
         DumpId = currentDumpId, Enabled = CONFIG.RuntimeTraceGui,
         RollingWindow = true, WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
         Total = #guiCapture.Records, Changes = guiCapture.Records
     }, "runtime_gui.json"))
-	F.writeSafe(RUNTIME_FILES.Values, F.encodeJSON(valuesDocument, "runtime_values.json"))
-	F.writeSafe(RUNTIME_FILES.Attributes, F.encodeJSON(attributesDocument, "runtime_attributes.json"))
-	F.writeSafe(RUNTIME_FILES.Character, F.encodeJSON(characterDocument, "runtime_character.json"))
-	F.writeSafe(RUNTIME_FILES.Logs, F.encodeJSON(logsDocument, "runtime_logs.json"))
-	F.writeSafe(RUNTIME_FILES.Timeline, F.encodeJSON(timelineDocument, "runtime_timeline.json"))
-	F.writeSafe(RUNTIME_FILES.Disconnect, F.encodeJSON(disconnectDocument, "runtime_disconnect.json"))
-	F.writeSafe(RUNTIME_FILES.Hooks, F.encodeJSON(hooksDocument, "runtime_hooks.json"))
-	F.writeSafe(
-		RUNTIME_FILES.HookIntegrity,
-		F.encodeJSON(hookIntegrityDocument, "runtime_hook_integrity.json")
-	)
+    F.writeSafe(RUNTIME_FILES.Values, F.encodeJSON(valuesDocument, "runtime_values.json"))
+    F.writeSafe(RUNTIME_FILES.Attributes, F.encodeJSON(attributesDocument, "runtime_attributes.json"))
+    F.writeSafe(RUNTIME_FILES.Character, F.encodeJSON(characterDocument, "runtime_character.json"))
+    F.writeSafe(RUNTIME_FILES.Logs, F.encodeJSON(logsDocument, "runtime_logs.json"))
+    F.writeSafe(RUNTIME_FILES.Timeline, F.encodeJSON(timelineDocument, "runtime_timeline.json"))
+    F.writeSafe(RUNTIME_FILES.Disconnect, F.encodeJSON(disconnectDocument, "runtime_disconnect.json"))
+    F.writeSafe(RUNTIME_FILES.Hooks, F.encodeJSON(hooksDocument, "runtime_hooks.json"))
+    F.writeSafe(
+        RUNTIME_FILES.HookIntegrity,
+        F.encodeJSON(hookIntegrityDocument, "runtime_hook_integrity.json")
+    )
 
-	runtimeHookState.LastFlushAt = os.clock()
-	runtimeHookState.MutationsSinceFlush = 0
+    runtimeHookState.LastFlushAt = os.clock()
+    runtimeHookState.MutationsSinceFlush = 0
 end
 
 function F.stopRuntimeTrace()
-	runtimeTraceActive = false
-	runtimeHookState.Active = false
+    runtimeTraceActive = false
+    runtimeHookState.Active = false
 
-	F.disconnectConnections(runtimeCharacterConnections)
-	F.disconnectConnections(runtimeConnections)
+    F.disconnectConnections(runtimeCharacterConnections)
+    F.disconnectConnections(runtimeConnections)
 
-	flushRuntimeTrace()
+    flushRuntimeTrace()
 end
 
 function F.finishRuntimeTraceAfterSnapshot()
-	if not CONFIG.RuntimeTrace then
-		return
-	end
+    if not CONFIG.RuntimeTrace then
+        return
+    end
 
-	flushRuntimeTrace()
+    flushRuntimeTrace()
 
-	local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
-	if postSeconds > 0 and not runtimeHookState.Frozen then
-		print(
-			"snapshot finished; runtime trace remains active for up to",
-			postSeconds,
-			"more seconds"
-		)
+    local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
+    if postSeconds > 0 and not runtimeHookState.Frozen then
+        print(
+            "snapshot finished; runtime trace remains active for up to",
+            postSeconds,
+            "more seconds"
+        )
 
-		local waitStarted = os.clock()
-		while runtimeTraceActive
-			and not runtimeHookState.Frozen
-			and os.clock() - waitStarted < postSeconds
-		do
-			task.wait(0.1)
-		end
-	end
+        local waitStarted = os.clock()
+        while runtimeTraceActive
+            and not runtimeHookState.Frozen
+            and os.clock() - waitStarted < postSeconds
+        do
+            task.wait(0.1)
+        end
+    end
 
-	F.stopRuntimeTrace()
+    F.stopRuntimeTrace()
 
-	if runtimeHookState.Frozen then
-		print(
-			"runtime trace frozen:",
-			runtimeHookState.FreezeInfo and runtimeHookState.FreezeInfo.Reason or "unknown reason"
-		)
-	end
+    if runtimeHookState.Frozen then
+        print(
+            "runtime trace frozen:",
+            runtimeHookState.FreezeInfo and runtimeHookState.FreezeInfo.Reason or "unknown reason"
+        )
+    end
 
-	print(
-		"runtime trace finished:",
-		#runtimeEventRecords,
-		"remote calls/events,",
-		#runtimeValueRecords,
-		"value changes,",
-		#runtimeAttributeRecords,
-		"attribute changes,",
-		#runtimeCharacterRecords,
-		"character records,",
-		#runtimeHookState.HookRecords,
-		"hook observations,",
-		#runtimeHookState.HookIntegrityRecords,
-		"hook integrity records"
-	)
+    print(
+        "runtime trace finished:",
+        #runtimeEventRecords,
+        "remote calls/events,",
+        #runtimeValueRecords,
+        "value changes,",
+        #runtimeAttributeRecords,
+        "attribute changes,",
+        #runtimeCharacterRecords,
+        "character records,",
+        #runtimeHookState.HookRecords,
+        "hook observations,",
+        #runtimeHookState.HookIntegrityRecords,
+        "hook integrity records"
+    )
+end
+
+function F.prepareSelectedSnapshotNodes()
+    selectedSnapshotNodes = nil
+    if SELECTION.Structure then return end
+    local allowed = setmetatable({ [game] = true }, { __mode = "k" })
+    local childrenOk, children = pcall(function() return game:GetChildren() end)
+    if not childrenOk then error("Cannot scan game children: " .. tostring(children)) end
+    local stack = children
+    local seen = setmetatable({}, { __mode = "k" })
+    local visited = 0
+    while #stack > 0 do
+        local object = stack[#stack]
+        stack[#stack] = nil
+        if not seen[object] then
+            seen[object] = true
+            local className = F.safeClassName(object)
+            local parentOk, parent = pcall(function() return object.Parent end)
+            local isIgnored = (selectionGui and (object == selectionGui or F.safeIsDescendantOf(object, selectionGui)))
+                or (CONFIG.SkipEngineInternals and parentOk and parent == game
+                    and (F.safeName(object) == "CoreGui" or F.safeName(object) == "CorePackages"))
+            if not isIgnored then
+                local matched = (SELECTION.GUI and GUI_CLASSES[className])
+                    or (SELECTION.Remotes and REMOTE_BUCKETS[className])
+                    or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources)
+                        and SCRIPT_BUCKETS[className])
+                    or (SELECTION.Values and (F.safeIsA(object, "ValueBase")
+                        or next(F.getAttributes(object)) ~= nil))
+                    or (SELECTION.PlayersTools and
+                        (className == "Player" or className == "PlayerGui" or className == "Backpack"
+                        or className == "Tool" or className == "Humanoid" or className == "StarterGear"))
+                    or (SELECTION.Visuals and F.isVisualAsset(object, className))
+                if matched then
+                    local ancestor = object
+                    while ancestor and ancestor ~= game and not allowed[ancestor] do
+                        allowed[ancestor] = true
+                        local ok, parent = pcall(function() return ancestor.Parent end)
+                        ancestor = ok and parent or nil
+                    end
+                end
+                local ok, descendants = pcall(function() return object:GetChildren() end)
+                if ok then
+                    for i = 1, #descendants do stack[#stack + 1] = descendants[i] end
+                end
+            end
+        end
+        visited = visited + 1
+        if visited % 200 == 0 then task.wait() end
+    end
+    selectedSnapshotNodes = allowed
 end
 
 local activeRegistry
@@ -6533,277 +6681,338 @@ function F.run()
         activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
         activeRegistry.__SynergyStructureDumperActive = activeRegistryToken
     end
-	if not capabilities.writefile then
-		warn("GameStructureDump: writefile is unavailable; dump aborted.")
-		return
-	end
+    CONFIG.GuiCapture = SELECTION.GUI
+    CONFIG.VisualCapture = SELECTION.Visuals
+    CONFIG.RuntimeTrace = SELECTION.Runtime
+    CONFIG.RuntimeTraceGui = SELECTION.Runtime and SELECTION.GUI
+    CONFIG.DecompileLocalScripts = SELECTION.LocalSources
+    CONFIG.DecompileModuleScripts = SELECTION.ModuleSources
+    CONFIG.RuntimePrimeBeforeSnapshot = SELECTION.Runtime and not SELECTION.Structure
+    clientDecompileStats.Enabled = CONFIG.DecompileLocalScripts
+    moduleDecompileStats.Enabled = CONFIG.DecompileModuleScripts
+    if not capabilities.writefile then
+        warn("GameStructureDump: writefile is unavailable; dump aborted.")
+        return
+    end
+    local folderOk, folderError = F.selectOutputFolder()
+    if not folderOk then
+        warn("GameStructureDump: " .. tostring(folderError))
+        return
+    end
 
-	if not F.ensureOutputFolder() then
-		warn("GameStructureDump: output folder could not be created or verified; dump aborted.")
-		return
-	end
+    local guidOk, guid = pcall(function()
+        return HttpService:GenerateGUID(false)
+    end)
 
-	local guidOk, guid = pcall(function()
-		return HttpService:GenerateGUID(false)
-	end)
+    currentDumpId = guidOk and guid or string.format("%d-%d", os.time(), math.floor(os.clock() * 1000))
+    if type(readfile) == "function" then
+        F.ensureFolder(RECOVERY_FOLDER)
+        local oldCrashOk, oldCrashText = pcall(readfile, CRASH_FILE)
+        if oldCrashOk and type(oldCrashText) == "string" then
+            local decodeOk, oldCrash = pcall(HttpService.JSONDecode, HttpService, oldCrashText)
+            if decodeOk and type(oldCrash) == "table" and oldCrash.Status == "LuaException" then
+                local archiveName = F.sanitizeFileComponent(oldCrash.DumpId or tostring(os.time()))
+                F.writeSafe(RECOVERY_FOLDER .. "/crash_" .. archiveName .. ".json", oldCrashText)
+            end
+        end
+        local previousOk, previousText = pcall(readfile, MANIFEST_FILE)
+        if previousOk and type(previousText) == "string" then
+            local decodedOk, previous = pcall(HttpService.JSONDecode, HttpService, previousText)
+            if decodedOk and type(previous) == "table" and previous.Status == "InProgress" then
+                local detailsOk, detailsText = pcall(readfile, DIAGNOSTICS_FILE)
+                local details = nil
+                if detailsOk and type(detailsText) == "string" then
+                    local parsedOk, parsed = pcall(HttpService.JSONDecode, HttpService, detailsText)
+                    if parsedOk then details = parsed end
+                end
+                local previousId = F.sanitizeFileComponent(previous.DumpId or tostring(os.time()))
+                local previousReport = F.encodeJSON({
+                    Status = "PreviousRunInterrupted",
+                    Note = "An unfinished run was found; a native crash, teleport or manual stop cannot be distinguished here.",
+                    DetectedAtUnix = os.time(),
+                    PreviousManifest = previous, PreviousDiagnostics = details
+                }, "previous_run_interrupted.json")
+                F.writeSafe(RECOVERY_FOLDER .. "/previous_" .. previousId .. ".json", previousReport)
+                F.writeSafe(PREVIOUS_RUN_FILE, previousReport)
+            end
+        end
+    end
+    initRecovery()
+    F.writeSafe(CRASH_FILE, F.encodeJSON({
+        DumpId = currentDumpId, Status = "NoLuaCrashRecorded",
+        Note = "A native client crash cannot be caught by Luau; consult diagnostics.json and recovery/ if the run is interrupted."
+    }, "crash_report.json"))
+    snapshotBusy = true
+    checkpointStage("runtime_start")
+    runtimeStartedAt = os.clock()
+    F.startRuntimeTrace()
 
-	currentDumpId = guidOk and guid or string.format("%d-%d", os.time(), math.floor(os.clock() * 1000))
-	if type(readfile) == "function" then
-		F.ensureFolder(RECOVERY_FOLDER)
-		local oldCrashOk, oldCrashText = pcall(readfile, CRASH_FILE)
-		if oldCrashOk and type(oldCrashText) == "string" then
-			local decodeOk, oldCrash = pcall(HttpService.JSONDecode, HttpService, oldCrashText)
-			if decodeOk and type(oldCrash) == "table" and oldCrash.Status == "LuaException" then
-				local archiveName = F.sanitizeFileComponent(oldCrash.DumpId or tostring(os.time()))
-				F.writeSafe(RECOVERY_FOLDER .. "/crash_" .. archiveName .. ".json", oldCrashText)
-			end
-		end
-		local previousOk, previousText = pcall(readfile, MANIFEST_FILE)
-		if previousOk and type(previousText) == "string" then
-			local decodedOk, previous = pcall(HttpService.JSONDecode, HttpService, previousText)
-			if decodedOk and type(previous) == "table" and previous.Status == "InProgress" then
-				local detailsOk, detailsText = pcall(readfile, DIAGNOSTICS_FILE)
-				local details = nil
-				if detailsOk and type(detailsText) == "string" then
-					local parsedOk, parsed = pcall(HttpService.JSONDecode, HttpService, detailsText)
-					if parsedOk then details = parsed end
-				end
-				local previousId = F.sanitizeFileComponent(previous.DumpId or tostring(os.time()))
-				local previousReport = F.encodeJSON({
-					Status = "PreviousRunInterrupted",
-					Note = "An unfinished run was found; a native crash, teleport or manual stop cannot be distinguished here.",
-					DetectedAtUnix = os.time(),
-					PreviousManifest = previous, PreviousDiagnostics = details
-				}, "previous_run_interrupted.json")
-				F.writeSafe(RECOVERY_FOLDER .. "/previous_" .. previousId .. ".json", previousReport)
-				F.writeSafe(PREVIOUS_RUN_FILE, previousReport)
-			end
-		end
-	end
-	initRecovery()
-	F.writeSafe(CRASH_FILE, F.encodeJSON({
-		DumpId = currentDumpId, Status = "NoLuaCrashRecorded",
-		Note = "A native client crash cannot be caught by Luau; consult diagnostics.json and recovery/ if the run is interrupted."
-	}, "crash_report.json"))
-	snapshotBusy = true
-	checkpointStage("runtime_start")
-	runtimeStartedAt = os.clock()
-	F.startRuntimeTrace()
+    if not SELECTION.Structure and not SELECTION.GUI and not SELECTION.Remotes
+        and not SELECTION.Scripts and not SELECTION.Values and not SELECTION.PlayersTools
+        and not SELECTION.Visuals and not SELECTION.LocalSources and not SELECTION.ModuleSources then
+        snapshotBusy = false
+        snapshotFinalized = true
+        checkpointStage("runtime_only")
+        F.finishRuntimeTraceAfterSnapshot()
+        F.writeSafe(ERRORS_FILE, F.encodeJSON(errors, "errors.json"))
+        F.writeSafe(WARNINGS_FILE, F.encodeJSON(warnings, "warnings.json"))
+        F.writeSafe(META_FILE, F.encodeJSON({
+            Schema = SCHEMA_NAME, SchemaVersion = SCHEMA_VERSION,
+            DumpId = currentDumpId, Mode = "RuntimeOnly", Selection = SELECTION,
+            GeneratedAtUnix = os.time(), ElapsedSeconds = os.clock() - started,
+            Events = #runtimeEventRecords, GuiChanges = #guiCapture.Records,
+            RecoveryFolder = recoveryState.Folder, Errors = #errors, Warnings = #warnings
+        }, "meta.json"))
+        F.writeSafe(MANIFEST_FILE, F.encodeJSON({
+            Schema = SCHEMA_NAME, SchemaVersion = SCHEMA_VERSION,
+            DumpId = currentDumpId, Complete = true, Status = "Complete",
+            Stage = "complete", Mode = "RuntimeOnly", Selection = SELECTION,
+            Folder = OUTPUT_FOLDER, GeneratedAtUnix = os.time()
+        }, "manifest.json"))
+        currentStage = "complete"
+        if flushRecovery then flushRecovery(true) end
+        if recoveryState.Folder then
+            F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
+                DumpId = currentDumpId, Status = "Complete", Stage = currentStage,
+                Saved = recoveryState.Saved
+            }, "recovery_status.json"))
+        end
+        if writeDiagnostics then writeDiagnostics("Complete") end
+        print("Runtime-only dump finished:", OUTPUT_FOLDER)
+        return
+    end
 
-	checkpointStage("prepare_players")
-	F.preparePlayerDescriptors()
+    checkpointStage("prepare_players")
+    if SELECTION.PlayersTools then F.preparePlayerDescriptors() end
+    checkpointStage("select_snapshot_nodes")
+    F.prepareSelectedSnapshotNodes()
 
-	checkpointStage("snapshot_traversal")
-	local rootId = F.assignInstanceId(game)
-	F.updateInstanceMeta(game, rootId, nil, "game", "DataModel", "game")
+    checkpointStage("snapshot_traversal")
+    local rootId = F.assignInstanceId(game)
+    F.updateInstanceMeta(game, rootId, nil, "game", "DataModel", "game")
 
-	local root = {
-		Id = rootId,
-		Name = "game",
-		ClassName = "DataModel",
-		Path = "game",
-		Attributes = F.optionalMap(F.getAttributes(game)),
-		Tags = F.getTags(game),
-		Properties = {
-			Name = F.sanitizeString(game.Name),
-			PlaceId = game.PlaceId,
-			GameId = game.GameId,
-			JobId = F.sanitizeString(game.JobId)
-		},
-		Children = {}
-	}
+    local root = {
+        Id = rootId,
+        Name = "game",
+        ClassName = "DataModel",
+        Path = "game",
+        Attributes = F.optionalMap(F.getAttributes(game)),
+        Tags = F.getTags(game),
+        Properties = {
+            Name = F.sanitizeString(game.Name),
+            PlaceId = game.PlaceId,
+            GameId = game.GameId,
+            JobId = F.sanitizeString(game.JobId)
+        },
+        Children = {}
+    }
 
-	if journalRecord then
-		journalRecord("Snapshot", { Id = rootId, ParentId = nil, Name = "game",
-			ClassName = "DataModel", Path = "game", Properties = root.Properties,
-			Attributes = root.Attributes, Tags = root.Tags })
-	end
-	if flushRecovery then flushRecovery(true) end
-	for _, service in ipairs(F.getSortedChildren(game)) do
-		local serviceName = F.safeName(service)
-		if CONFIG.SkipEngineInternals and (serviceName == "CorePackages" or serviceName == "CoreGui") then
-			root.SkippedEngineServices = root.SkippedEngineServices or {}
-			root.SkippedEngineServices[#root.SkippedEngineServices + 1] = serviceName
-			continue
-		end
-		local ok, result, status = pcall(
-			dumpNode,
-			service,
-			rootId,
-			{
-				InventorySource = nil,
-				ToolState = nil,
-				ParentObject = game
-			}
-		)
+    if journalRecord then
+        journalRecord("Snapshot", { Id = rootId, ParentId = nil, Name = "game",
+            ClassName = "DataModel", Path = "game", Properties = root.Properties,
+            Attributes = root.Attributes, Tags = root.Tags })
+    end
+    if flushRecovery then flushRecovery(true) end
+    for _, service in ipairs(F.getSortedChildren(game)) do
+        if selectedSnapshotNodes and not selectedSnapshotNodes[service] then continue end
+        local serviceName = F.safeName(service)
+        if CONFIG.SkipEngineInternals and (serviceName == "CorePackages" or serviceName == "CoreGui") then
+            root.SkippedEngineServices = root.SkippedEngineServices or {}
+            root.SkippedEngineServices[#root.SkippedEngineServices + 1] = serviceName
+            continue
+        end
+        local ok, result, status = pcall(
+            dumpNode,
+            service,
+            rootId,
+            {
+                InventorySource = nil,
+                ToolState = nil,
+                ParentObject = game
+            }
+        )
 
-		if ok then
-			if result then
-				table.insert(root.Children, result)
-			elseif status == nil then
-				F.recordError("DumpRootChild", service, "dumpNode returned no data")
-			end
-		else
-			F.recordError("DumpRootChild", service, result)
-			table.insert(root.Children, F.makeFailedNode(service, rootId, result))
-		end
-	end
+        if ok then
+            if result then
+                table.insert(root.Children, result)
+            elseif status == nil then
+                F.recordError("DumpRootChild", service, "dumpNode returned no data")
+            end
+        else
+            F.recordError("DumpRootChild", service, result)
+            table.insert(root.Children, F.makeFailedNode(service, rootId, result))
+        end
+    end
 
-	snapshotFinalized = true
-	checkpointStage("finalize_indexes")
-	F.finalizeIndexes()
+    snapshotFinalized = true
+    checkpointStage("finalize_indexes")
+    F.finalizeIndexes()
 
-	table.clear(traversedInstances)
+    table.clear(traversedInstances)
 
-	local snapshotElapsed = os.clock() - started
-	local writtenFiles = {}
+    local snapshotElapsed = os.clock() - started
+    local writtenFiles = {}
 
-	checkpointStage("write_structure_text")
-	local treeLines = F.makeTree(root)
-	local treeText = table.concat(treeLines, "\n")
-	F.writeTextDocument(TREE_FILE, treeText, writtenFiles, true)
-	treeText = nil
-	treeLines = nil
-	F.releaseTemporaryMemory()
+    checkpointStage("write_structure_text")
+    if SELECTION.Structure then
+        local treeLines = F.makeTree(root)
+        F.writeTextDocument(TREE_FILE, table.concat(treeLines, "\n"), writtenFiles, true)
+    end
+    F.releaseTemporaryMemory()
 
-	checkpointStage("write_visual_assets")
-	F.writeJSONDocument(
-		VISUAL_ASSETS_FILE,
-		F.buildVisualDocument(visualSnapshotRecords, false),
-		"visual_assets.json", writtenFiles, false
-	)
-	table.clear(visualSnapshotRecords)
+    checkpointStage("write_visual_assets")
+    if SELECTION.Visuals then
+        F.writeJSONDocument(VISUAL_ASSETS_FILE,
+            F.buildVisualDocument(visualSnapshotRecords, false),
+            "visual_assets.json", writtenFiles, false)
+    end
+    table.clear(visualSnapshotRecords)
 
     checkpointStage("write_gui_index")
-    F.writeJSONDocument(GUI_FILE, {
-        Total = #guiCapture.Snapshot,
-        Omitted = guiCapture.SnapshotOmitted,
-        Elements = guiCapture.Snapshot,
-        IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil
-    }, "gui.json", writtenFiles, true)
+    if SELECTION.GUI then
+        F.writeJSONDocument(GUI_FILE, {
+            Total = #guiCapture.Snapshot,
+            Omitted = guiCapture.SnapshotOmitted,
+            Elements = guiCapture.Snapshot,
+            IndexedPropertiesSource = SELECTION.Structure and CONFIG.CompactSecondaryIndexes and "structure.json" or nil
+        }, "gui.json", writtenFiles, true)
+    end
     table.clear(guiCapture.Snapshot)
 
-	checkpointStage("write_structure_json")
-	F.writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
-	root = nil
-	F.releaseTemporaryMemory()
+    checkpointStage("write_structure_json")
+    if SELECTION.Structure then
+        F.writeJSONDocument(STRUCTURE_FILE, root, "structure.json", writtenFiles, true)
+    end
+    root = nil
+    F.releaseTemporaryMemory()
 
-	checkpointStage("build_instance_index")
-	local instanceIndex = F.buildInstanceIndex()
-	local instanceCount = #instanceIndex
-	local pathStats = F.buildPathStats(instanceIndex)
+    checkpointStage("build_instance_index")
+    local instanceIndex = F.buildInstanceIndex()
+    local instanceCount = #instanceIndex
+    local pathStats = F.buildPathStats(instanceIndex)
 
-	checkpointStage("write_instances")
-	F.writeJSONDocument(INSTANCES_FILE, instanceIndex, "instances.json", writtenFiles, true)
+    checkpointStage("write_instances")
+    if SELECTION.Structure then
+        F.writeJSONDocument(INSTANCES_FILE, instanceIndex, "instances.json", writtenFiles, true)
+    end
 
-	checkpointStage("build_state_index")
-	local stateDocument = F.buildStateIndex(instanceIndex)
-	stateDocument.PathCollisions = pathStats
-	stateDocument.PlayerReferenceCount = #playerReferences
-	stateDocument.ValueRecordCount = #valueRecords
+    checkpointStage("build_state_index")
+    local stateDocument = F.buildStateIndex(instanceIndex)
+    stateDocument.PathCollisions = pathStats
+    stateDocument.PlayerReferenceCount = #playerReferences
+    stateDocument.ValueRecordCount = #valueRecords
 
-	checkpointStage("write_state")
-	F.writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
-	stateDocument = nil
-	instanceIndex = nil
+    checkpointStage("write_state")
+    if SELECTION.Structure then
+        F.writeJSONDocument(STATE_FILE, stateDocument, "state.json", writtenFiles, true)
+    end
+    stateDocument = nil
+    instanceIndex = nil
 
-	-- Resolve any early runtime references while snapshot metadata still exists,
-	-- then release the largest metadata table before the post-snapshot trace window.
-	F.backfillRuntimeIds()
-	table.clear(instanceMetaById)
-	F.releaseTemporaryMemory()
+    -- Resolve any early runtime references while snapshot metadata still exists,
+    -- then release the largest metadata table before the post-snapshot trace window.
+    F.backfillRuntimeIds()
+    table.clear(instanceMetaById)
+    F.releaseTemporaryMemory()
 
-	checkpointStage("write_static_indexes")
-	local inventory = F.buildInventory()
-	local playerIndex = F.buildPlayerIndex()
+    checkpointStage("write_static_indexes")
+    local inventory = F.buildInventory()
+    local playerIndex = F.buildPlayerIndex()
 
-	local remotesDocument = {
-		Total = F.totalRemoteCount(),
-		RemoteEvents = remoteIndex.RemoteEvents,
-		UnreliableRemoteEvents = remoteIndex.UnreliableRemoteEvents,
-		RemoteFunctions = remoteIndex.RemoteFunctions,
-		BindableEvents = remoteIndex.BindableEvents,
-		BindableFunctions = remoteIndex.BindableFunctions
-	}
+    local remotesDocument = {
+        Total = F.totalRemoteCount(),
+        RemoteEvents = remoteIndex.RemoteEvents,
+        UnreliableRemoteEvents = remoteIndex.UnreliableRemoteEvents,
+        RemoteFunctions = remoteIndex.RemoteFunctions,
+        BindableEvents = remoteIndex.BindableEvents,
+        BindableFunctions = remoteIndex.BindableFunctions
+    }
 
-	local scriptsDocument = {
-		Total = F.totalScriptCount(),
-		LocalScripts = scriptIndex.LocalScripts,
-		ModuleScripts = scriptIndex.ModuleScripts,
-		Scripts = scriptIndex.Scripts,
-		CoreScripts = scriptIndex.CoreScripts
-	}
+    local scriptsDocument = {
+        Total = F.totalScriptCount(),
+        LocalScripts = scriptIndex.LocalScripts,
+        ModuleScripts = scriptIndex.ModuleScripts,
+        Scripts = scriptIndex.Scripts,
+        CoreScripts = scriptIndex.CoreScripts
+    }
 
-	local valuesDocument = {
-		Total = #valueRecords,
-		Values = valueRecords
-	}
+    local valuesDocument = {
+        Total = #valueRecords,
+        Values = valueRecords
+    }
 
-	local playerReferencesDocument = {
-		Total = #playerReferences,
-		References = playerReferences
-	}
+    local playerReferencesDocument = {
+        Total = #playerReferences,
+        References = playerReferences
+    }
 
-	F.writeJSONDocument(TAGS_FILE, { Total = #tagRecords, Omitted = tagOmitted,
-		Counts = tagCounts, TaggedInstances = tagRecords }, "tags.json", writtenFiles, false)
-	F.writeJSONDocument(INTERACTIONS_FILE, { Total = #interactionRecords,
-		Omitted = interactionOmitted, Interactions = interactionRecords,
-		IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
-		"interactions.json", writtenFiles, false)
-	F.writeJSONDocument(PHYSICS_FILE, { Total = #physicsRecords,
-		Omitted = physicsOmitted, JointsAndConstraints = physicsRecords,
-		IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
-		"physics.json", writtenFiles, false)
-	F.writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true)
-	F.writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
-	inventory = nil
-	F.writeJSONDocument(ATTRIBUTES_FILE, attributeIndex, "attributes.json", writtenFiles, true)
-	F.writeJSONDocument(TOOLS_FILE, toolRecords, "tools.json", writtenFiles, true)
-	F.writeJSONDocument(VALUES_FILE, valuesDocument, "values.json", writtenFiles, true)
-	F.writeJSONDocument(PLAYERS_FILE, playerIndex, "players.json", writtenFiles, true)
-	playerIndex = nil
-	playerDescriptors = {}
-	F.writeJSONDocument(
-		PLAYER_REFERENCES_FILE,
-		playerReferencesDocument,
-		"player_references.json",
-		writtenFiles,
-		true
-	)
+    if SELECTION.Structure then
+    F.writeJSONDocument(TAGS_FILE, { Total = #tagRecords, Omitted = tagOmitted,
+            Counts = tagCounts, TaggedInstances = tagRecords }, "tags.json", writtenFiles, false)
+        F.writeJSONDocument(INTERACTIONS_FILE, { Total = #interactionRecords,
+            Omitted = interactionOmitted, Interactions = interactionRecords,
+            IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
+            "interactions.json", writtenFiles, false)
+        F.writeJSONDocument(PHYSICS_FILE, { Total = #physicsRecords,
+            Omitted = physicsOmitted, JointsAndConstraints = physicsRecords,
+            IndexedPropertiesSource = CONFIG.CompactSecondaryIndexes and "structure.json" or nil },
+            "physics.json", writtenFiles, false)
+    end
+    if SELECTION.Remotes then F.writeJSONDocument(REMOTES_FILE, remotesDocument, "remotes.json", writtenFiles, true) end
+    if SELECTION.PlayersTools then
+        F.writeJSONDocument(INVENTORY_FILE, inventory, "inventory.json", writtenFiles, true)
+        F.writeJSONDocument(TOOLS_FILE, toolRecords, "tools.json", writtenFiles, true)
+        F.writeJSONDocument(PLAYERS_FILE, playerIndex, "players.json", writtenFiles, true)
+        F.writeJSONDocument(PLAYER_REFERENCES_FILE, playerReferencesDocument,
+            "player_references.json", writtenFiles, true)
+    end
+    if SELECTION.Values then
+        F.writeJSONDocument(ATTRIBUTES_FILE, attributeIndex, "attributes.json", writtenFiles, true)
+        F.writeJSONDocument(VALUES_FILE, valuesDocument, "values.json", writtenFiles, true)
+    end
+    inventory = nil
+    playerIndex = nil
+    playerDescriptors = {}
 
-	F.releaseTemporaryMemory()
-	snapshotBusy = false
+    F.releaseTemporaryMemory()
+    selectedSnapshotNodes = nil
+    snapshotBusy = false
 
-	checkpointStage("runtime_post_capture")
-	F.finishRuntimeTraceAfterSnapshot()
+    checkpointStage("runtime_post_capture")
+    F.finishRuntimeTraceAfterSnapshot()
 
-	F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_pre_decompile.json", nil, false)
-	checkpointStage("decompile_localscripts")
-	F.decompileQueuedClientScripts(scriptsDocument)
-	checkpointStage("decompile_modules")
-	F.decompileQueuedModules(scriptsDocument)
-	F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
-	F.writeJSONDocument(REMOTE_USAGE_FILE, {
-		DumpId = currentDumpId, TotalUniqueRemotes = #remoteUsageRecords,
-		OmittedRemotesDueToCap = remoteUsageOverflow,
-		Coverage = "Observed incoming and outgoing calls for this run, cumulative (not just rolling window)",
-		Remotes = remoteUsageRecords
-	}, "remote_usage.json", writtenFiles, false)
+    if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
+        F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_pre_decompile.json", nil, false)
+    end
+    checkpointStage("decompile_localscripts")
+    F.decompileQueuedClientScripts(scriptsDocument)
+    checkpointStage("decompile_modules")
+    F.decompileQueuedModules(scriptsDocument)
+    if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
+        F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+    end
+    if SELECTION.Runtime then F.writeJSONDocument(REMOTE_USAGE_FILE, {
+        DumpId = currentDumpId, TotalUniqueRemotes = #remoteUsageRecords,
+        OmittedRemotesDueToCap = remoteUsageOverflow,
+        Coverage = "Observed incoming and outgoing calls for this run, cumulative (not just rolling window)",
+        Remotes = remoteUsageRecords
+    }, "remote_usage.json", writtenFiles, false) end
 
-	F.writeJSONDocument(
-		RUNTIME_VISUAL_ASSETS_FILE,
-		F.buildVisualDocument(visualDynamicRecords, true),
-		"runtime_visual_assets.json", writtenFiles, false
-	)
+    if SELECTION.Runtime and SELECTION.Visuals then F.writeJSONDocument(
+        RUNTIME_VISUAL_ASSETS_FILE,
+        F.buildVisualDocument(visualDynamicRecords, true),
+        "runtime_visual_assets.json", writtenFiles, false
+    ) end
 
-	local runtimeEventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
-	runtimeEventsDocument.CategoryTotals = {
-		Game = #runtimeEventCategoryRecords.Game,
-		Replicator = #runtimeEventCategoryRecords.Replicator,
-		Analytics = #runtimeEventCategoryRecords.Analytics,
-		Other = #runtimeEventCategoryRecords.Other
-	}
-	runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
+    if SELECTION.Runtime then
+    local runtimeEventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
+    runtimeEventsDocument.CategoryTotals = {
+        Game = #runtimeEventCategoryRecords.Game,
+        Replicator = #runtimeEventCategoryRecords.Replicator,
+        Analytics = #runtimeEventCategoryRecords.Analytics,
+        Other = #runtimeEventCategoryRecords.Other
+    }
+    runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
 
     F.writeJSONDocument(RUNTIME_FILES.Gui, {
         DumpId = currentDumpId,
@@ -6819,274 +7028,277 @@ function F.run()
         Changes = guiCapture.Records
     }, "runtime_gui.json", writtenFiles, false)
 
-	local runtimeValuesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeValueRecords,
-		Changes = runtimeValueRecords
-	}
+    local runtimeValuesDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeValueRecords,
+        Changes = runtimeValueRecords
+    }
 
-	local runtimeAttributesDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeAttributeRecords,
-		Changes = runtimeAttributeRecords
-	}
+    local runtimeAttributesDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeAttributeRecords,
+        Changes = runtimeAttributeRecords
+    }
 
-	local runtimeCharacterDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceCharacter,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeCharacterRecords,
-		Records = runtimeCharacterRecords
-	}
+    local runtimeCharacterDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceCharacter,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        SampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeCharacterRecords,
+        Records = runtimeCharacterRecords
+    }
 
-	local runtimeLogsDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeCaptureLogs,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeLogRecords,
-		Records = runtimeLogRecords
-	}
+    local runtimeLogsDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeCaptureLogs,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeLogRecords,
+        Records = runtimeLogRecords
+    }
 
-	local runtimeTimelineDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTrace,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeTimelineRecords,
-		Timeline = runtimeTimelineRecords
-	}
+    local runtimeTimelineDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTrace,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeTimelineRecords,
+        Timeline = runtimeTimelineRecords
+    }
 
-	local runtimeDisconnectDocument = {
-		DumpId = currentDumpId,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		ErrorMessages = runtimeErrorRecords
-	}
+    local runtimeDisconnectDocument = {
+        DumpId = currentDumpId,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        ErrorMessages = runtimeErrorRecords
+    }
 
-	local runtimeHooksDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Total = #runtimeHookState.HookRecords,
-		Records = runtimeHookState.HookRecords
-	}
+    local runtimeHooksDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceHookDiagnostics,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Total = #runtimeHookState.HookRecords,
+        Records = runtimeHookState.HookRecords
+    }
 
-	local runtimeHookIntegrityDocument = {
-		DumpId = currentDumpId,
-		Enabled = CONFIG.RuntimeTraceHookDiagnostics,
-		Active = runtimeTraceActive,
-		Frozen = runtimeHookState.Frozen,
-		FreezeInfo = runtimeHookState.FreezeInfo,
-		RollingWindow = true,
-		WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-		ElapsedSeconds = os.clock() - runtimeStartedAt,
-		Baseline = runtimeHookState.HookIntegrityBaseline,
-		LastSnapshot = runtimeHookState.HookIntegrityLast,
-		Total = #runtimeHookState.HookIntegrityRecords,
-		Records = runtimeHookState.HookIntegrityRecords
-	}
+    local runtimeHookIntegrityDocument = {
+        DumpId = currentDumpId,
+        Enabled = CONFIG.RuntimeTraceHookDiagnostics,
+        Active = runtimeTraceActive,
+        Frozen = runtimeHookState.Frozen,
+        FreezeInfo = runtimeHookState.FreezeInfo,
+        RollingWindow = true,
+        WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+        ElapsedSeconds = os.clock() - runtimeStartedAt,
+        Baseline = runtimeHookState.HookIntegrityBaseline,
+        LastSnapshot = runtimeHookState.HookIntegrityLast,
+        Total = #runtimeHookState.HookIntegrityRecords,
+        Records = runtimeHookState.HookIntegrityRecords
+    }
 
-	F.writeJSONDocument(
-		RUNTIME_FILES.Events,
-		runtimeEventsDocument,
-		"runtime_events.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.EventsGame,
-		F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
-		"runtime_events_game.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.EventsReplicator,
-		F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
-		"runtime_events_replicator.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.EventsAnalytics,
-		F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
-		"runtime_events_analytics.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.EventsOther,
-		F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
-		"runtime_events_other.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Values,
-		runtimeValuesDocument,
-		"runtime_values.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Attributes,
-		runtimeAttributesDocument,
-		"runtime_attributes.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Character,
-		runtimeCharacterDocument,
-		"runtime_character.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Logs,
-		runtimeLogsDocument,
-		"runtime_logs.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Timeline,
-		runtimeTimelineDocument,
-		"runtime_timeline.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Disconnect,
-		runtimeDisconnectDocument,
-		"runtime_disconnect.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.Hooks,
-		runtimeHooksDocument,
-		"runtime_hooks.json",
-		writtenFiles,
-		false
-	)
-	F.writeJSONDocument(
-		RUNTIME_FILES.HookIntegrity,
-		runtimeHookIntegrityDocument,
-		"runtime_hook_integrity.json",
-		writtenFiles,
-		false
-	)
+    F.writeJSONDocument(
+        RUNTIME_FILES.Events,
+        runtimeEventsDocument,
+        "runtime_events.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.EventsGame,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
+        "runtime_events_game.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.EventsReplicator,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
+        "runtime_events_replicator.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.EventsAnalytics,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
+        "runtime_events_analytics.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.EventsOther,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Other, "Other"),
+        "runtime_events_other.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Values,
+        runtimeValuesDocument,
+        "runtime_values.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Attributes,
+        runtimeAttributesDocument,
+        "runtime_attributes.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Character,
+        runtimeCharacterDocument,
+        "runtime_character.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Logs,
+        runtimeLogsDocument,
+        "runtime_logs.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Timeline,
+        runtimeTimelineDocument,
+        "runtime_timeline.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Disconnect,
+        runtimeDisconnectDocument,
+        "runtime_disconnect.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.Hooks,
+        runtimeHooksDocument,
+        "runtime_hooks.json",
+        writtenFiles,
+        false
+    )
+    F.writeJSONDocument(
+        RUNTIME_FILES.HookIntegrity,
+        runtimeHookIntegrityDocument,
+        "runtime_hook_integrity.json",
+        writtenFiles,
+        false
+    )
 
-	F.writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
+    end
+    F.writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
 
-	local totalElapsed = os.clock() - started
-	local meta = {
-		Schema = SCHEMA_NAME,
-		SchemaVersion = SCHEMA_VERSION,
-		DumpId = currentDumpId,
-		GeneratedAtUnix = os.time(),
-		Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
-			Saved = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites },
-		AdditionalIndexes = { TAGS_FILE, INTERACTIONS_FILE, PHYSICS_FILE, REMOTE_USAGE_FILE },
-		IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
-		PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
-		Game = {
-			Name = F.sanitizeString(game.Name),
-			PlaceId = game.PlaceId,
-			GameId = game.GameId,
-			JobId = F.sanitizeString(game.JobId)
-		},
-		Player = LocalPlayer and {
-			Name = F.safeName(LocalPlayer),
-			UserId = LocalPlayer.UserId
-		} or nil,
-		Stats = {
-			Instances = instanceCount,
-			DescendantInstances = nodeCount,
-			RegisteredIds = nextInstanceId,
-			RemotesAndBindables = F.totalRemoteCount(),
-			Scripts = F.totalScriptCount(),
-			LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
-			LocalScriptsDecompiled = clientDecompileStats.Succeeded,
-			LocalScriptsDecompileFailed = clientDecompileStats.Failed,
-			LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
-			ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
-			ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
-			ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
-			ModuleScriptsDecompileSkipped = moduleDecompileStats.Skipped,
-			ObjectsWithAttributes = #attributeIndex,
-			ValueBaseRecords = #valueRecords,
+    local totalElapsed = os.clock() - started
+    local meta = {
+        Schema = SCHEMA_NAME,
+        SchemaVersion = SCHEMA_VERSION,
+        DumpId = currentDumpId,
+        GeneratedAtUnix = os.time(),
+        Recovery = { Folder = recoveryState.Folder, Sequences = recoveryState.Sequences,
+            Saved = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites },
+        Selection = SELECTION,
+        OutputFolder = OUTPUT_FOLDER,
+        AdditionalIndexes = SELECTION.Structure and { TAGS_FILE, INTERACTIONS_FILE, PHYSICS_FILE } or {},
+        IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
+        PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
+        Game = {
+            Name = F.sanitizeString(game.Name),
+            PlaceId = game.PlaceId,
+            GameId = game.GameId,
+            JobId = F.sanitizeString(game.JobId)
+        },
+        Player = LocalPlayer and {
+            Name = F.safeName(LocalPlayer),
+            UserId = LocalPlayer.UserId
+        } or nil,
+        Stats = {
+            Instances = instanceCount,
+            DescendantInstances = nodeCount,
+            RegisteredIds = nextInstanceId,
+            RemotesAndBindables = F.totalRemoteCount(),
+            Scripts = F.totalScriptCount(),
+            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
+            LocalScriptsDecompiled = clientDecompileStats.Succeeded,
+            LocalScriptsDecompileFailed = clientDecompileStats.Failed,
+            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
+            ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
+            ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
+            ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
+            ModuleScriptsDecompileSkipped = moduleDecompileStats.Skipped,
+            ObjectsWithAttributes = #attributeIndex,
+            ValueBaseRecords = #valueRecords,
             GuiElements = guiCapture.SnapshotSaved,
             GuiSnapshotOmitted = guiCapture.SnapshotOmitted,
-			PlayerReferences = #playerReferences,
-			Tools = #toolRecords,
-			TaggedInstances = #tagRecords,
-			Interactions = #interactionRecords,
-			Physics = #physicsRecords,
-			RemotesObservedWithCalls = #remoteUsageRecords,
-			DuplicatePathGroups = pathStats.DuplicatePathGroups,
-			InstancesInDuplicatePaths = pathStats.InstancesInDuplicatePaths,
-			Errors = #errors,
-			Warnings = #warnings,
-			SanitizedInvalidUtf8UniqueStrings = invalidUtf8StringCount,
-			InvalidClassNames = invalidClassNameCount,
-			SnapshotSeconds = snapshotElapsed,
-			ElapsedSeconds = totalElapsed
-		},
-		LocalScriptDecompiler = {
-			Enabled = CONFIG.DecompileLocalScripts,
-			Endpoint = CONFIG.ModuleDecompilerEndpoint,
-			MaxScripts = CONFIG.LocalDecompilerMaxScripts,
-			Workers = CONFIG.LocalDecompilerWorkers,
-			TimeoutSeconds = CONFIG.LocalDecompilerTimeout,
-			OutputFolder = currentClientSourcesFolder or CLIENT_SOURCES_FOLDER,
-			Stats = clientDecompileStats
-		},
-		ModuleDecompiler = {
-			Enabled = CONFIG.DecompileModuleScripts,
-			Endpoint = CONFIG.ModuleDecompilerEndpoint,
-			Workers = CONFIG.ModuleDecompilerWorkers,
-			TimeoutSeconds = CONFIG.ModuleDecompilerTimeout,
-			Ignore = CONFIG.ModuleDecompilerIgnore,
-			RetryCount = CONFIG.ModuleDecompilerRetryCount,
-			AbortAfterTimeouts = CONFIG.ModuleDecompilerAbortAfterTimeouts,
-			OutputFolder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER,
-			Stats = moduleDecompileStats
-		},
+            PlayerReferences = #playerReferences,
+            Tools = #toolRecords,
+            TaggedInstances = #tagRecords,
+            Interactions = #interactionRecords,
+            Physics = #physicsRecords,
+            RemotesObservedWithCalls = #remoteUsageRecords,
+            DuplicatePathGroups = pathStats.DuplicatePathGroups,
+            InstancesInDuplicatePaths = pathStats.InstancesInDuplicatePaths,
+            Errors = #errors,
+            Warnings = #warnings,
+            SanitizedInvalidUtf8UniqueStrings = invalidUtf8StringCount,
+            InvalidClassNames = invalidClassNameCount,
+            SnapshotSeconds = snapshotElapsed,
+            ElapsedSeconds = totalElapsed
+        },
+        LocalScriptDecompiler = {
+            Enabled = CONFIG.DecompileLocalScripts,
+            Endpoint = CONFIG.ModuleDecompilerEndpoint,
+            MaxScripts = CONFIG.LocalDecompilerMaxScripts,
+            Workers = CONFIG.LocalDecompilerWorkers,
+            TimeoutSeconds = CONFIG.LocalDecompilerTimeout,
+            OutputFolder = currentClientSourcesFolder or CLIENT_SOURCES_FOLDER,
+            Stats = clientDecompileStats
+        },
+        ModuleDecompiler = {
+            Enabled = CONFIG.DecompileModuleScripts,
+            Endpoint = CONFIG.ModuleDecompilerEndpoint,
+            Workers = CONFIG.ModuleDecompilerWorkers,
+            TimeoutSeconds = CONFIG.ModuleDecompilerTimeout,
+            Ignore = CONFIG.ModuleDecompilerIgnore,
+            RetryCount = CONFIG.ModuleDecompilerRetryCount,
+            AbortAfterTimeouts = CONFIG.ModuleDecompilerAbortAfterTimeouts,
+            OutputFolder = currentModuleSourcesFolder or MODULE_SOURCES_FOLDER,
+            Stats = moduleDecompileStats
+        },
         GuiCapture = {
             Enabled = CONFIG.GuiCapture,
             SnapshotCount = guiCapture.SnapshotSaved,
@@ -7097,280 +7309,568 @@ function F.run()
             RuntimeChanges = #guiCapture.Records,
             Files = { GUI_FILE, RUNTIME_FILES.Gui }
         },
-		VisualCapture = {
-			Enabled = CONFIG.VisualCapture,
-			SnapshotCount = visualSnapshotSaved,
-			DynamicCount = #visualDynamicRecords,
-			SnapshotOmitted = visualSnapshotOmitted,
-			DynamicOmitted = visualDynamicOmitted,
+        VisualCapture = {
+            Enabled = CONFIG.VisualCapture,
+            SnapshotCount = visualSnapshotSaved,
+            DynamicCount = #visualDynamicRecords,
+            SnapshotOmitted = visualSnapshotOmitted,
+            DynamicOmitted = visualDynamicOmitted,
             EssentialOverflowSaved = visualEssentialOverflowSaved,
             AnimationPlaybackCount = #visualAnimationPlaybackRecords,
             AnimationPlaybackOmitted = visualAnimationPlaybackOmitted,
             TrackedAnimators = visualTrackedAnimatorCount,
-			Files = { VISUAL_ASSETS_FILE, RUNTIME_VISUAL_ASSETS_FILE }
-		},
-		RuntimeTrace = {
-			Enabled = CONFIG.RuntimeTrace,
-			Frozen = runtimeHookState.Frozen,
-			FreezeInfo = runtimeHookState.FreezeInfo,
-			PostSeconds = CONFIG.RuntimeTracePostSeconds,
-			RingWindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-			IncomingRemotes = CONFIG.RuntimeTraceIncomingRemotes,
-			OutgoingRemotes = CONFIG.RuntimeTraceOutgoingRemotes,
-			OutgoingRemoteObservationMode = "PostCallPassive",
-			DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
-			ToolAttributes = CONFIG.RuntimeTraceToolAttributes,
-			InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
-			AllValues = CONFIG.RuntimeTraceAllValues,
-			CaptureCaller = CONFIG.RuntimeCaptureCaller,
-			CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
-			CallerStackDepth = CONFIG.RuntimeCallerStackDepth,
-			CaptureInvokeReturns = CONFIG.RuntimeCaptureInvokeReturns,
-			CaptureBuffers = CONFIG.RuntimeCaptureBuffers,
-			MaxBufferBytes = CONFIG.RuntimeMaxBufferBytes,
-			MaxSerializedTableItems = CONFIG.RuntimeMaxSerializedTableItems,
-			MaxSerializedStringBytes = CONFIG.RuntimeMaxSerializedStringBytes,
-			TraceCharacter = CONFIG.RuntimeTraceCharacter,
-			CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
-			CaptureLogs = CONFIG.RuntimeCaptureLogs,
+            Files = { VISUAL_ASSETS_FILE, RUNTIME_VISUAL_ASSETS_FILE }
+        },
+        RuntimeTrace = {
+            Enabled = CONFIG.RuntimeTrace,
+            Frozen = runtimeHookState.Frozen,
+            FreezeInfo = runtimeHookState.FreezeInfo,
+            PostSeconds = CONFIG.RuntimeTracePostSeconds,
+            RingWindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+            IncomingRemotes = CONFIG.RuntimeTraceIncomingRemotes,
+            OutgoingRemotes = CONFIG.RuntimeTraceOutgoingRemotes,
+            OutgoingRemoteObservationMode = "PostCallPassive",
+            DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
+            ToolAttributes = CONFIG.RuntimeTraceToolAttributes,
+            InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
+            AllValues = CONFIG.RuntimeTraceAllValues,
+            CaptureCaller = CONFIG.RuntimeCaptureCaller,
+            CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
+            CallerStackDepth = CONFIG.RuntimeCallerStackDepth,
+            CaptureInvokeReturns = CONFIG.RuntimeCaptureInvokeReturns,
+            CaptureBuffers = CONFIG.RuntimeCaptureBuffers,
+            MaxBufferBytes = CONFIG.RuntimeMaxBufferBytes,
+            MaxSerializedTableItems = CONFIG.RuntimeMaxSerializedTableItems,
+            MaxSerializedStringBytes = CONFIG.RuntimeMaxSerializedStringBytes,
+            TraceCharacter = CONFIG.RuntimeTraceCharacter,
+            CharacterSampleInterval = CONFIG.RuntimeCharacterSampleInterval,
+            CaptureLogs = CONFIG.RuntimeCaptureLogs,
             TraceGui = CONFIG.RuntimeTraceGui,
             MaxObservedGui = CONFIG.RuntimeMaxObservedGui,
             MaxGuiChanges = CONFIG.RuntimeMaxGuiChanges,
-			MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
-			TraceHookDiagnostics = CONFIG.RuntimeTraceHookDiagnostics,
-			HookIntegrityInterval = CONFIG.RuntimeHookIntegrityInterval,
-			MaxHookRecords = CONFIG.RuntimeMaxHookRecords,
-			MaxHookIntegrityRecords = CONFIG.RuntimeMaxHookIntegrityRecords,
-			FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
-			MaxEvents = CONFIG.RuntimeMaxEvents,
-			MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
-			MaxValueChanges = CONFIG.RuntimeMaxValueChanges,
-			MaxAttributeChanges = CONFIG.RuntimeMaxAttributeChanges,
-			ObserverCaps = {
-				Remotes = CONFIG.RuntimeMaxObservedRemotes,
-				Attributes = CONFIG.RuntimeMaxObservedAttributes,
-				Values = CONFIG.RuntimeMaxObservedValues
-			},
-			ObservedObjects = runtimeObserverCounts,
-			MaxCharacterRecords = CONFIG.RuntimeMaxCharacterRecords,
-			MaxTimelineRecords = CONFIG.RuntimeMaxTimelineRecords,
-			Recorded = {
-				Events = #runtimeEventRecords,
-				GameEvents = #runtimeEventCategoryRecords.Game,
-				ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
-				AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
-				OtherEvents = #runtimeEventCategoryRecords.Other,
-				ValueChanges = #runtimeValueRecords,
-				AttributeChanges = #runtimeAttributeRecords,
-				CharacterRecords = #runtimeCharacterRecords,
+            MaxLogRecords = CONFIG.RuntimeMaxLogRecords,
+            TraceHookDiagnostics = CONFIG.RuntimeTraceHookDiagnostics,
+            HookIntegrityInterval = CONFIG.RuntimeHookIntegrityInterval,
+            MaxHookRecords = CONFIG.RuntimeMaxHookRecords,
+            MaxHookIntegrityRecords = CONFIG.RuntimeMaxHookIntegrityRecords,
+            FreezeOnDisconnectError = CONFIG.RuntimeFreezeOnDisconnectError,
+            MaxEvents = CONFIG.RuntimeMaxEvents,
+            MaxEventsPerCategory = CONFIG.RuntimeMaxEventsPerCategory,
+            MaxValueChanges = CONFIG.RuntimeMaxValueChanges,
+            MaxAttributeChanges = CONFIG.RuntimeMaxAttributeChanges,
+            ObserverCaps = {
+                Remotes = CONFIG.RuntimeMaxObservedRemotes,
+                Attributes = CONFIG.RuntimeMaxObservedAttributes,
+                Values = CONFIG.RuntimeMaxObservedValues
+            },
+            ObservedObjects = runtimeObserverCounts,
+            MaxCharacterRecords = CONFIG.RuntimeMaxCharacterRecords,
+            MaxTimelineRecords = CONFIG.RuntimeMaxTimelineRecords,
+            Recorded = {
+                Events = #runtimeEventRecords,
+                GameEvents = #runtimeEventCategoryRecords.Game,
+                ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
+                AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+                OtherEvents = #runtimeEventCategoryRecords.Other,
+                ValueChanges = #runtimeValueRecords,
+                AttributeChanges = #runtimeAttributeRecords,
+                CharacterRecords = #runtimeCharacterRecords,
                 GuiChanges = #guiCapture.Records,
-				LogRecords = #runtimeLogRecords,
-				TimelineRecords = #runtimeTimelineRecords,
-				ErrorMessages = #runtimeErrorRecords,
-				HookObservations = #runtimeHookState.HookRecords,
-				HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords
-			},
-			CategoryDroppedDueToCap = runtimeEventCategoryDropped
-		},
-		Capabilities = capabilities
-	}
+                LogRecords = #runtimeLogRecords,
+                TimelineRecords = #runtimeTimelineRecords,
+                ErrorMessages = #runtimeErrorRecords,
+                HookObservations = #runtimeHookState.HookRecords,
+                HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords
+            },
+            CategoryDroppedDueToCap = runtimeEventCategoryDropped
+        },
+        Capabilities = capabilities
+    }
 
-	F.writeTextDocument(
-		SUMMARY_FILE,
-		F.buildSummary(totalElapsed, pathStats),
-		writtenFiles,
-		true
-	)
+    F.writeTextDocument(
+        SUMMARY_FILE,
+        F.buildSummary(totalElapsed, pathStats),
+        writtenFiles,
+        true
+    )
 
-	meta.Stats.Errors = #errors
-	meta.Stats.Warnings = #warnings
-	meta.Stats.ElapsedSeconds = os.clock() - started
-	F.writeJSONDocument(META_FILE, meta, "meta.json", writtenFiles, true)
+    meta.Stats.Errors = #errors
+    meta.Stats.Warnings = #warnings
+    meta.Stats.ElapsedSeconds = os.clock() - started
+    F.writeJSONDocument(META_FILE, meta, "meta.json", writtenFiles, true)
 
-	F.writeJSONDocument(ERRORS_FILE, errors, "errors.json", writtenFiles, true)
+    F.writeJSONDocument(ERRORS_FILE, errors, "errors.json", writtenFiles, true)
 
-	local complete = true
-	for _, file in ipairs(writtenFiles) do
-		if file.Required and not file.Success then
-			complete = false
-			break
-		end
-	end
+    local complete = true
+    for _, file in ipairs(writtenFiles) do
+        if file.Required and not file.Success then
+            complete = false
+            break
+        end
+    end
 
-	local manifest = {
-		Schema = SCHEMA_NAME,
-		SchemaVersion = SCHEMA_VERSION,
-		DumpId = currentDumpId,
-		Complete = complete,
-		Status = complete and "Complete" or "Incomplete",
-		Stage = "complete",
-		HasErrors = #errors > 0,
-		HasWarnings = #warnings > 0,
-		GeneratedAtUnix = os.time(),
-		IdSemantics = "Snapshot-local",
-		Files = writtenFiles,
-		Stats = {
-			Instances = instanceCount,
-			DescendantInstances = nodeCount,
+    local manifest = {
+        Schema = SCHEMA_NAME,
+        SchemaVersion = SCHEMA_VERSION,
+        DumpId = currentDumpId,
+        Selection = SELECTION,
+        OutputFolder = OUTPUT_FOLDER,
+        Complete = complete,
+        Status = complete and "Complete" or "Incomplete",
+        Stage = "complete",
+        HasErrors = #errors > 0,
+        HasWarnings = #warnings > 0,
+        GeneratedAtUnix = os.time(),
+        IdSemantics = "Snapshot-local",
+        Files = writtenFiles,
+        Stats = {
+            Instances = instanceCount,
+            DescendantInstances = nodeCount,
             RegisteredIds = nextInstanceId,
             GuiElements = guiCapture.SnapshotSaved,
             GuiChanges = #guiCapture.Records,
-			LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
-			LocalScriptsDecompiled = clientDecompileStats.Succeeded,
-			LocalScriptsDecompileFailed = clientDecompileStats.Failed,
-			LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
-			ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
-			ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
-			ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
-			ModuleScriptsDecompileSkipped = moduleDecompileStats.Skipped,
-			Errors = #errors,
-			Warnings = #warnings
-		},
-		RuntimeTrace = {
-			Enabled = CONFIG.RuntimeTrace,
-			FilesAreAuxiliary = true,
-			RollingWindow = true,
-			WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
-			Frozen = runtimeHookState.Frozen,
-			FreezeInfo = runtimeHookState.FreezeInfo,
-			Events = #runtimeEventRecords,
-			GameEvents = #runtimeEventCategoryRecords.Game,
-			ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
-			AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
-			OtherEvents = #runtimeEventCategoryRecords.Other,
-			ValueChanges = #runtimeValueRecords,
-			AttributeChanges = #runtimeAttributeRecords,
-			CharacterRecords = #runtimeCharacterRecords,
+            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
+            LocalScriptsDecompiled = clientDecompileStats.Succeeded,
+            LocalScriptsDecompileFailed = clientDecompileStats.Failed,
+            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
+            ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
+            ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
+            ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
+            ModuleScriptsDecompileSkipped = moduleDecompileStats.Skipped,
+            Errors = #errors,
+            Warnings = #warnings
+        },
+        RuntimeTrace = {
+            Enabled = CONFIG.RuntimeTrace,
+            FilesAreAuxiliary = true,
+            RollingWindow = true,
+            WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
+            Frozen = runtimeHookState.Frozen,
+            FreezeInfo = runtimeHookState.FreezeInfo,
+            Events = #runtimeEventRecords,
+            GameEvents = #runtimeEventCategoryRecords.Game,
+            ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
+            AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+            OtherEvents = #runtimeEventCategoryRecords.Other,
+            ValueChanges = #runtimeValueRecords,
+            AttributeChanges = #runtimeAttributeRecords,
+            CharacterRecords = #runtimeCharacterRecords,
             GuiChanges = #guiCapture.Records,
-			LogRecords = #runtimeLogRecords,
-			TimelineRecords = #runtimeTimelineRecords,
-			ErrorMessages = #runtimeErrorRecords,
-			HookObservations = #runtimeHookState.HookRecords,
-			HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords,
-			CategoryDroppedDueToCap = runtimeEventCategoryDropped
-		}
-	}
+            LogRecords = #runtimeLogRecords,
+            TimelineRecords = #runtimeTimelineRecords,
+            ErrorMessages = #runtimeErrorRecords,
+            HookObservations = #runtimeHookState.HookRecords,
+            HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords,
+            CategoryDroppedDueToCap = runtimeEventCategoryDropped
+        }
+    }
 
-	local manifestEncoded, manifestEncodeOk = F.encodeJSON(manifest, "manifest.json")
-	local manifestWriteOk = F.writeSafe(MANIFEST_FILE, manifestEncoded)
-	if not manifestEncodeOk or not manifestWriteOk then
-		warn("GameStructureDump: manifest.json could not be completed.")
-	end
+    local manifestEncoded, manifestEncodeOk = F.encodeJSON(manifest, "manifest.json")
+    local manifestWriteOk = F.writeSafe(MANIFEST_FILE, manifestEncoded)
+    if not manifestEncodeOk or not manifestWriteOk then
+        warn("GameStructureDump: manifest.json could not be completed.")
+    end
 
-	currentStage = "complete"
-	if flushRecovery then flushRecovery(true) end
-	if recoveryState.Folder then
-		F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
-			DumpId = currentDumpId, Status = "Complete", Stage = currentStage,
-			Saved = recoveryState.Saved
-		}, "recovery_status.json"))
-	end
-	if writeDiagnostics then writeDiagnostics("Complete") end
-	print("dump finished")
-	print("DumpId:", currentDumpId)
-	print("Serialized instance records:", instanceCount)
-	print("Traversed descendants:", nodeCount)
-	print("Registered IDs:", nextInstanceId)
-	print("Remotes / Bindables:", F.totalRemoteCount())
-	print("Scripts:", F.totalScriptCount())
-	print("LocalScripts queued for decompile:", clientDecompileStats.Queued)
-	print("LocalScripts decompiled:", clientDecompileStats.Succeeded)
-	print("LocalScripts decompile failed:", clientDecompileStats.Failed)
-	print("ModuleScripts queued for decompile:", moduleDecompileStats.Queued)
-	print("ModuleScripts decompiled:", moduleDecompileStats.Succeeded)
-	print("ModuleScripts decompile failed:", moduleDecompileStats.Failed)
-	print("ModuleScripts decompile skipped:", moduleDecompileStats.Skipped)
-	print("Module decompile time:", string.format("%.2fs", moduleDecompileStats.ElapsedSeconds))
-	print("Attributes:", #attributeIndex)
-	print("Values:", #valueRecords)
+    currentStage = "complete"
+    if flushRecovery then flushRecovery(true) end
+    if recoveryState.Folder then
+        F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
+            DumpId = currentDumpId, Status = "Complete", Stage = currentStage,
+            Saved = recoveryState.Saved
+        }, "recovery_status.json"))
+    end
+    if writeDiagnostics then writeDiagnostics("Complete") end
+    print("dump finished")
+    print("DumpId:", currentDumpId)
+    print("Serialized instance records:", instanceCount)
+    print("Traversed descendants:", nodeCount)
+    print("Registered IDs:", nextInstanceId)
+    print("Remotes / Bindables:", F.totalRemoteCount())
+    print("Scripts:", F.totalScriptCount())
+    print("LocalScripts queued for decompile:", clientDecompileStats.Queued)
+    print("LocalScripts decompiled:", clientDecompileStats.Succeeded)
+    print("LocalScripts decompile failed:", clientDecompileStats.Failed)
+    print("ModuleScripts queued for decompile:", moduleDecompileStats.Queued)
+    print("ModuleScripts decompiled:", moduleDecompileStats.Succeeded)
+    print("ModuleScripts decompile failed:", moduleDecompileStats.Failed)
+    print("ModuleScripts decompile skipped:", moduleDecompileStats.Skipped)
+    print("Module decompile time:", string.format("%.2fs", moduleDecompileStats.ElapsedSeconds))
+    print("Attributes:", #attributeIndex)
+    print("Values:", #valueRecords)
     print("GUI elements captured:", guiCapture.SnapshotSaved)
     print("GUI entries omitted by snapshot cap:", guiCapture.SnapshotOmitted)
     print("GUI dynamic changes:", #guiCapture.Records)
-	print("Player references:", #playerReferences)
-	print("Visual assets in snapshot:", visualSnapshotSaved)
-	print("Visual assets seen during runtime:", #visualDynamicRecords)
-	print("Visual assets omitted by cap:", visualSnapshotOmitted + visualDynamicOmitted)
-	print("Tools:", #toolRecords)
-	print("Duplicate path groups:", pathStats.DuplicatePathGroups)
-	print("Errors:", #errors)
-	print("Warnings:", #warnings)
-	print("Hook observations:", #runtimeHookState.HookRecords)
-	print("Hook integrity records:", #runtimeHookState.HookIntegrityRecords)
-	print("Sanitized invalid UTF-8 unique strings:", invalidUtf8StringCount)
-	print("Time:", string.format("%.2fs", totalElapsed))
-	print("Folder:", OUTPUT_FOLDER)
+    print("Player references:", #playerReferences)
+    print("Visual assets in snapshot:", visualSnapshotSaved)
+    print("Visual assets seen during runtime:", #visualDynamicRecords)
+    print("Visual assets omitted by cap:", visualSnapshotOmitted + visualDynamicOmitted)
+    print("Tools:", #toolRecords)
+    print("Duplicate path groups:", pathStats.DuplicatePathGroups)
+    print("Errors:", #errors)
+    print("Warnings:", #warnings)
+    print("Hook observations:", #runtimeHookState.HookRecords)
+    print("Hook integrity records:", #runtimeHookState.HookIntegrityRecords)
+    print("Sanitized invalid UTF-8 unique strings:", invalidUtf8StringCount)
+    print("Time:", string.format("%.2fs", totalElapsed))
+    print("Folder:", OUTPUT_FOLDER)
 
 end
 
 function F.formatFatalError(err)
-	local message = F.sanitizeString(err)
-	if debug and type(debug.traceback) == "function" then
-		local ok, trace = pcall(debug.traceback, message, 2)
-		if ok and type(trace) == "string" then
-			return F.sanitizeString(trace)
-		end
-	end
-	return message
+    local message = F.sanitizeString(err)
+    if debug and type(debug.traceback) == "function" then
+        local ok, trace = pcall(debug.traceback, message, 2)
+        if ok and type(trace) == "string" then
+            return F.sanitizeString(trace)
+        end
+    end
+    return message
 end
 
-local runOk, runError = xpcall(F.run, F.formatFatalError)
+function F.executeDump()
+    local runOk, runError = xpcall(F.run, F.formatFatalError)
 if activeRegistry and activeRegistryToken
     and activeRegistry.__SynergyStructureDumperActive == activeRegistryToken
 then
     activeRegistry.__SynergyStructureDumperActive = nil
 end
 if not runOk then
-	snapshotBusy = false
-	F.recordError("FatalRun", nil, runError, currentStage)
-	pcall(function()
-		if flushRecovery then flushRecovery(true) end
-		if writeDiagnostics then writeDiagnostics("Crashed", { StackTrace = runError }) end
-		if recoveryState.Folder then
-			F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
-				DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
-				LastObjectPath = recoveryLastPath, Error = F.sanitizeString(runError)
-			}, "recovery_status.json"))
-		end
-		F.writeSafe(CRASH_FILE, F.encodeJSON({
-			DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
-			LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
-			StackTrace = F.sanitizeString(runError),
-			NodeCount = nodeCount, Memory = collectgarbage("count"),
-			GeneratedAtUnix = os.time(), RecoveryFolder = recoveryState.Folder
-		}, "crash_report.json"))
-	end)
+    snapshotBusy = false
+    F.recordError("FatalRun", nil, runError, currentStage)
+    pcall(function()
+        if flushRecovery then flushRecovery(true) end
+        if writeDiagnostics then writeDiagnostics("Crashed", { StackTrace = runError }) end
+        if recoveryState.Folder then
+            F.writeSafe(recoveryState.Folder .. "/status.json", F.encodeJSON({
+                DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
+                LastObjectPath = recoveryLastPath, Error = F.sanitizeString(runError)
+            }, "recovery_status.json"))
+        end
+        F.writeSafe(CRASH_FILE, F.encodeJSON({
+            DumpId = currentDumpId, Status = "LuaException", Stage = currentStage,
+            LastObjectPath = recoveryLastPath, LastObjectClass = recoveryLastClass,
+            StackTrace = F.sanitizeString(runError),
+            NodeCount = nodeCount, Memory = collectgarbage("count"),
+            GeneratedAtUnix = os.time(), RecoveryFolder = recoveryState.Folder
+        }, "crash_report.json"))
+    end)
 
-	pcall(function()
-		if runtimeTraceActive then
-			F.stopRuntimeTrace()
-		end
-	end)
+    pcall(function()
+        if runtimeTraceActive then
+            F.stopRuntimeTrace()
+        end
+    end)
 
-	pcall(function()
-		F.writeSafe(ERRORS_FILE, F.encodeJSON(errors, "errors.json"))
-		F.writeSafe(WARNINGS_FILE, F.encodeJSON(warnings, "warnings.json"))
+    pcall(function()
+        F.writeSafe(ERRORS_FILE, F.encodeJSON(errors, "errors.json"))
+        F.writeSafe(WARNINGS_FILE, F.encodeJSON(warnings, "warnings.json"))
 
-		local crashManifest = {
-			Schema = SCHEMA_NAME,
-			SchemaVersion = SCHEMA_VERSION,
-			DumpId = currentDumpId,
-			Complete = false,
-			Status = "Crashed",
-			Stage = currentStage,
-			GeneratedAtUnix = os.time(),
-			Stats = {
-				TraversedDescendants = nodeCount,
-				RegisteredIds = nextInstanceId,
-				Errors = #errors,
-				Warnings = #warnings
-			},
-			FatalError = F.sanitizeString(runError)
-		}
+        local crashManifest = {
+            Schema = SCHEMA_NAME,
+            SchemaVersion = SCHEMA_VERSION,
+            DumpId = currentDumpId,
+            Complete = false,
+            Status = "Crashed",
+            Stage = currentStage,
+            GeneratedAtUnix = os.time(),
+            Stats = {
+                TraversedDescendants = nodeCount,
+                RegisteredIds = nextInstanceId,
+                Errors = #errors,
+                Warnings = #warnings
+            },
+            FatalError = F.sanitizeString(runError)
+        }
 
-		F.writeSafe(MANIFEST_FILE, F.encodeJSON(crashManifest, "manifest.json"))
-	end)
+        F.writeSafe(MANIFEST_FILE, F.encodeJSON(crashManifest, "manifest.json"))
+    end)
 
-	warn("GameStructureDump crashed during stage:", currentStage)
-	warn(runError)
+    warn("GameStructureDump crashed during stage:", currentStage)
+    warn(runError)
 end
 
+
+    dumpRunning = false
+    if selectionStartButton and selectionStartButton.Parent then
+        selectionStartButton.Text = runOk and currentStage == "complete" and "COMPLETED" or "FAILED"
+    end
+    if selectionStatus and selectionStatus.Parent then
+        selectionStatus.Text = runOk and currentStage == "complete"
+            and ("Saved to " .. OUTPUT_FOLDER)
+            or ("Failed: " .. tostring(runError or currentStage))
+        selectionStatus.TextColor3 = runOk and currentStage == "complete"
+            and Color3.fromRGB(136, 217, 174) or Color3.fromRGB(252, 143, 143)
+    end
+end
+
+function F.showSelectionWindow()
+    local UserInputService = game:GetService("UserInputService")
+    local accent = Color3.fromRGB(149, 135, 255)
+    local mainColor = Color3.fromRGB(18, 21, 31)
+    local surfaceColor = Color3.fromRGB(29, 33, 45)
+    local subtleColor = Color3.fromRGB(146, 151, 171)
+    local lightText = Color3.fromRGB(240, 241, 248)
+    local darkBorder = Color3.fromRGB(61, 64, 80)
+
+    local function create(class, props, parent)
+        local object = Instance.new(class)
+        for name, value in pairs(props or {}) do object[name] = value end
+        if parent then object.Parent = parent end
+        return object
+    end
+    local function round(object, radius)
+        create("UICorner", { CornerRadius = UDim.new(0, radius) }, object)
+        return object
+    end
+    local function stroke(object, color, thickness)
+        create("UIStroke", { Color = color or darkBorder, Thickness = thickness or 1,
+            Transparency = 0.34 }, object)
+    end
+    local function label(parent, text, size, color, font)
+        return create("TextLabel", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+            Text = text, Font = font or Enum.Font.Gotham,
+            TextColor3 = color or lightText, TextSize = size or 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+        }, parent)
+    end
+    local function miniButton(parent, text, width, click)
+        local button = create("TextButton", {
+            Text = text, Font = Enum.Font.GothamMedium, TextSize = 12,
+            TextColor3 = lightText, BackgroundColor3 = surfaceColor,
+            AutoButtonColor = true, Size = UDim2.new(0, width, 0, 30)
+        }, parent)
+        round(button, 8)
+        button.MouseButton1Click:Connect(click)
+        return button
+    end
+
+    local root = create("ScreenGui", {
+        Name = "AverynDumperPicker", ResetOnSpawn = false,
+        IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        DisplayOrder = 2147483000
+    })
+    local parent
+    if type(gethui) == "function" then
+        local ok, gui = pcall(gethui)
+        if ok and typeof(gui) == "Instance" then parent = gui end
+    end
+    if not parent then
+        local ok, core = pcall(game.GetService, game, "CoreGui")
+        if ok then parent = core end
+    end
+    if not parent and LocalPlayer then
+        parent = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            or LocalPlayer:WaitForChild("PlayerGui", 10)
+    end
+    if not parent then
+        warn("GameStructureDump: cannot attach the configuration UI (no GUI parent).")
+        root:Destroy()
+        return
+    end
+    local previous = parent:FindFirstChild("AverynDumperPicker")
+    if previous then previous:Destroy() end
+    root.Parent = parent
+    selectionGui = root
+
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(420, 700)
+    local width = math.min(414, math.max(250, viewport.X - 24))
+    local height = math.min(610, math.max(290, viewport.Y - 24))
+
+    local panel = create("Frame", {
+        Name = "Panel", BackgroundColor3 = mainColor, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(width, height), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5), Active = true
+    }, root)
+    round(panel, 15)
+    stroke(panel)
+
+    local header = create("Frame", {
+        Name = "Header", BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(18, 9), Size = UDim2.new(1, -36, 0, 55), Active = true
+    }, panel)
+    local heading = label(header, "Game Structure Dump", 18, lightText, Enum.Font.GothamBold)
+    heading.Size = UDim2.new(1, -40, 0, 26)
+    local subheading = label(header, "Choose exactly what to capture", 12, subtleColor)
+    subheading.Position = UDim2.fromOffset(0, 28)
+    subheading.Size = UDim2.new(1, -20, 0, 20)
+    local closeButton = create("TextButton", {
+        Text = "×", Font = Enum.Font.GothamMedium, TextSize = 24,
+        TextColor3 = subtleColor, BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.fromOffset(30, 30)
+    }, header)
+    closeButton.MouseButton1Click:Connect(function() root:Destroy() end)
+
+    local presetBar = create("Frame", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(18, 70),
+        Size = UDim2.new(1, -36, 0, 34)
+    }, panel)
+    create("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left, Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder }, presetBar)
+
+    local body = create("ScrollingFrame", {
+        Name = "Options", BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = accent,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        Position = UDim2.fromOffset(18, 110),
+        Size = UDim2.new(1, -36, 1, -236)
+    }, panel)
+    create("UIListLayout", { Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder }, body)
+
+    local rows = {}
+    local definitions = {
+        { "Structure", "Complete structure", "Tree, instances, physics, tags and state" },
+        { "GUI", "GUI", "ScreenGui, frames, buttons, text, positions" },
+        { "Remotes", "Remotes", "RemoteEvents, functions and bindables" },
+        { "Scripts", "Scripts index", "LocalScripts, ModuleScripts and script paths" },
+        { "Values", "Values & attributes", "ValueBase objects and attributes" },
+        { "PlayersTools", "Players & tools", "Players, inventory, weapons and references" },
+        { "Visuals", "Visual assets", "Animations, sounds, effects and meshes" },
+        { "Runtime", "Runtime capture", "Remote calls, changes, logs and character" },
+        { "LocalSources", "Decompile LocalScripts", "Source files, if the executor supports it" },
+        { "ModuleSources", "Decompile ModuleScripts", "Source files using the configured endpoint" },
+    }
+    local function updateRow(key)
+        local elements = rows[key]
+        if not elements then return end
+        local on = SELECTION[key]
+        elements.Check.BackgroundColor3 = on and accent or surfaceColor
+        elements.Tick.Visible = on
+        elements.Row.BackgroundColor3 = on and Color3.fromRGB(34, 37, 56) or surfaceColor
+    end
+    for order, item in ipairs(definitions) do
+        local key, title, subtitle = item[1], item[2], item[3]
+        local row = create("TextButton", {
+            Name = key, Text = "", BackgroundColor3 = surfaceColor,
+            AutoButtonColor = false, Size = UDim2.new(1, -6, 0, 54),
+            LayoutOrder = order
+        }, body)
+        round(row, 9)
+        local check = create("Frame", {
+            BackgroundColor3 = accent, Size = UDim2.fromOffset(21, 21),
+            Position = UDim2.fromOffset(13, 16), BorderSizePixel = 0
+        }, row)
+        round(check, 6)
+        local tick = label(check, "✓", 15, Color3.fromRGB(15, 17, 28), Enum.Font.GothamBold)
+        tick.TextXAlignment = Enum.TextXAlignment.Center
+        local name = label(row, title, 13, lightText, Enum.Font.GothamMedium)
+        name.Position = UDim2.fromOffset(45, 7)
+        name.Size = UDim2.new(1, -55, 0, 23)
+        local description = label(row, subtitle, 10, subtleColor)
+        description.Position = UDim2.fromOffset(45, 29)
+        description.Size = UDim2.new(1, -55, 0, 16)
+        description.TextTruncate = Enum.TextTruncate.AtEnd
+        rows[key] = { Row = row, Check = check, Tick = tick }
+        row.MouseButton1Click:Connect(function()
+            if dumpRunning then return end
+            SELECTION[key] = not SELECTION[key]
+            updateRow(key)
+        end)
+        updateRow(key)
+    end
+
+    local function setPreset(mode)
+        if dumpRunning then return end
+        for key in pairs(SELECTION) do
+            SELECTION[key] = (mode == "all")
+        end
+        if mode == "gui" then SELECTION.GUI = true end
+        if mode == "runtime" then SELECTION.Runtime = true end
+        for key in pairs(SELECTION) do updateRow(key) end
+    end
+    miniButton(presetBar, "All", 46, function() setPreset("all") end)
+    miniButton(presetBar, "GUI only", 86, function() setPreset("gui") end)
+    miniButton(presetBar, "Runtime only", 104, function() setPreset("runtime") end)
+    miniButton(presetBar, "Clear", 58, function() setPreset("none") end)
+
+    local footer = create("Frame", {
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 18, 1, -118),
+        Size = UDim2.new(1, -36, 0, 108)
+    }, panel)
+    local runtimeTitle = label(footer, "Runtime duration (seconds)", 12, subtleColor)
+    runtimeTitle.Size = UDim2.new(1, -70, 0, 26)
+    local runtimeBox = create("TextBox", {
+        Text = tostring(CONFIG.RuntimeTracePostSeconds),
+        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = lightText,
+        BackgroundColor3 = surfaceColor, ClearTextOnFocus = false,
+        Size = UDim2.fromOffset(62, 28), Position = UDim2.new(1, -62, 0, 0),
+        TextXAlignment = Enum.TextXAlignment.Center
+    }, footer)
+    round(runtimeBox, 7)
+    local start = create("TextButton", {
+        Text = "START DUMP", Font = Enum.Font.GothamBold,
+        TextSize = 14, TextColor3 = Color3.fromRGB(17, 18, 26),
+        BackgroundColor3 = accent,
+        Position = UDim2.fromOffset(0, 36), Size = UDim2.new(1, 0, 0, 43),
+        AutoButtonColor = true
+    }, footer)
+    round(start, 10)
+    selectionStartButton = start
+    local status = label(footer, "", 11, subtleColor)
+    status.Position = UDim2.fromOffset(0, 82)
+    status.Size = UDim2.new(1, 0, 0, 23)
+    status.TextTruncate = Enum.TextTruncate.AtEnd
+    selectionStatus = status
+
+    start.MouseButton1Click:Connect(function()
+        if dumpRunning then return end
+        local any = false
+        for _, enabled in pairs(SELECTION) do if enabled then any = true break end end
+        if not any then
+            status.Text = "Select at least one capture category."
+            status.TextColor3 = Color3.fromRGB(255, 173, 137)
+            return
+        end
+        if SELECTION.Runtime then
+            local seconds = tonumber(runtimeBox.Text)
+            if not seconds or seconds < 0 or seconds > 600 then
+                status.Text = "Use a runtime duration from 0 to 600 seconds."
+                status.TextColor3 = Color3.fromRGB(255, 173, 137)
+                return
+            end
+            CONFIG.RuntimeTracePostSeconds = seconds
+        end
+        dumpRunning = true
+        started = os.clock()
+        start.Text = "DUMPING..."
+        start.AutoButtonColor = false
+        status.TextColor3 = subtleColor
+        status.Text = "Preparing output folder..."
+        task.spawn(F.executeDump)
+    end)
+
+    local dragging, dragOrigin, startPosition
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = input
+            dragOrigin = input.Position
+            startPosition = panel.Position
+        end
+    end)
+    local moveConnection = UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input == dragging
+            or (dragging.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseMovement)) then
+            local delta = input.Position - dragOrigin
+            panel.Position = UDim2.new(startPosition.X.Scale,
+                startPosition.X.Offset + delta.X,
+                startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+        end
+    end)
+    local endedConnection = UserInputService.InputEnded:Connect(function(input)
+        if input == dragging then dragging = nil end
+    end)
+    root.Destroying:Connect(function()
+        moveConnection:Disconnect()
+        endedConnection:Disconnect()
+    end)
+end
+
+F.showSelectionWindow()
