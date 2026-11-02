@@ -72,17 +72,24 @@ local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
 local CLIENT_SOURCES_FOLDER = OUTPUT_FOLDER .. "/localscripts"
 
-local YIELD_EVERY = 50
+local YIELD_EVERY = 128
+local lastTraversalYield = os.clock()
+local lastSelectionYield = os.clock()
 local MAX_SERIALIZE_DEPTH = 32
 
 local CONFIG = {
     RecoveryEnabled = true,
     RecoveryFlushSeconds = 3,
-    RecoverySnapshotBatch = 1000,
+    RecoverySnapshotBatch = 2500,
     RecoveryRuntimeBatch = 160,
     SkipEngineInternals = true,
-    HeavyGameYieldSeconds = 0.025,
+    HeavyGameYieldSeconds = 0,
     HeavyGameYieldAfterNodes = 12000,
+    MaxTraversalSliceSeconds = 0.014,
+    MaxSelectionSliceSeconds = 0.013,
+    ProgressLogEverySeconds = 2,
+    ProgressLogEveryNodes = 1250,
+    FastSelectiveCapture = true,
     CompactSecondaryIndexes = true,
     RecoveryIssueBatch = 80,
     DiagnosticsIntervalSeconds = 2,
@@ -160,12 +167,12 @@ local CONFIG = {
     RuntimeMaxObservedRemotes = 5000,
     RuntimeMaxObservedAttributes = 3500,
     RuntimeMaxObservedValues = 5000,
-    ProgressCheckpointEvery = 2000,
+    ProgressCheckpointEvery = 5000,
     StateIndexMaxPerBucket = 1500,
     DecompileModuleScripts = true,
     DecompileLocalScripts = true,
     LocalDecompilerMaxScripts = 500,
-    LocalDecompilerWorkers = 2,
+    LocalDecompilerWorkers = 3,
     LocalDecompilerTimeout = 10,
     LocalDecompilerAbortAfterTimeouts = 4,
     LocalDecompilerPriorityNames = {
@@ -174,14 +181,14 @@ local CONFIG = {
         "KnifeClient", "ThrowingKnifeVisualizer", "PlayerScriptsLoader"
     },
     ModuleDecompilerEndpoint = "https://decompiler.bytefall.dev/decompile",
-    ModuleDecompilerWorkers = 3,
+    ModuleDecompilerWorkers = 4,
     ModuleDecompilerTimeout = 10,
     ModuleDecompilerIgnore = { "Chat", "CoreGui", "CorePackages" },
     ModuleDecompilerRetryCount = 0,
     ModuleDecompilerRetryDelay = 0.35,
     ModuleDecompilerAbortAfterTimeouts = 3,
     ModuleDecompilerProgressEvery = 10,
-    ModuleDecompilerCheckpointEvery = 25
+    ModuleDecompilerCheckpointEvery = 60
 }
 
 local executorRequest =
@@ -414,6 +421,31 @@ local inventoryToolIds = {
 }
 
 local F = {}
+local progressLastLoggedAt = os.clock()
+local progressLastCount = 0
+local progressLastStage = nil
+
+function F.log(...)
+    print("[GameStructureDump]", ...)
+end
+
+function F.logProgress(force, stage)
+    local now = os.clock()
+    local interval = math.max(0.25, tonumber(CONFIG.ProgressLogEverySeconds) or 2)
+    if not force and now - progressLastLoggedAt < interval then
+        return
+    end
+    local elapsed = math.max(0.001, now - started)
+    local rate = math.floor((nodeCount - progressLastCount) /
+        math.max(0.001, now - progressLastLoggedAt) + 0.5)
+    F.log(string.format("%s | %d instances | %d/s | %.1fs | %d errors, %d warnings",
+        tostring(stage or currentStage), nodeCount, rate, elapsed, #errors, #warnings))
+    progressLastLoggedAt = now
+    progressLastCount = nodeCount
+    if selectionStatus and selectionStatus.Parent then
+        selectionStatus.Text = string.format("%s: %d nodes, %d/s", tostring(stage or currentStage), nodeCount, rate)
+    end
+end
 
 function F.isContinuationByte(value)
     return value ~= nil and value >= 0x80 and value <= 0xBF
@@ -617,6 +649,26 @@ function F.safeIsA(object, className)
     end)
 
     return ok and result or false
+end
+
+-- Class inheritance does not change per instance. Cache the result per Roblox class.
+-- If ClassName was unreadable, do not share an unsafe cached result.
+local isaByClass = {}
+function F.classIsA(object, objectClass, targetClass)
+    if objectClass == "Instance" and invalidClassObjects[object] then
+        return F.safeIsA(object, targetClass)
+    end
+    local classCache = isaByClass[objectClass]
+    if not classCache then
+        classCache = {}
+        isaByClass[objectClass] = classCache
+    end
+    local result = classCache[targetClass]
+    if result == nil then
+        result = F.safeIsA(object, targetClass)
+        classCache[targetClass] = result
+    end
+    return result
 end
 
 function F.safeIsDescendantOf(object, ancestor)
@@ -1565,7 +1617,7 @@ function F.captureExtendedProperties(object, output, className)
     end
 
     if GUI_CLASSES[className] then
-        if F.safeIsA(object, "GuiObject") then
+        if F.classIsA(object, className, "GuiObject") then
             capture(GUI_PROPERTY_GROUPS.GuiObject)
         end
         if className == "TextButton" or className == "ImageButton" then
@@ -1577,18 +1629,18 @@ function F.captureExtendedProperties(object, output, className)
         if className == "ImageLabel" or className == "ImageButton" then
             capture(GUI_PROPERTY_GROUPS.Image)
         end
-        if F.safeIsA(object, "UIListLayout") or F.safeIsA(object, "UIGridStyleLayout") then
+        if F.classIsA(object, className, "UIListLayout") or F.classIsA(object, className, "UIGridStyleLayout") then
             capture(EXTRA_CLASS_PROPERTIES.UIGridStyleLayout)
         end
     end
 
-    if F.safeIsA(object, "BasePart") then
+    if F.classIsA(object, className, "BasePart") then
         capture(EXTENDED_BASEPART_PROPERTIES)
     end
-    if F.safeIsA(object, "JointInstance") then
+    if F.classIsA(object, className, "JointInstance") then
         capture(PHYSICS_PROPERTY_GROUPS.JointInstance)
     end
-    if F.safeIsA(object, "Constraint") then
+    if F.classIsA(object, className, "Constraint") then
         capture(PHYSICS_PROPERTY_GROUPS.Constraint)
     end
     capture(PHYSICS_PROPERTY_GROUPS[className])
@@ -2096,7 +2148,7 @@ function F.getUsefulProperties(object, className)
     className = className or F.safeClassName(object)
 
     for _, group in ipairs(PROPERTY_GROUPS) do
-        if F.safeIsA(object, group.Class) then
+        if F.classIsA(object, className, group.Class) then
             for _, property in ipairs(group.Properties) do
                 F.captureProperty(object, data, property)
             end
@@ -4538,6 +4590,17 @@ function F.getSortedChildren(object)
         F.recordError("GetChildren", object, children)
         return {}
     end
+    if selectedSnapshotNodes then
+        local filtered = {}
+        for index = 1, #children do
+            local child = children[index]
+            if selectedSnapshotNodes[child] then
+                filtered[#filtered + 1] = child
+            end
+        end
+        children = filtered
+    end
+    if #children <= 1 then return children end
     local keys = {}
     for _, child in ipairs(children) do
         keys[child] = { Class = F.safeClassName(child):lower(), Name = F.safeName(child):lower() }
@@ -4573,7 +4636,7 @@ local dumpNode
 
 dumpNode = function(object, parentId, context)
     if (selectedSnapshotNodes and not selectedSnapshotNodes[object])
-        or (selectionGui and (object == selectionGui or F.safeIsDescendantOf(object, selectionGui))) then
+        or object == selectionGui then
         return nil, "filtered"
     end
     local previousVisitId = traversedInstances[object]
@@ -4634,17 +4697,37 @@ dumpNode = function(object, parentId, context)
     end
 
     if nodeCount % YIELD_EVERY == 0 then
-        local heavy = CONFIG.HeavyGameYieldAfterNodes or 12000
-        task.wait(nodeCount >= heavy and (CONFIG.HeavyGameYieldSeconds or 0.025) or 0)
+        F.logProgress(false, "snapshot")
+        local now = os.clock()
+        if now - lastTraversalYield >= (CONFIG.MaxTraversalSliceSeconds or 0.014) then
+            local heavy = CONFIG.HeavyGameYieldAfterNodes or 12000
+            task.wait(nodeCount >= heavy and (CONFIG.HeavyGameYieldSeconds or 0) or 0)
+            lastTraversalYield = os.clock()
+        end
     end
     local source = F.resolveInventorySource(object, context and context.InventorySource or nil)
     local parentToolState = context and context.ToolState or nil
 
     classCounts[className] = (classCounts[className] or 0) + 1
 
-    local attributes = F.getAttributes(object)
-    local tags = F.getTags(object)
-    local properties = F.getUsefulProperties(object, className)
+    -- A filtered export needs full data for selected classes, but its
+    -- ancestor-only nodes do not need expensive visual/physics property reads.
+    local isValue = SELECTION.Values and F.classIsA(object, className, "ValueBase")
+    local isVisual = SELECTION.Visuals and F.isVisualAsset(object, className)
+    local isRemote = REMOTE_BUCKETS[className] ~= nil
+    local isScript = SCRIPT_BUCKETS[className] ~= nil
+    local needsAttributes = not CONFIG.FastSelectiveCapture or SELECTION.Structure
+        or SELECTION.Values or SELECTION.PlayersTools or SELECTION.Runtime
+        or (SELECTION.Remotes and isRemote) or isVisual
+    local needsTags = not CONFIG.FastSelectiveCapture or SELECTION.Structure
+        or (SELECTION.Remotes and isRemote) or isValue or isVisual
+    local needsProperties = not CONFIG.FastSelectiveCapture or SELECTION.Structure
+        or SELECTION.PlayersTools or isVisual or isValue
+        or (SELECTION.GUI and GUI_CLASSES[className])
+        or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources) and isScript)
+    local attributes = needsAttributes and F.getAttributes(object) or {}
+    local tags = needsTags and F.getTags(object) or {}
+    local properties = needsProperties and F.getUsefulProperties(object, className) or {}
 
     if SELECTION.Structure and #tags > 0 then
         for _, tag in ipairs(tags) do tagCounts[tag] = (tagCounts[tag] or 0) + 1 end
@@ -4691,7 +4774,7 @@ dumpNode = function(object, parentId, context)
         F.captureAnimatorPlayback(object, "Snapshot")
     end
 
-    if CONFIG.VisualCapture and F.isVisualAsset(object, className) then
+    if CONFIG.VisualCapture and isVisual then
         if #visualSnapshotRecords < math.max(0, CONFIG.VisualMaxSnapshotEntries) then
             visualSnapshotSaved = visualSnapshotSaved + 1
             visualSnapshotRecords[#visualSnapshotRecords + 1] = F.makeVisualRecord(
@@ -5970,7 +6053,7 @@ function F.decompileQueuedClientScripts(scriptsDocument)
     local workerCount = math.max(1, math.min(total, math.floor(tonumber(CONFIG.LocalDecompilerWorkers) or 2)))
     local timeoutSeconds = math.max(0.1, tonumber(CONFIG.LocalDecompilerTimeout) or 10)
     local abortAfter = math.max(1, math.floor(tonumber(CONFIG.LocalDecompilerAbortAfterTimeouts) or 4))
-    print("local script decompile candidates:", total, "workers:", workerCount)
+    F.log("LocalScript decompile candidates:", total, "workers:", workerCount)
 
     for _ = 1, workerCount do
         activeWorkers = activeWorkers + 1
@@ -6004,10 +6087,11 @@ function F.decompileQueuedClientScripts(scriptsDocument)
                         F.applyClientDecompileResult(entry, result)
                     end
                     completed = completed + 1
-                    if completed % 20 == 0 or completed == total then
-                        print("local script decompile:", completed, "/", total)
+                    if completed % 10 == 0 or completed == total then
+                        F.log("LocalScripts decompiled:", completed, "/", total,
+                            "success:", clientDecompileStats.Succeeded, "failed:", clientDecompileStats.Failed)
                     end
-                    if scriptsDocument and completed % 25 == 0 then
+                    if scriptsDocument and completed % 75 == 0 then
                         pcall(function()
                             F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_local_checkpoint.json", nil, false)
                             checkpointStage("decompile_localscripts")
@@ -6112,7 +6196,7 @@ function F.decompileQueuedModules(scriptsDocument)
     local timeoutSeconds = math.max(0.1, tonumber(CONFIG.ModuleDecompilerTimeout) or 10)
     local abortAfterTimeouts = math.max(1, math.floor(tonumber(CONFIG.ModuleDecompilerAbortAfterTimeouts) or workerCount))
 
-    print("module decompile candidates:", total, "workers:", workerCount, "timeout:", timeoutSeconds)
+    F.log("ModuleScript decompile candidates:", total, "workers:", workerCount, "timeout:", timeoutSeconds)
 
     for _ = 1, workerCount do
         activeWorkers = activeWorkers + 1
@@ -6156,7 +6240,8 @@ function F.decompileQueuedModules(scriptsDocument)
 
                     completed = completed + 1
                     if completed % progressEvery == 0 or completed == total then
-                        print("module decompile:", completed, "/", total)
+                        F.log("ModuleScripts decompiled:", completed, "/", total,
+                            "success:", moduleDecompileStats.Succeeded, "failed:", moduleDecompileStats.Failed)
                     end
 
                     if scriptsDocument and completed % checkpointEvery == 0 then
@@ -6194,6 +6279,15 @@ function F.decompileQueuedModules(scriptsDocument)
 end
 
 checkpointStage = function(stage)
+    local changed = currentStage ~= stage
+    if changed then
+        local elapsed = os.clock() - started
+        if progressLastStage then
+            F.log(string.format("Stage %s completed after %.1fs (%d nodes)", progressLastStage, elapsed, nodeCount))
+        end
+        F.log(string.format("Stage: %s | %.1fs | %d nodes", tostring(stage), elapsed, nodeCount))
+        progressLastStage = stage
+    end
     currentStage = stage
     if selectionStatus and selectionStatus.Parent then
         selectionStatus.Text = "Stage: " .. tostring(stage) .. " · " .. OUTPUT_FOLDER
@@ -6241,6 +6335,8 @@ function F.writeJSONDocument(path, data, label, writtenFiles, required)
     local writeSuccess = F.writeSafe(path, encoded)
     local success = encodeSuccess and writeSuccess
 
+    F.log(string.format("File: %s | %.1f KB | %s", F.fileNameFromPath(path), bytes / 1024,
+        success and "OK" or "FAILED"))
     if writtenFiles then
         table.insert(writtenFiles, {
             File = F.fileNameFromPath(path),
@@ -6265,6 +6361,8 @@ function F.writeTextDocument(path, contents, writtenFiles, required)
     local bytes = #contents
     local success = F.writeSafe(path, contents)
 
+    F.log(string.format("File: %s | %.1f KB | %s", F.fileNameFromPath(path), bytes / 1024,
+        success and "OK" or "FAILED"))
     if writtenFiles then
         table.insert(writtenFiles, {
             File = F.fileNameFromPath(path),
@@ -6575,17 +6673,23 @@ function F.finishRuntimeTraceAfterSnapshot()
 
     local postSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
     if postSeconds > 0 and not runtimeHookState.Frozen then
-        print(
-            "snapshot finished; runtime trace remains active for up to",
-            postSeconds,
-            "more seconds"
-        )
-
+        F.log(string.format("Runtime capture: %gs remaining after snapshot", postSeconds))
         local waitStarted = os.clock()
+        local nextReportAt = 0
         while runtimeTraceActive
             and not runtimeHookState.Frozen
             and os.clock() - waitStarted < postSeconds
         do
+            local elapsed = os.clock() - waitStarted
+            if elapsed >= nextReportAt then
+                local remain = math.max(0, math.ceil(postSeconds - elapsed))
+                F.log(string.format("Runtime: %ds left | %d events | %d value changes | %d attribute changes",
+                    remain, #runtimeEventRecords, #runtimeValueRecords, #runtimeAttributeRecords))
+                if selectionStatus and selectionStatus.Parent then
+                    selectionStatus.Text = string.format("Runtime: %ds left (%d events)", remain, #runtimeEventRecords)
+                end
+                nextReportAt = elapsed + 10
+            end
             task.wait(0.1)
         end
     end
@@ -6620,6 +6724,14 @@ function F.prepareSelectedSnapshotNodes()
     selectedSnapshotNodes = nil
     if SELECTION.Structure then return end
     local allowed = setmetatable({ [game] = true }, { __mode = "k" })
+    local function hasAttributes(object)
+        local ok, attrs = pcall(function() return object:GetAttributes() end)
+        if not ok then
+            F.recordError("GetAttributes", object, attrs)
+            return false
+        end
+        return next(attrs) ~= nil
+    end
     local childrenOk, children = pcall(function() return game:GetChildren() end)
     if not childrenOk then error("Cannot scan game children: " .. tostring(children)) end
     local stack = children
@@ -6632,7 +6744,7 @@ function F.prepareSelectedSnapshotNodes()
             seen[object] = true
             local className = F.safeClassName(object)
             local parentOk, parent = pcall(function() return object.Parent end)
-            local isIgnored = (selectionGui and (object == selectionGui or F.safeIsDescendantOf(object, selectionGui)))
+            local isIgnored = (object == selectionGui)
                 or (CONFIG.SkipEngineInternals and parentOk and parent == game
                     and (F.safeName(object) == "CoreGui" or F.safeName(object) == "CorePackages"))
             if not isIgnored then
@@ -6640,8 +6752,8 @@ function F.prepareSelectedSnapshotNodes()
                     or (SELECTION.Remotes and REMOTE_BUCKETS[className])
                     or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources)
                         and SCRIPT_BUCKETS[className])
-                    or (SELECTION.Values and (F.safeIsA(object, "ValueBase")
-                        or next(F.getAttributes(object)) ~= nil))
+                    or (SELECTION.Values and (F.classIsA(object, className, "ValueBase")
+                        or hasAttributes(object)))
                     or (SELECTION.PlayersTools and
                         (className == "Player" or className == "PlayerGui" or className == "Backpack"
                         or className == "Tool" or className == "Humanoid" or className == "StarterGear"))
@@ -6661,7 +6773,20 @@ function F.prepareSelectedSnapshotNodes()
             end
         end
         visited = visited + 1
-        if visited % 200 == 0 then task.wait() end
+        if visited % 256 == 0 then
+            local now = os.clock()
+            if now - lastSelectionYield >= (CONFIG.MaxSelectionSliceSeconds or 0.013) then
+                if now - progressLastLoggedAt >= (CONFIG.ProgressLogEverySeconds or 2) then
+                    F.log(string.format("Selecting nodes: %d scanned | %.1fs", visited, now - started))
+                    progressLastLoggedAt = now
+                    if selectionStatus and selectionStatus.Parent then
+                        selectionStatus.Text = string.format("Selecting: %d inspected", visited)
+                    end
+                end
+                task.wait()
+                lastSelectionYield = os.clock()
+            end
+        end
     end
     selectedSnapshotNodes = allowed
 end
@@ -6681,6 +6806,13 @@ function F.run()
         activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
         activeRegistry.__SynergyStructureDumperActive = activeRegistryToken
     end
+    local chosen = {}
+    for name, enabled in pairs(SELECTION) do
+        if enabled then chosen[#chosen + 1] = name end
+    end
+    table.sort(chosen)
+    F.log("Starting dump | " .. table.concat(chosen, ", "))
+    F.log("Adaptive frame yielding enabled; recovery checkpoints and full final exports remain active")
     CONFIG.GuiCapture = SELECTION.GUI
     CONFIG.VisualCapture = SELECTION.Visuals
     CONFIG.RuntimeTrace = SELECTION.Runtime
@@ -6699,6 +6831,7 @@ function F.run()
         warn("GameStructureDump: " .. tostring(folderError))
         return
     end
+    F.log("Output folder: " .. OUTPUT_FOLDER)
 
     local guidOk, guid = pcall(function()
         return HttpService:GenerateGUID(false)
@@ -6778,7 +6911,7 @@ function F.run()
             }, "recovery_status.json"))
         end
         if writeDiagnostics then writeDiagnostics("Complete") end
-        print("Runtime-only dump finished:", OUTPUT_FOLDER)
+        F.log("Runtime-only dump finished:", OUTPUT_FOLDER)
         return
     end
 
@@ -6844,6 +6977,7 @@ function F.run()
         end
     end
 
+    F.logProgress(true, "snapshot complete")
     snapshotFinalized = true
     checkpointStage("finalize_indexes")
     F.finalizeIndexes()
@@ -7480,6 +7614,7 @@ function F.run()
         }, "recovery_status.json"))
     end
     if writeDiagnostics then writeDiagnostics("Complete") end
+    F.log("All exports finished, finalizing statistics")
     print("dump finished")
     print("DumpId:", currentDumpId)
     print("Serialized instance records:", instanceCount)
@@ -7585,11 +7720,14 @@ if not runOk then
         F.writeSafe(MANIFEST_FILE, F.encodeJSON(crashManifest, "manifest.json"))
     end)
 
+    F.log("Crash report saved, last object:", recoveryLastPath)
     warn("GameStructureDump crashed during stage:", currentStage)
     warn(runError)
 end
 
 
+    F.log("Dump finished with status:", runOk and currentStage == "complete" and "COMPLETE" or "FAILED",
+        "elapsed:", string.format("%.2fs", os.clock() - started), "folder:", OUTPUT_FOLDER)
     dumpRunning = false
     if selectionStartButton and selectionStartButton.Parent then
         selectionStartButton.Text = runOk and currentStage == "complete" and "COMPLETED" or "FAILED"
@@ -7810,6 +7948,12 @@ function F.showSelectionWindow()
         start.AutoButtonColor = false
         status.TextColor3 = subtleColor
         status.Text = "Preparing output folder..."
+        progressLastLoggedAt = os.clock()
+        progressLastCount = 0
+        progressLastStage = nil
+        lastTraversalYield = os.clock()
+        lastSelectionYield = os.clock()
+        F.log("START pressed. Open the executor / Roblox console to see progress.")
         task.spawn(F.executeDump)
     end)
 
