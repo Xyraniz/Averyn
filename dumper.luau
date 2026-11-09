@@ -12,10 +12,15 @@ local SELECTION = {
     Scripts = false,
     Values = false,
     PlayersTools = false,
+    AvatarInspection = false,
     Visuals = false,
     Runtime = false,
     LocalSources = false,
-    ModuleSources = false
+    ModuleSources = false,
+    CombatResearch = false,
+    ClosureResearch = false,
+    OutgoingHook = false,
+    CallbackTrace = false
 }
 local selectionGui
 local selectionStatus
@@ -23,7 +28,7 @@ local selectionStartButton
 local selectedSnapshotNodes
 local dumpRunning = false
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.6
+local SCHEMA_VERSION = 3.8
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -40,6 +45,7 @@ local ATTRIBUTES_FILE = OUTPUT_FOLDER .. "/attributes.json"
 local TOOLS_FILE = OUTPUT_FOLDER .. "/tools.json"
 local VALUES_FILE = OUTPUT_FOLDER .. "/values.json"
 local PLAYERS_FILE = OUTPUT_FOLDER .. "/players.json"
+local AVATAR_INSPECTION_FILE = OUTPUT_FOLDER .. "/avatar_inspection.json"
 local PLAYER_REFERENCES_FILE = OUTPUT_FOLDER .. "/player_references.json"
 local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
 local RUNTIME_FILES = {
@@ -69,6 +75,10 @@ local TAGS_FILE = OUTPUT_FOLDER .. "/tags.json"
 local INTERACTIONS_FILE = OUTPUT_FOLDER .. "/interactions.json"
 local PHYSICS_FILE = OUTPUT_FOLDER .. "/physics.json"
 local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
+local COMBAT_RESEARCH_FILE = OUTPUT_FOLDER .. "/combat_research.json"
+local COMBAT_EVENTS_FILE = OUTPUT_FOLDER .. "/combat_events.json"
+local SOURCE_REFERENCES_FILE = OUTPUT_FOLDER .. "/source_references.json"
+local CONNECTION_RESEARCH_FILE = OUTPUT_FOLDER .. "/connection_research.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
 local CLIENT_SOURCES_FOLDER = OUTPUT_FOLDER .. "/localscripts"
 
@@ -114,7 +124,15 @@ local CONFIG = {
     VisualSecondPassDelay = 0.35,
     RuntimeRingWindowSeconds = 30,
     RuntimeTraceIncomingRemotes = true,
-    RuntimeTraceOutgoingRemotes = true,
+    RuntimeTraceOutgoingRemotes = false,
+    CombatMaxEvents = 14000,
+    CombatMaxSourceReferences = 14000,
+    CombatMaxReferencesPerScript = 110,
+    CombatMaxToolDescendants = 150,
+    CombatMaxRemoteCandidates = 6000,
+    CombatMaxConnectionRecords = 800,
+    CombatMaxClosuresPerTool = 24,
+    CombatMaxUpvalueNodes = 900,
     RuntimeTraceDynamicRemotes = true,
     RuntimeTraceToolAttributes = true,
     RuntimeTraceInterestingAttributes = true,
@@ -188,7 +206,25 @@ local CONFIG = {
     ModuleDecompilerRetryDelay = 0.35,
     ModuleDecompilerAbortAfterTimeouts = 3,
     ModuleDecompilerProgressEvery = 10,
-    ModuleDecompilerCheckpointEvery = 60
+    ModuleDecompilerCheckpointEvery = 60,
+    V38MaxObserved = 1800,
+    V38MaxEvents = 12000,
+    V38MaxAssetIds = 7000,
+    V38MaxReferencesPerAsset = 48,
+    V38MaxTags = 100,
+    V38MaxDependencyEdges = 6000,
+    V38MaxNestedDepth = 4,
+    V38MaxNestedItems = 40,
+    V38MaxAnimationMarkers = 16,
+    V38MaxMarkerListeners = 1200,
+    V38DiscoverAnimationMarkers = true,
+    V38MaxMarkerAssetLookups = 18,
+    V38MaxMarkerLookupConcurrent = 2,
+    V38EffectGroupWindow = 0.45,
+    V38CameraSampleSeconds = 0.2,
+    V38PoseTranslationTolerance = 0.12,
+    V38PoseRotationTolerance = 0.12,
+    V38CaptureCallbackCalls = false
 }
 
 local executorRequest =
@@ -223,6 +259,8 @@ local capabilities = {
     checkcaller = type(checkcaller) == "function",
     getcallingscript = type(getcallingscript) == "function",
     getconnections = type(getconnections) == "function",
+    getupvalues = type(debug) == "table" and type(debug.getupvalues) == "function",
+    getupvalue = type(debug) == "table" and type(debug.getupvalue) == "function",
     debug_info = debug ~= nil and type(debug.info) == "function",
     buffer = type(buffer) == "table",
     buffer_len = type(buffer) == "table" and type(buffer.len) == "function",
@@ -353,8 +391,19 @@ local recoveryState = { Folder = nil, Buffers = { Snapshot = {}, Runtime = {}, I
 local remoteUsageByKey = {}
 local remoteUsageRecords = {}
 local remoteUsageOverflow = 0
+local combatEvents = {}
+local combatDropped = 0
+local combatSourceReferences = {}
+local combatSourceRefsDropped = 0
+local combatObservedTools = setmetatable({}, { __mode = "k" })
+local combatObservedRemotes = setmetatable({}, { __mode = "k" })
+local combatToolCounts = { Tools = 0, Activations = 0, Equips = 0 }
+local combatRemoteLifecycleCounts = { Added = 0, Removed = 0, Renamed = 0, Reparented = 0 }
+local combatObservedRemoteCount = 0
+local combatConnectionRecords = {}
+local combatConnectionDropped = 0
 local REMOTE_USAGE_LIMIT = 6000
-local REMOTE_USAGE_SAMPLE_LIMIT = 2
+local REMOTE_USAGE_SAMPLE_LIMIT = 12
 local tagRecords = {}
 local tagCounts = {}
 local tagOmitted = 0
@@ -363,7 +412,7 @@ local interactionOmitted = 0
 local physicsRecords = {}
 local physicsOmitted = 0
 local INTERACTION_CLASSES = { ProximityPrompt = true, ClickDetector = true, DragDetector = true, TouchTransmitter = true, Seat = true, VehicleSeat = true, SpawnLocation = true }
-local PHYSICS_CLASSES = { Weld = true, ManualWeld = true, Snap = true, Motor6D = true, WeldConstraint = true, BallSocketConstraint = true, HingeConstraint = true, PrismaticConstraint = true, RodConstraint = true, RopeConstraint = true, SpringConstraint = true, CylindricalConstraint = true, AlignPosition = true, AlignOrientation = true, LinearVelocity = true, AngularVelocity = true, VectorForce = true, Torque = true, LineForce = true, PlaneConstraint = true, NoCollisionConstraint = true, Attachment = true, Bone = true }
+local PHYSICS_CLASSES = { Weld = true, ManualWeld = true, Snap = true, Motor6D = true, WeldConstraint = true, BallSocketConstraint = true, HingeConstraint = true, PrismaticConstraint = true, RodConstraint = true, RopeConstraint = true, SpringConstraint = true, CylindricalConstraint = true, AlignPosition = true, AlignOrientation = true, LinearVelocity = true, AngularVelocity = true, VectorForce = true, Torque = true, LineForce = true, PlaneConstraint = true, NoCollisionConstraint = true, Attachment = true, Bone = true, RigidConstraint = true, AnimationConstraint = true, UniversalConstraint = true, TorsionSpringConstraint = true }
 
 local remoteIndex = {
     RemoteEvents = {},
@@ -802,6 +851,84 @@ function F.stableKey(value)
     end
 
     return valueType .. ":" .. tostring(value)
+end
+
+-- A portable comparison checksum: not cryptographic and not a security identifier.
+-- Multiplication remains within the exact integer range of Luau's number type.
+function F.comparisonDigest(value)
+    if type(value) ~= "string" then return nil end
+    local h1, h2 = 0, 1
+    for index = 1, #value do
+        local byte = string.byte(value, index)
+        h1 = (h1 * 131 + byte) % 4294967296
+        h2 = (h2 + byte) % 65521
+    end
+    return string.format("%08x-%04x-%d", h1, h2, #value)
+end
+
+function F.normalizeComparisonPath(path)
+    return tostring(path or ""):gsub("[^%.]+", function(part)
+        if #part == 64 and part:match("^[a-fA-F0-9]+$") then
+            return "<HEX64>"
+        end
+        return part
+    end)
+end
+
+function F.researchEvent(kind, object, details)
+    if not SELECTION.CombatResearch then return end
+    if #combatEvents >= CONFIG.CombatMaxEvents then
+        combatDropped = combatDropped + 1
+        return
+    end
+    local className = object and F.safeClassName(object) or nil
+    local path = object and F.safeFullName(object) or nil
+    combatEvents[#combatEvents + 1] = {
+        Time = os.clock() - runtimeStartedAt,
+        Kind = kind,
+        Name = object and F.safeName(object) or nil,
+        ClassName = className,
+        Path = path,
+        NormalizedPath = path and F.normalizeComparisonPath(path) or nil,
+        Details = details
+    }
+end
+
+function F.scanSourceReferences(source, record, file)
+    if not SELECTION.CombatResearch or type(source) ~= "string" or not record then return end
+    local tokens = {
+        "gunkill", "shootlocalbeam", "fireserver", "invokeserver",
+        "packages.net", "onclientevent", "weapon", "gunclient",
+        "raycast", "shoot", "projectile", "bullet", "ammo",
+        "register", "getupvalue", "getconnections", "matchstate"
+    }
+    local lines = string.split(source, "\n")
+    local perScript = 0
+    for index, line in ipairs(lines) do
+        if #combatSourceReferences >= CONFIG.CombatMaxSourceReferences then
+            combatSourceRefsDropped = combatSourceRefsDropped + 1
+            return
+        end
+        local lower = string.lower(line)
+        local matched = {}
+        for _, token in ipairs(tokens) do
+            if string.find(lower, token, 1, true) then matched[#matched + 1] = token end
+        end
+        if #matched > 0 then
+            combatSourceReferences[#combatSourceReferences + 1] = {
+                ScriptPath = record.Path,
+                ScriptClass = record.ClassName,
+                File = file,
+                Line = index,
+                Matches = matched,
+                Text = line:sub(1, 300),
+                Previous = index > 1 and lines[index - 1]:sub(1, 200) or nil,
+                Next = index < #lines and lines[index + 1]:sub(1, 200) or nil
+            }
+            perScript = perScript + 1
+            if perScript >= CONFIG.CombatMaxReferencesPerScript then break end
+        end
+    end
 end
 
 function F.bytesToHex(value)
@@ -1333,7 +1460,7 @@ function F.getTags(object)
     return tags
 end
 
-local PROPERTY_GROUPS = {
+F.PROPERTY_GROUPS = {
     {
         Class = "ValueBase",
         Properties = { "Value" }
@@ -1427,7 +1554,7 @@ local PROPERTY_GROUPS = {
 -- Optional properties are always read under pcall.  Unsupported, protected and
 -- newer engine properties are omitted without treating a version difference as
 -- an error.  Existing property maps and output field names stay unchanged.
-local GUI_CLASSES = {
+F.GUI_CLASSES = {
     ScreenGui = true, BillboardGui = true, SurfaceGui = true, Frame = true,
     CanvasGroup = true, ScrollingFrame = true, TextLabel = true,
     TextButton = true, TextBox = true, ImageLabel = true, ImageButton = true,
@@ -1439,11 +1566,11 @@ local GUI_CLASSES = {
     UIGridStyleLayout = true, UIComponent = true, LocalizationTable = true
 }
 
-local TEXT_GUI_CLASSES = {
+F.TEXT_GUI_CLASSES = {
     TextLabel = true, TextButton = true, TextBox = true
 }
 
-local GUI_PROPERTY_GROUPS = {
+F.GUI_PROPERTY_GROUPS = {
     GuiObject = {
         "Visible", "Active", "Interactable", "Selectable", "SelectionOrder",
         "SelectionImageObject", "NextSelectionUp", "NextSelectionDown",
@@ -1469,7 +1596,7 @@ local GUI_PROPERTY_GROUPS = {
     }
 }
 
-local EXTRA_CLASS_PROPERTIES = {
+F.EXTRA_CLASS_PROPERTIES = {
     ScreenGui = { "Enabled", "DisplayOrder", "IgnoreGuiInset", "ResetOnSpawn", "ZIndexBehavior", "ScreenInsets", "ClipToDeviceSafeArea", "SafeAreaCompatibility", "OnTopOfCoreBlur" },
     BillboardGui = { "Enabled", "Adornee", "AlwaysOnTop", "Brightness", "LightInfluence", "MaxDistance", "Size", "SizeOffset", "StudsOffset", "StudsOffsetWorldSpace", "ExtentsOffset", "ExtentsOffsetWorldSpace", "PlayerToHideFrom", "ClipsDescendants", "Active", "ZIndexBehavior", "ResetOnSpawn" },
     SurfaceGui = { "Enabled", "Adornee", "AlwaysOnTop", "Brightness", "LightInfluence", "CanvasSize", "Face", "PixelsPerStud", "PixelsPerStuds", "SizingMode", "ZOffset", "ToolPunchThroughDistance", "Active", "ZIndexBehavior", "ResetOnSpawn" },
@@ -1580,7 +1707,7 @@ local EXTRA_CLASS_PROPERTIES = {
     NumberValue = {}
 }
 
-local PHYSICS_PROPERTY_GROUPS = {
+F.PHYSICS_PROPERTY_GROUPS = {
     JointInstance = { "Part0", "Part1", "C0", "C1", "Enabled", "Active" },
     Constraint = { "Attachment0", "Attachment1", "Enabled", "Active", "Visible", "Color" },
     Motor6D = { "Transform", "CurrentAngle", "DesiredAngle", "MaxVelocity" },
@@ -1600,7 +1727,7 @@ local PHYSICS_PROPERTY_GROUPS = {
     PlaneConstraint = { "Attachment0", "Attachment1" }
 }
 
-local EXTENDED_BASEPART_PROPERTIES = {
+F.EXTENDED_BASEPART_PROPERTIES = {
     "AssemblyLinearVelocity", "AssemblyAngularVelocity", "AssemblyMass",
     "AssemblyCenterOfMass", "Massless", "CollisionGroup", "CastShadow",
     "Reflectance", "MaterialVariant", "CustomPhysicalProperties", "RootPriority",
@@ -1616,35 +1743,35 @@ function F.captureExtendedProperties(object, output, className)
         end
     end
 
-    if GUI_CLASSES[className] then
+    if F.GUI_CLASSES[className] then
         if F.classIsA(object, className, "GuiObject") then
-            capture(GUI_PROPERTY_GROUPS.GuiObject)
+            capture(F.GUI_PROPERTY_GROUPS.GuiObject)
         end
         if className == "TextButton" or className == "ImageButton" then
-            capture(GUI_PROPERTY_GROUPS.GuiButton)
+            capture(F.GUI_PROPERTY_GROUPS.GuiButton)
         end
-        if TEXT_GUI_CLASSES[className] then
-            capture(GUI_PROPERTY_GROUPS.Text)
+        if F.TEXT_GUI_CLASSES[className] then
+            capture(F.GUI_PROPERTY_GROUPS.Text)
         end
         if className == "ImageLabel" or className == "ImageButton" then
-            capture(GUI_PROPERTY_GROUPS.Image)
+            capture(F.GUI_PROPERTY_GROUPS.Image)
         end
         if F.classIsA(object, className, "UIListLayout") or F.classIsA(object, className, "UIGridStyleLayout") then
-            capture(EXTRA_CLASS_PROPERTIES.UIGridStyleLayout)
+            capture(F.EXTRA_CLASS_PROPERTIES.UIGridStyleLayout)
         end
     end
 
     if F.classIsA(object, className, "BasePart") then
-        capture(EXTENDED_BASEPART_PROPERTIES)
+        capture(F.EXTENDED_BASEPART_PROPERTIES)
     end
     if F.classIsA(object, className, "JointInstance") then
-        capture(PHYSICS_PROPERTY_GROUPS.JointInstance)
+        capture(F.PHYSICS_PROPERTY_GROUPS.JointInstance)
     end
     if F.classIsA(object, className, "Constraint") then
-        capture(PHYSICS_PROPERTY_GROUPS.Constraint)
+        capture(F.PHYSICS_PROPERTY_GROUPS.Constraint)
     end
-    capture(PHYSICS_PROPERTY_GROUPS[className])
-    capture(EXTRA_CLASS_PROPERTIES[className])
+    capture(F.PHYSICS_PROPERTY_GROUPS[className])
+    capture(F.EXTRA_CLASS_PROPERTIES[className])
 
     if className == "LocalizationTable" then
         local ok, entries = pcall(function() return object:GetEntries() end)
@@ -1662,7 +1789,7 @@ end
 
 -- Resource catalog based exclusively on Roblox class types. No names, effect
 -- folders, asset IDs or game-specific paths are hardcoded.
-local VISUAL_CLASSES = {
+F.VISUAL_CLASSES = {
     ParticleEmitter = true, Beam = true, Trail = true,
     Fire = true, Smoke = true, Sparkles = true, Explosion = true,
     Attachment = true, Bone = true, WrapLayer = true, WrapTarget = true,
@@ -1671,7 +1798,7 @@ local VISUAL_CLASSES = {
     SphereHandleAdornment = true, CylinderHandleAdornment = true,
     Decal = true, Texture = true, SurfaceAppearance = true,
     SpecialMesh = true, BlockMesh = true, CylinderMesh = true, FileMesh = true,
-    Sound = true, SoundGroup = true, EqualizerSoundEffect = true,
+    Sound = true, SoundGroup = true, MaterialVariant = true, AudioPlayer = true, AudioEmitter = true, AudioListener = true, Wire = true, EqualizerSoundEffect = true,
     ReverbSoundEffect = true, EchoSoundEffect = true, ChorusSoundEffect = true,
     DistortionSoundEffect = true, FlangeSoundEffect = true,
     CompressorSoundEffect = true, PitchShiftSoundEffect = true,
@@ -1704,7 +1831,12 @@ local VISUAL_CLASSES = {
     LinearVelocity = true, VectorForce = true, Torque = true
 }
 
-local VISUAL_PROPERTIES = {
+F.VISUAL_PROPERTIES = {
+    MaterialVariant = { "BaseMaterial", "ColorMap", "NormalMap", "MetalnessMap", "RoughnessMap", "StudsPerTile", "Pattern", "MaterialPattern", "OverrideStudsPerTile" },
+    AudioPlayer = { "AssetId", "AutoLoad", "IsReady", "Looping", "Playing", "PlaybackSpeed", "TimePosition", "Volume" },
+    AudioEmitter = { "AudioInteractionGroup", "DistanceAttenuation", "AngleAttenuation", "AcousticSimulationEnabled" },
+    AudioListener = { "AudioInteractionGroup", "AcousticSimulationEnabled" },
+    Wire = { "SourceInstance", "TargetInstance", "SourceName", "TargetName" },
     ParticleEmitter = {
         "Texture", "Enabled", "Rate", "Lifetime", "Speed", "Drag", "Acceleration",
         "SpreadAngle", "EmissionDirection", "LockedToPart", "VelocityInheritance",
@@ -1808,23 +1940,23 @@ local VISUAL_PROPERTIES = {
     EulerRotationCurve = { "Length" }
 }
 
-local VISUAL_PART_PROPERTIES = {
+F.VISUAL_PART_PROPERTIES = {
     "CFrame", "Size", "Position", "Color", "Material", "MaterialVariant",
     "Transparency", "Reflectance", "CastShadow", "Anchored", "CanCollide",
     "CanQuery", "CanTouch", "CollisionGroup", "Massless", "Shape", "PivotOffset"
 }
 
-local VISUAL_PART_CLASSES = {
+F.VISUAL_PART_CLASSES = {
     Part = true, MeshPart = true, UnionOperation = true, WedgePart = true,
     CornerWedgePart = true, TrussPart = true, Seat = true, VehicleSeat = true,
     SpawnLocation = true, NegateOperation = true, IntersectOperation = true
 }
 
-local VISUAL_MESH_PROPERTIES = {
+F.VISUAL_MESH_PROPERTIES = {
     "MeshId", "TextureID", "DoubleSided", "RenderFidelity", "CollisionFidelity"
 }
 
-local VISUAL_ESSENTIAL_CLASSES = {
+F.VISUAL_ESSENTIAL_CLASSES = {
     Motor6D = true, Motor = true, Weld = true, ManualWeld = true,
     WeldConstraint = true, AnimationConstraint = true, RigidConstraint = true,
     Animation = true, Animator = true, AnimationController = true,
@@ -1835,7 +1967,7 @@ local VISUAL_ESSENTIAL_CLASSES = {
 
 function F.isVisualAsset(object, className)
     className = className or F.safeClassName(object)
-    return VISUAL_CLASSES[className] == true or VISUAL_PART_CLASSES[className] == true
+    return F.VISUAL_CLASSES[className] == true or F.VISUAL_PART_CLASSES[className] == true
 end
 
 function F.captureOptionalVisualProperty(object, output, property)
@@ -1852,7 +1984,7 @@ function F.captureOptionalVisualProperty(object, output, property)
     end
 end
 
-local VISUAL_REFERENCE_PROPERTIES = {
+F.VISUAL_REFERENCE_PROPERTIES = {
     Motor6D = { "Part0", "Part1" }, Motor = { "Part0", "Part1" },
     Weld = { "Part0", "Part1" }, ManualWeld = { "Part0", "Part1" },
     ManualGlue = { "Part0", "Part1" }, Glue = { "Part0", "Part1" },
@@ -1891,17 +2023,17 @@ end
 
 function F.addVisualProperties(object, output, className)
     if not CONFIG.VisualCapture or not F.isVisualAsset(object, className) then return end
-    if VISUAL_PART_CLASSES[className] then
-        for _, property in ipairs(VISUAL_PART_PROPERTIES) do
+    if F.VISUAL_PART_CLASSES[className] then
+        for _, property in ipairs(F.VISUAL_PART_PROPERTIES) do
             F.captureOptionalVisualProperty(object, output, property)
         end
     end
     if className == "MeshPart" then
-        for _, property in ipairs(VISUAL_MESH_PROPERTIES) do
+        for _, property in ipairs(F.VISUAL_MESH_PROPERTIES) do
             F.captureOptionalVisualProperty(object, output, property)
         end
     end
-    local visualProperties = VISUAL_PROPERTIES[className]
+    local visualProperties = F.VISUAL_PROPERTIES[className]
     if visualProperties then
         for _, property in ipairs(visualProperties) do
             F.captureOptionalVisualProperty(object, output, property)
@@ -1910,7 +2042,7 @@ function F.addVisualProperties(object, output, className)
     if className == "Animator" then
         output.PlayingAnimationTracks = F.getAnimatorPlaybackTracks(object)
     end
-    local links = VISUAL_REFERENCE_PROPERTIES[className]
+    local links = F.VISUAL_REFERENCE_PROPERTIES[className]
     if links then
         for _, property in ipairs(links) do
             local readOk, target = pcall(function() return object[property] end)
@@ -2028,6 +2160,7 @@ function F.captureAnimatorPlayback(animator, pass)
 end
 
 function F.makeVisualRecord(object, id, parentId, name, className, path, attributes, tags, properties, withAncestors)
+    F.V38.trackAssets(object, properties, withAncestors and "RuntimeVisual" or "SnapshotVisual")
     local parent = object.Parent
     local compact = CONFIG.CompactSecondaryIndexes and SELECTION.Structure and not withAncestors
     return {
@@ -2053,7 +2186,7 @@ function F.captureDynamicVisual(object, pass)
 
     local existing = visualDynamicByInstance[object]
     if not existing and #visualDynamicRecords >= math.max(0, CONFIG.VisualMaxDynamicEntries) then
-        if not VISUAL_ESSENTIAL_CLASSES[className]
+        if not F.VISUAL_ESSENTIAL_CLASSES[className]
             or visualEssentialOverflowSaved >= math.max(0, CONFIG.VisualEssentialOverflowEntries)
         then
             visualDynamicOmitted = visualDynamicOmitted + 1
@@ -2147,7 +2280,7 @@ function F.getUsefulProperties(object, className)
     local data = {}
     className = className or F.safeClassName(object)
 
-    for _, group in ipairs(PROPERTY_GROUPS) do
+    for _, group in ipairs(F.PROPERTY_GROUPS) do
         if F.classIsA(object, className, group.Class) then
             for _, property in ipairs(group.Properties) do
                 F.captureProperty(object, data, property)
@@ -2181,7 +2314,7 @@ function F.makeGuiRecord(object, id, parentId, name, className, path, properties
 end
 
 function F.captureSnapshotGui(object, id, parentId, name, className, path, properties)
-    if not CONFIG.GuiCapture or not GUI_CLASSES[className] then return end
+    if not CONFIG.GuiCapture or not F.GUI_CLASSES[className] then return end
     if #guiCapture.Snapshot >= CONFIG.GuiMaxSnapshotEntries then
         guiCapture.SnapshotOmitted = guiCapture.SnapshotOmitted + 1
         return
@@ -2233,7 +2366,7 @@ function F.watchRuntimeGui(object, eventName)
     if not CONFIG.RuntimeTraceGui or not runtimeTraceActive then return end
     if runtimeCoreGui and F.safeIsDescendantOf(object, runtimeCoreGui) then return end
     local className = F.safeClassName(object)
-    if not GUI_CLASSES[className] then return end
+    if not F.GUI_CLASSES[className] then return end
 
     local tracked = guiCapture.Observed[object]
     if not tracked then
@@ -3217,6 +3350,8 @@ function F.recordRemoteUsage(record)
             ByDirection = {},
             ByMethod = {},
             CallerCounts = {},
+            ArgumentShapeCounts = {},
+            NormalizedPath = F.normalizeComparisonPath(record.Path),
             Samples = {}
         }
         remoteUsageByKey[key] = summary
@@ -3228,6 +3363,14 @@ function F.recordRemoteUsage(record)
     local method = record.Method or "Unknown"
     summary.ByDirection[dir] = (summary.ByDirection[dir] or 0) + 1
     summary.ByMethod[method] = (summary.ByMethod[method] or 0) + 1
+    local shape = record.ArgumentShape or "<unknown>"
+    if summary.ArgumentShapeCounts[shape] then
+        summary.ArgumentShapeCounts[shape] = summary.ArgumentShapeCounts[shape] + 1
+    else
+        local distinct = 0
+        for _ in pairs(summary.ArgumentShapeCounts) do distinct = distinct + 1 end
+        if distinct < 24 then summary.ArgumentShapeCounts[shape] = 1 end
+    end
     local caller = record.Caller and record.Caller.Path
     if caller and (summary.CallerCounts[caller] or 0) > 0 then
         summary.CallerCounts[caller] = summary.CallerCounts[caller] + 1
@@ -3236,13 +3379,18 @@ function F.recordRemoteUsage(record)
         for _ in pairs(summary.CallerCounts) do count = count + 1 end
         if count < 12 then summary.CallerCounts[caller] = 1 end
     end
+    local sample = {
+        Time = record.Time, Direction = dir, Method = method,
+        ArgumentCount = record.ArgumentCount, Arguments = record.Arguments,
+        ArgumentShape = record.ArgumentShape,
+        ReturnCount = record.ReturnCount, Returns = record.Returns,
+        CallerPath = caller
+    }
     if #summary.Samples < REMOTE_USAGE_SAMPLE_LIMIT then
-        summary.Samples[#summary.Samples + 1] = {
-            Time = record.Time, Direction = dir, Method = method,
-            ArgumentCount = record.ArgumentCount, Arguments = record.Arguments,
-            ReturnCount = record.ReturnCount, Returns = record.Returns,
-            CallerPath = caller
-        }
+        summary.Samples[#summary.Samples + 1] = sample
+    else
+        -- The final slot is a rolling latest sample; other slots preserve the first calls.
+        summary.Samples[REMOTE_USAGE_SAMPLE_LIMIT] = sample
     end
 end
 
@@ -3257,6 +3405,10 @@ function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments,
     local category = extra.Category or F.classifyRuntimeRemote(remote, path)
     local callerInfo = extra.Caller
 
+    local argumentTypes = {}
+    for index = 1, packedArguments.n do
+        argumentTypes[index] = typeof(packedArguments[index])
+    end
     local record = {
         Time = os.clock() - runtimeStartedAt,
         Direction = direction,
@@ -3267,9 +3419,12 @@ function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments,
         Name = F.safeName(remote),
         ClassName = className,
         Path = path,
+        NormalizedPath = F.normalizeComparisonPath(path),
         SnapshotPath = extra.SnapshotPath,
         ArgumentCount = packedArguments.n,
+        ArgumentShape = packedArguments.n == 0 and "(empty)" or table.concat(argumentTypes, ","),
         Arguments = F.serializePackedRuntimeValues(packedArguments),
+        NestedArgumentShapes = F.V38.inferPacked(packedArguments),
         Caller = callerInfo,
         CallerIsExecutor = direction == "ClientToServer" and extra.CallerIsExecutor or nil,
         CallerStack = extra.CallerStack,
@@ -3294,6 +3449,7 @@ function F.appendRuntimeRemoteRecord(remote, direction, method, packedArguments,
 
     table.insert(categoryRecords, record)
     F.recordRemoteUsage(record)
+    F.V38.onRemoteRecord(record)
     if journalRecord then journalRecord("Runtime", { Kind = "Remote", Data = record }) end
 
     F.appendRuntimeTimeline({
@@ -3340,7 +3496,256 @@ function F.claimRuntimeObserver(kind, object, limit, warningStage)
     return true
 end
 
+local function researchToolDetails(tool)
+    local details = { Attributes = F.optionalMap(F.getAttributes(tool)), Children = {} }
+    local ok, descendants = pcall(function() return tool:GetDescendants() end)
+    if not ok then
+        details.Error = F.sanitizeString(descendants)
+        return details
+    end
+    for _, child in ipairs(descendants) do
+        local className = F.safeClassName(child)
+        local name = F.safeName(child)
+        local lower = string.lower(name)
+        if className == "LocalScript" or className == "ModuleScript"
+            or REMOTE_BUCKETS[className]
+            or (F.safeIsA(child, "ValueBase") and (
+                lower:find("ammo", 1, true) or lower:find("reload", 1, true)
+                or lower:find("fire", 1, true) or lower:find("cooldown", 1, true)
+                or lower:find("damage", 1, true) or lower:find("bullet", 1, true)
+                or lower:find("shot", 1, true)))
+        then
+            local entry = { Name = name, ClassName = className, Path = F.safeFullName(child) }
+            if F.safeIsA(child, "ValueBase") then
+                local value, readable = F.safeGet(child, "Value")
+                if readable then entry.Value = F.serializeRuntimeValue(value) end
+            end
+            details.Children[#details.Children + 1] = entry
+            if #details.Children >= CONFIG.CombatMaxToolDescendants then
+                details.Truncated = true
+                break
+            end
+        end
+    end
+    return details
+end
+
+-- Optional research-only closure inspection. Nothing is hooked, called, or mutated.
+-- It is deliberately capped and excluded from the main Silent Aim runtime.
+function F.captureResearchToolConnections(tool, phase)
+    if not SELECTION.CombatResearch or not SELECTION.ClosureResearch then return end
+    if #combatConnectionRecords >= CONFIG.CombatMaxConnectionRecords then
+        combatConnectionDropped = combatConnectionDropped + 1
+        return
+    end
+    local record = {
+        Time = os.clock() - runtimeStartedAt,
+        ToolPath = F.safeFullName(tool), Phase = phase,
+        Available = capabilities.getconnections,
+        Connections = {}, RemoteReferences = {},
+        VisitedNodes = 0
+    }
+    if not capabilities.getconnections then
+        record.Status = "getconnections unavailable"
+        combatConnectionRecords[#combatConnectionRecords + 1] = record
+        return
+    end
+    local okConnections, connections = pcall(function()
+        return getconnections(tool.Activated)
+    end)
+    if not okConnections or type(connections) ~= "table" then
+        record.Status = "getconnections failed: " .. F.sanitizeString(connections)
+        combatConnectionRecords[#combatConnectionRecords + 1] = record
+        return
+    end
+    record.Status = "Inspected"
+    record.TotalConnections = #connections
+    local seen = {}
+    local function inspect(value, route, depth)
+        if depth > 5 or record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then return end
+        record.VisitedNodes = record.VisitedNodes + 1
+        local kind = typeof(value)
+        if kind == "Instance" then
+            local className = F.safeClassName(value)
+            if REMOTE_BUCKETS[className] then
+                if #record.RemoteReferences < 100 then
+                    record.RemoteReferences[#record.RemoteReferences + 1] = {
+                        Path = F.safeFullName(value), ClassName = className,
+                        Via = route,
+                        NormalizedPath = F.normalizeComparisonPath(F.safeFullName(value))
+                    }
+                end
+            end
+        elseif kind == "table" then
+            if seen[value] then return end
+            seen[value] = true
+            local count = 0
+            for key, item in pairs(value) do
+                if count >= 100 then break end
+                count = count + 1
+                inspect(item, route .. "." .. F.sanitizeString(tostring(key)):sub(1, 70), depth + 1)
+                if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+            end
+        elseif kind == "function" then
+            if seen[value] then return end
+            seen[value] = true
+            if capabilities.getupvalues then
+                local ok, upvalues = pcall(debug.getupvalues, value)
+                if ok and type(upvalues) == "table" then
+                    local n = 0
+                    for key, item in pairs(upvalues) do
+                        if n >= 40 then break end
+                        n = n + 1
+                        inspect(item, route .. ".upvalue[" .. tostring(key) .. "]", depth + 1)
+                        if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+                    end
+                end
+            elseif capabilities.getupvalue then
+                for index = 1, 30 do
+                    local ok, a, b = pcall(debug.getupvalue, value, index)
+                    if not ok then break end
+                    local resolved = b ~= nil and b or a
+                    if resolved ~= nil then
+                        inspect(resolved, route .. ".upvalue[" .. tostring(index) .. "]", depth + 1)
+                    end
+                    if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+                end
+            end
+        end
+    end
+    for index, connection in ipairs(connections) do
+        if index > CONFIG.CombatMaxClosuresPerTool then break end
+        local info = { Index = index }
+        local ok, callback = pcall(function() return connection.Function end)
+        if ok and type(callback) == "function" then
+            info.HasCallback = true
+            if capabilities.debug_info then
+                local debugOk, source, line, name = pcall(debug.info, callback, "sln")
+                if debugOk then
+                    info.Source = source and F.sanitizeString(source) or nil
+                    info.Line = line
+                    info.Name = name and F.sanitizeString(name) or nil
+                end
+            end
+            inspect(callback, "connection[" .. index .. "]", 0)
+        else
+            info.HasCallback = false
+        end
+        local statusOk, enabled = pcall(function() return connection.Enabled end)
+        if statusOk and type(enabled) == "boolean" then info.Enabled = enabled end
+        record.Connections[#record.Connections + 1] = info
+    end
+    record.Truncated = #connections > CONFIG.CombatMaxClosuresPerTool
+        or record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes
+    combatConnectionRecords[#combatConnectionRecords + 1] = record
+end
+
+function F.watchResearchTool(tool)
+    if not SELECTION.CombatResearch or not runtimeTraceActive
+        or not F.safeIsA(tool, "Tool") or combatObservedTools[tool] then return end
+    local belongsToPlayer = false
+    local ok, parent = pcall(function() return tool.Parent end)
+    if ok and LocalPlayer then
+        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+        local character = LocalPlayer.Character
+        local starterGear = LocalPlayer:FindFirstChildOfClass("StarterGear")
+        belongsToPlayer = (parent == backpack or parent == character or parent == starterGear)
+            or (backpack and F.safeIsDescendantOf(tool, backpack))
+            or (character and F.safeIsDescendantOf(tool, character))
+            or (starterGear and F.safeIsDescendantOf(tool, starterGear))
+    end
+    if not belongsToPlayer then return end
+    combatObservedTools[tool] = true
+    combatToolCounts.Tools = combatToolCounts.Tools + 1
+    F.researchEvent("ToolObserved", tool, researchToolDetails(tool))
+    F.captureResearchToolConnections(tool, "Observed")
+    local function listen(signalName, callback)
+        local connected, connection = pcall(function()
+            return tool[signalName]:Connect(callback)
+        end)
+        if connected and connection then
+            runtimeConnections[#runtimeConnections + 1] = connection
+        end
+    end
+    listen("Equipped", function()
+        if not runtimeTraceActive then return end
+        combatToolCounts.Equips = combatToolCounts.Equips + 1
+        F.researchEvent("ToolEquipped", tool, researchToolDetails(tool))
+        if SELECTION.ClosureResearch then
+            task.defer(function()
+                if runtimeTraceActive and tool.Parent then
+                    F.captureResearchToolConnections(tool, "Equipped")
+                end
+            end)
+        end
+    end)
+    listen("Unequipped", function()
+        if runtimeTraceActive then F.researchEvent("ToolUnequipped", tool) end
+    end)
+    listen("Activated", function()
+        if not runtimeTraceActive then return end
+        combatToolCounts.Activations = combatToolCounts.Activations + 1
+        F.researchEvent("ToolActivated", tool, {
+            Enabled = select(1, F.safeGet(tool, "Enabled")),
+            Attributes = F.optionalMap(F.getAttributes(tool))
+        })
+    end)
+    listen("Deactivated", function()
+        if runtimeTraceActive then F.researchEvent("ToolDeactivated", tool) end
+    end)
+end
+
+function F.watchResearchRemote(remote)
+    if not SELECTION.CombatResearch or not runtimeTraceActive
+        or combatObservedRemotes[remote] then return end
+    local className = F.safeClassName(remote)
+    if not REMOTE_BUCKETS[className] then return end
+    if combatObservedRemoteCount >= CONFIG.CombatMaxRemoteCandidates then return end
+    combatObservedRemotes[remote] = true
+    combatObservedRemoteCount = combatObservedRemoteCount + 1
+    local lastName = F.safeName(remote)
+    local lastParent = remote.Parent
+    combatRemoteLifecycleCounts.Added = combatRemoteLifecycleCounts.Added + 1
+    F.researchEvent("RemoteObserved", remote, {
+        Attributes = F.optionalMap(F.getAttributes(remote)),
+        Tags = F.getTags(remote),
+        ParentPath = lastParent and F.safeFullName(lastParent) or nil
+    })
+    local okName, nameConnection = pcall(function()
+        return remote:GetPropertyChangedSignal("Name"):Connect(function()
+            if not runtimeTraceActive then return end
+            local newName = F.safeName(remote)
+            if newName == lastName then return end
+            combatRemoteLifecycleCounts.Renamed = combatRemoteLifecycleCounts.Renamed + 1
+            F.researchEvent("RemoteRenamed", remote, { From = lastName, To = newName })
+            lastName = newName
+        end)
+    end)
+    if okName and nameConnection then runtimeConnections[#runtimeConnections + 1] = nameConnection end
+    local okAncestry, ancestryConnection = pcall(function()
+        return remote.AncestryChanged:Connect(function(_, newParent)
+            if not runtimeTraceActive then return end
+            if newParent == lastParent then return end
+            if newParent == nil then
+                combatRemoteLifecycleCounts.Removed = combatRemoteLifecycleCounts.Removed + 1
+                F.researchEvent("RemoteRemoved", remote, {
+                    PreviousParentPath = lastParent and F.safeFullName(lastParent) or nil
+                })
+            else
+                combatRemoteLifecycleCounts.Reparented = combatRemoteLifecycleCounts.Reparented + 1
+                F.researchEvent("RemoteReparented", remote, {
+                    PreviousParentPath = lastParent and F.safeFullName(lastParent) or nil,
+                    NewParentPath = F.safeFullName(newParent)
+                })
+            end
+            lastParent = newParent
+        end)
+    end)
+    if okAncestry and ancestryConnection then runtimeConnections[#runtimeConnections + 1] = ancestryConnection end
+end
+
 function F.watchRuntimeRemote(object, id, name, className, path)
+    F.watchResearchRemote(object)
     if not CONFIG.RuntimeTrace or not runtimeTraceActive or not CONFIG.RuntimeTraceIncomingRemotes then
         return
     end
@@ -4270,7 +4675,9 @@ function F.primeRuntimeObservers()
             if F.safeIsA(object, "ValueBase") then
                 F.watchRuntimeValue(object, instanceIds[object], name, className, path)
             end
+            F.watchResearchTool(object)
             F.watchRuntimeGui(object)
+            F.V38.observeInstance(object, className)
 
             local descendantsOk, children = pcall(function()
                 return object:GetChildren()
@@ -4298,6 +4705,7 @@ function F.startRuntimeTrace()
     end
 
     runtimeTraceActive = true
+    F.V38.startRuntime()
     runtimeHookState.Frozen = false
     runtimeHookState.Active = true
     runtimeHookState.LastFlushAt = os.clock()
@@ -4326,7 +4734,7 @@ function F.startRuntimeTrace()
                 end
 
                 -- Snapshot short-lived notifications before they are removed.
-                if CONFIG.RuntimeTraceGui and GUI_CLASSES[F.safeClassName(object)] then
+                if CONFIG.RuntimeTraceGui and F.GUI_CLASSES[F.safeClassName(object)] then
                     F.watchRuntimeGui(object, "Added")
                 end
 
@@ -4338,6 +4746,11 @@ function F.startRuntimeTrace()
                     local className = F.safeClassName(object)
                     local name = F.safeName(object)
                     local path = F.safeFullName(object)
+                    F.V38.observeInstance(object, className)
+                    if SELECTION.CombatResearch then
+                        F.watchResearchTool(object)
+                        F.watchResearchRemote(object)
+                    end
 
                     if CONFIG.RuntimeTraceDynamicRemotes
                         and (className == "RemoteEvent" or className == "UnreliableRemoteEvent")
@@ -4437,6 +4850,19 @@ function F.startRuntimeTrace()
     end
 
     if LocalPlayer then
+        if SELECTION.CombatResearch then
+            for _, parent in ipairs({
+                LocalPlayer:FindFirstChildOfClass("Backpack"),
+                LocalPlayer.Character,
+                LocalPlayer:FindFirstChildOfClass("StarterGear")
+            }) do
+                if parent then
+                    for _, child in ipairs(parent:GetChildren()) do
+                        F.watchResearchTool(child)
+                    end
+                end
+            end
+        end
         F.watchLocalCharacter(LocalPlayer.Character)
 
         local addedOk, addedConnection = pcall(function()
@@ -4446,6 +4872,11 @@ function F.startRuntimeTrace()
                 end
 
                 F.watchLocalCharacter(newCharacter)
+                if SELECTION.CombatResearch then
+                    for _, child in ipairs(newCharacter:GetChildren()) do
+                        F.watchResearchTool(child)
+                    end
+                end
             end)
         end)
 
@@ -4723,11 +5154,15 @@ dumpNode = function(object, parentId, context)
         or (SELECTION.Remotes and isRemote) or isValue or isVisual
     local needsProperties = not CONFIG.FastSelectiveCapture or SELECTION.Structure
         or SELECTION.PlayersTools or isVisual or isValue
-        or (SELECTION.GUI and GUI_CLASSES[className])
+        or (SELECTION.GUI and F.GUI_CLASSES[className])
         or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources) and isScript)
     local attributes = needsAttributes and F.getAttributes(object) or {}
     local tags = needsTags and F.getTags(object) or {}
+    if runtimeTraceActive then
+        for _, tag in ipairs(tags) do F.V38.watchTags(tag) end
+    end
     local properties = needsProperties and F.getUsefulProperties(object, className) or {}
+    if SELECTION.Visuals then F.V38.trackAssets(object, properties, "Snapshot") end
 
     if SELECTION.Structure and #tags > 0 then
         for _, tag in ipairs(tags) do tagCounts[tag] = (tagCounts[tag] or 0) + 1 end
@@ -4809,9 +5244,11 @@ dumpNode = function(object, parentId, context)
     end
 
     F.watchRuntimeRemote(object, id, name, className, path)
+    F.watchResearchTool(object)
     F.watchRuntimeAttributes(object, id, name, className, path, attributes)
     F.watchRuntimeValue(object, id, name, className, path)
     F.watchRuntimeGui(object)
+    F.V38.observeInstance(object, className)
 
     local currentToolState = parentToolState
     if SELECTION.PlayersTools and (className == "Tool" or F.safeIsA(object, "Tool")) then
@@ -5283,6 +5720,8 @@ function F.buildSummary(elapsed, pathStats)
         "Registered IDs: " .. tostring(nextInstanceId),
         "Remotes / Bindables: " .. tostring(F.totalRemoteCount()),
         "Scripts: " .. tostring(F.totalScriptCount()),
+        "Combat Research: " .. tostring(SELECTION.CombatResearch),
+        "Outgoing Hook (opt-in): " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes),
         "LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued),
         "LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded),
         "LocalScripts decompile failed: " .. tostring(clientDecompileStats.Failed),
@@ -5454,6 +5893,7 @@ function F.selectOutputFolder()
     TOOLS_FILE = move(TOOLS_FILE)
     VALUES_FILE = move(VALUES_FILE)
     PLAYERS_FILE = move(PLAYERS_FILE)
+    AVATAR_INSPECTION_FILE = move(AVATAR_INSPECTION_FILE)
     PLAYER_REFERENCES_FILE = move(PLAYER_REFERENCES_FILE)
     STATE_FILE = move(STATE_FILE)
     MANIFEST_FILE = move(MANIFEST_FILE)
@@ -5467,6 +5907,10 @@ function F.selectOutputFolder()
     INTERACTIONS_FILE = move(INTERACTIONS_FILE)
     PHYSICS_FILE = move(PHYSICS_FILE)
     REMOTE_USAGE_FILE = move(REMOTE_USAGE_FILE)
+    COMBAT_RESEARCH_FILE = move(COMBAT_RESEARCH_FILE)
+    COMBAT_EVENTS_FILE = move(COMBAT_EVENTS_FILE)
+    SOURCE_REFERENCES_FILE = move(SOURCE_REFERENCES_FILE)
+    CONNECTION_RESEARCH_FILE = move(CONNECTION_RESEARCH_FILE)
     MODULE_SOURCES_FOLDER = move(MODULE_SOURCES_FOLDER)
     CLIENT_SOURCES_FOLDER = move(CLIENT_SOURCES_FOLDER)
     for kind, path in pairs(RUNTIME_FILES) do
@@ -5491,6 +5935,1735 @@ function F.writeSafe(path, contents)
     end
 
     return true
+end
+
+
+F.avatarInspection = {
+    Active = false, Records = {}, LastSignatures = {}, LastSavedAt = 0,
+    Connections = {}, WatchedPlayers = {}, Descriptions = setmetatable({}, { __mode = "k" }),
+    CapturedPlayerIds = {}, UniquePlayers = 0, Errors = {}, Skipped = 0,
+    StartedAt = nil, MaxRecords = 480, MaxAccessories = 48
+}
+
+F.AVATAR_BODY_NAMES = {
+    "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+    "Left Arm", "Right Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "Left Leg", "Right Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+F.AVATAR_LEG_NAMES = {
+    "RightUpperLeg", "RightLowerLeg", "RightFoot", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "Right Leg", "Left Leg"
+}
+F.AVATAR_DESCRIPTION_PROPERTIES = {
+    "RightLeg", "LeftLeg", "RightArm", "LeftArm", "Torso", "Head", "Face",
+    "Shirt", "Pants", "GraphicTShirt", "HairAccessory", "HatAccessory",
+    "FaceAccessory", "NeckAccessory", "ShouldersAccessory", "FrontAccessory",
+    "BackAccessory", "WaistAccessory", "EyebrowAccessory", "EyelashAccessory",
+    "HeightScale", "WidthScale", "DepthScale", "HeadScale", "BodyTypeScale",
+    "ProportionScale", "RightLegColor", "LeftLegColor", "LeftArmColor",
+    "RightArmColor", "HeadColor", "TorsoColor", "IdleAnimation",
+    "WalkAnimation", "RunAnimation", "JumpAnimation", "FallAnimation",
+    "ClimbAnimation", "SwimAnimation", "MoodAnimation"
+}
+F.AVATAR_PART_PROPERTIES = {
+    "Size", "MeshSize", "MeshId", "TextureID", "Color", "Transparency",
+    "Material", "Reflectance", "CastShadow", "CFrame", "PivotOffset", "LocalTransparencyModifier"
+}
+F.AVATAR_JOINT_CLASSES = {
+    Motor6D = true, AnimationConstraint = true, Weld = true, ManualWeld = true,
+    WeldConstraint = true, RigidConstraint = true
+}
+
+function F.avatarRead(object, property)
+    if not object then return nil end
+    local ok, value = pcall(function() return object[property] end)
+    if not ok or value == nil then return nil end
+    local typ = typeof(value)
+    if typ == "Instance" then
+        local fullPathOk, fullPath = pcall(function() return value:GetFullName() end)
+        return {
+            Name = F.safeName(value), ClassName = F.safeClassName(value),
+            Path = fullPathOk and F.sanitizeString(fullPath) or nil
+        }
+    end
+    local converted, result = pcall(serializeValue, value, {
+        seen = {}, depth = 0, noAssignInstanceId = true
+    })
+    return converted and result or F.sanitizeString(tostring(value))
+end
+
+function F.avatarProps(object, keys)
+    local result = {}
+    for _, key in ipairs(keys) do
+        local value = F.avatarRead(object, key)
+        if value ~= nil then result[key] = value end
+    end
+    return result
+end
+
+function F.avatarChildNames(parent, classFilter, limit)
+    local result = {}
+    local ok, children = pcall(function() return parent:GetChildren() end)
+    if not ok then return result end
+    for _, child in ipairs(children) do
+        if not classFilter or classFilter[F.safeClassName(child)] then
+            local info = {
+                Name = F.safeName(child), ClassName = F.safeClassName(child)
+            }
+            if child:IsA("Attachment") then
+                info.Properties = F.avatarProps(child, { "CFrame", "Position", "Orientation", "Axis", "SecondaryAxis" })
+            elseif child:IsA("SpecialMesh") then
+                info.Properties = F.avatarProps(child, { "MeshId", "TextureId", "Scale", "Offset", "MeshType" })
+            elseif child:IsA("Vector3Value") then
+                info.Properties = F.avatarProps(child, { "Value" })
+            elseif child:IsA("SurfaceAppearance") then
+                info.Properties = F.avatarProps(child, { "ColorMap", "NormalMap", "MetalnessMap", "RoughnessMap" })
+            elseif child:IsA("WrapLayer") then
+                info.Properties = F.avatarProps(child, { "ReferenceMeshId", "CageMeshId", "Order", "Puffiness", "AutoSkin" })
+            elseif child:IsA("WrapTarget") then
+                info.Properties = F.avatarProps(child, { "CageMeshId", "Stiffness" })
+            end
+            result[#result + 1] = info
+            if #result >= limit then break end
+        end
+    end
+    return result
+end
+
+function F.avatarGetDescription(humanoid, character)
+    local cache = F.avatarInspection.Descriptions[character]
+    if cache and os.clock() - cache.At < 15 then
+        return cache.Properties, cache.Accessories, cache.Error
+    end
+    local ok, description = pcall(function() return humanoid:GetAppliedDescription() end)
+    local result, accessories, err = nil, nil, nil
+    if ok and description then
+        result = F.avatarProps(description, F.AVATAR_DESCRIPTION_PROPERTIES)
+        local accOk, acc = pcall(function() return description:GetAccessories(true) end)
+        if accOk and type(acc) == "table" then
+            accessories = {}
+            for i, value in ipairs(acc) do
+                if i > 80 then break end
+                accessories[#accessories + 1] = {
+                    AssetId = value.AssetId, AccessoryType = tostring(value.AccessoryType),
+                    IsLayered = value.IsLayered, Order = value.Order, Puffiness = value.Puffiness
+                }
+            end
+        end
+    else
+        err = F.sanitizeString(tostring(description))
+    end
+    F.avatarInspection.Descriptions[character] = {
+        At = os.clock(), Properties = result, Accessories = accessories, Error = err
+    }
+    return result, accessories, err
+end
+
+function F.avatarCapturePlayer(player, reason, force)
+    if not F.avatarInspection.Active then return end
+    local ok, err = pcall(function()
+        local character = player.Character
+        local record = {
+            TimeSeconds = math.floor((os.clock() - F.avatarInspection.StartedAt) * 100) / 100,
+            Reason = reason, Name = F.safeName(player), UserId = player.UserId,
+            DisplayName = F.avatarRead(player, "DisplayName"),
+            HasCharacter = character ~= nil, RigType = nil,
+            Description = nil, DescriptionAccessories = nil,
+            BodyParts = {}, BodyJoints = {}, LegParts = {}, LegJoints = {}, Accessories = {}, ScaleValues = {}, RigHierarchy = nil, AppearanceDiscrepancies = {}
+        }
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                record.RigType = F.avatarRead(humanoid, "RigType")
+                record.Description, record.DescriptionAccessories, record.DescriptionError =
+                    F.avatarGetDescription(humanoid, character)
+                record.Humanoid = F.avatarProps(humanoid, { "HipHeight", "AutoRotate" })
+                F.V38.trackAssets(player, record.Description, "AvatarDescription")
+                for _, scaleName in ipairs({
+                    "BodyHeightScale", "BodyWidthScale", "BodyDepthScale", "HeadScale",
+                    "BodyTypeScale", "BodyProportionScale"
+                }) do
+                    local scale = humanoid:FindFirstChild(scaleName)
+                    if scale and scale:IsA("NumberValue") then
+                        record.ScaleValues[scaleName] = F.avatarRead(scale, "Value")
+                    end
+                end
+            else
+                record.DescriptionError = "Humanoid missing at capture"
+            end
+
+            local legParts = {}
+            local bodyParts = {}
+            local rigRoot = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+            for _, name in ipairs(F.AVATAR_BODY_NAMES) do
+                local part = character:FindFirstChild(name)
+                if part and part:IsA("BasePart") then
+                    bodyParts[part] = true
+                    for _, legName in ipairs(F.AVATAR_LEG_NAMES) do
+                        if legName == name then legParts[part] = true break end
+                    end
+                    local fields = F.avatarProps(part, F.AVATAR_PART_PROPERTIES)
+                    F.V38.trackAssets(part, fields, "AvatarBody")
+                    local extra = F.avatarChildNames(part, {
+                        Attachment = true, SpecialMesh = true, Vector3Value = true,
+                        SurfaceAppearance = true, WrapLayer = true, WrapTarget = true
+                    }, 30)
+                    local item = {
+                        Name = name, Path = F.safeFullName(part), ClassName = part.ClassName,
+                        Properties = fields, Children = extra,
+                        RelativeToRoot = rigRoot and F.V38.relativeFrame(rigRoot, part) or nil,
+                        OriginalSize = (part:FindFirstChild("OriginalSize") and
+                            F.avatarRead(part:FindFirstChild("OriginalSize"), "Value")) or nil
+                    }
+                    record.BodyParts[#record.BodyParts + 1] = item
+                    if legParts[part] then record.LegParts[#record.LegParts + 1] = item end
+                end
+            end
+            local descendantsOk, descendants = pcall(function() return character:GetDescendants() end)
+            if descendantsOk then
+                for _, item in ipairs(descendants) do
+                    local class = F.safeClassName(item)
+                    if F.AVATAR_JOINT_CLASSES[class] then
+                        local part0Ok, part0 = pcall(function() return item.Part0 end)
+                        local part1Ok, part1 = pcall(function() return item.Part1 end)
+                        local a0Ok, a0 = pcall(function() return item.Attachment0 end)
+                        local a1Ok, a1 = pcall(function() return item.Attachment1 end)
+                        local relevant = (part0Ok and bodyParts[part0]) or (part1Ok and bodyParts[part1])
+                        if not relevant then
+                            if a0Ok and a0 and bodyParts[a0.Parent] then relevant = true end
+                            if a1Ok and a1 and bodyParts[a1.Parent] then relevant = true end
+                        end
+                        if relevant and #record.BodyJoints < 100 then
+                            local joint = F.V38.captureJoint(item, character)
+                            record.BodyJoints[#record.BodyJoints + 1] = joint
+                            if (part0Ok and legParts[part0]) or (part1Ok and legParts[part1])
+                                or (a0Ok and a0 and legParts[a0.Parent])
+                                or (a1Ok and a1 and legParts[a1.Parent]) then
+                                record.LegJoints[#record.LegJoints + 1] = joint
+                            end
+                        end
+                    elseif class == "Accessory" and #record.Accessories < F.avatarInspection.MaxAccessories then
+                        local handle = item:FindFirstChild("Handle")
+                        local handleInfo = nil
+                        if handle and handle:IsA("BasePart") then
+                            handleInfo = {
+                                ClassName = handle.ClassName,
+                                Properties = F.avatarProps(handle, F.AVATAR_PART_PROPERTIES),
+                                Children = F.avatarChildNames(handle, {
+                                    SpecialMesh = true, Attachment = true, SurfaceAppearance = true
+                                }, 12)
+                            }
+                        end
+                        local accessoryInfo = F.V38.captureAccessory(item, handle, character)
+                        accessoryInfo.Handle = handleInfo
+                        if handleInfo then F.V38.trackAssets(handle, handleInfo.Properties, "AvatarAccessory") end
+                        record.Accessories[#record.Accessories + 1] = accessoryInfo
+                    end
+                end
+            end
+        end
+
+        table.sort(record.BodyParts, function(a, b) return a.Name < b.Name end)
+        table.sort(record.BodyJoints, function(a, b) return a.Name < b.Name end)
+        table.sort(record.LegParts, function(a, b) return a.Name < b.Name end)
+        table.sort(record.LegJoints, function(a, b) return a.Name < b.Name end)
+        table.sort(record.Accessories, function(a, b) return a.Name < b.Name end)
+        record.RigHierarchy = F.V38.buildRigHierarchy(record)
+        record.AppearanceDiscrepancies, record.AssetIdentityComparisons = F.V38.compareAppearance(record)
+        local signatureData = {
+            HasCharacter = record.HasCharacter, RigType = record.RigType,
+            Description = record.Description, DescriptionAccessories = record.DescriptionAccessories,
+            ScaleValues = record.ScaleValues, Accessories = {}, BodyParts = {}, JointConfiguration = {}
+        }
+        for _, part in ipairs(record.BodyParts) do
+            signatureData.BodyParts[#signatureData.BodyParts + 1] = {
+                Name = part.Name, ClassName = part.ClassName,
+                MeshId = part.Properties.MeshId, TextureID = part.Properties.TextureID,
+                Size = part.Properties.Size, MeshSize = part.Properties.MeshSize,
+                OriginalSize = part.OriginalSize, Children = part.Children
+            }
+        end
+        for _, joint in ipairs(record.BodyJoints) do
+            signatureData.JointConfiguration[#signatureData.JointConfiguration + 1] = {
+                Name = joint.Name, ClassName = joint.ClassName, Part0 = joint.Properties.Part0,
+                Part1 = joint.Properties.Part1, C0 = joint.QuantizedC0, C1 = joint.QuantizedC1,
+                Enabled = joint.Properties.Enabled
+            }
+        end
+        for _, accessory in ipairs(record.Accessories) do
+            signatureData.Accessories[#signatureData.Accessories + 1] = {
+                Name = accessory.Name,
+                AccessoryType = accessory.AccessoryType,
+                MeshId = accessory.Handle and accessory.Handle.Properties.MeshId,
+                TextureID = accessory.Handle and accessory.Handle.Properties.TextureID
+            }
+        end
+        local sigOk, signature = pcall(function() return HttpService:JSONEncode(signatureData) end)
+        signature = sigOk and signature or tostring(character)
+        local previous = F.avatarInspection.LastSignatures[player.UserId]
+        if previous and previous.SignatureData then
+            record.JointChanges = F.V38.diffJoints(previous.SignatureData.JointConfiguration, signatureData.JointConfiguration)
+        end
+        local changed = not previous or previous.Character ~= character or previous.Signature ~= signature
+        local checkpoint = not previous or os.clock() - previous.At >= 30
+        if not changed and not checkpoint and not force then return end
+        F.avatarInspection.LastSignatures[player.UserId] = {
+            At = os.clock(), Character = character, Signature = signature, SignatureData = signatureData
+        }
+        if #F.avatarInspection.Records >= F.avatarInspection.MaxRecords then
+            F.avatarInspection.Skipped = F.avatarInspection.Skipped + 1
+            return
+        end
+        record.Changed = changed
+        F.avatarInspection.Records[#F.avatarInspection.Records + 1] = record
+        if not F.avatarInspection.CapturedPlayerIds[player.UserId] then
+            F.avatarInspection.CapturedPlayerIds[player.UserId] = true
+            F.avatarInspection.UniquePlayers = F.avatarInspection.UniquePlayers + 1
+        end
+    end)
+    if not ok then
+        if #F.avatarInspection.Errors < 45 then
+            F.avatarInspection.Errors[#F.avatarInspection.Errors + 1] =
+                { Player = F.safeName(player), Error = F.sanitizeString(tostring(err)) }
+        end
+    end
+end
+
+function F.avatarInspectionDocument()
+    return {
+        Schema = "Synergy.AvatarInspection", Version = 2, DumpId = currentDumpId,
+        GeneratedAtUnix = os.time(), GameId = game.GameId, PlaceId = game.PlaceId,
+        JobId = tostring(game.JobId), ReadOnly = true,
+        Notes = {
+            "RightLeg / LeftLeg in Description are body part asset IDs, not bundle IDs.",
+            "MeshId and TextureID identify rendered meshes when client security permits reads.",
+            "A player must have a streamed-in character for physical MeshPart measurements.",
+            "This does not contain downloadable mesh binary geometry."
+        },
+        UniquePlayers = F.avatarInspection.UniquePlayers, Total = #F.avatarInspection.Records,
+        Skipped = F.avatarInspection.Skipped, Errors = F.avatarInspection.Errors,
+        Records = F.avatarInspection.Records
+    }
+end
+
+function F.avatarWriteProgress(force)
+    if not SELECTION.AvatarInspection then return end
+    if not force and os.clock() - F.avatarInspection.LastSavedAt < 12 then return end
+    F.avatarInspection.LastSavedAt = os.clock()
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(F.avatarInspectionDocument())
+    end)
+    if ok then F.writeSafe(AVATAR_INSPECTION_FILE, encoded) end
+end
+
+function F.avatarWatchPlayer(player)
+    if F.avatarInspection.WatchedPlayers[player] then return end
+    F.avatarInspection.WatchedPlayers[player] = true
+    F.avatarInspection.Connections[#F.avatarInspection.Connections + 1] =
+        player.CharacterAdded:Connect(function()
+            task.delay(1, function() F.avatarCapturePlayer(player, "CharacterAdded", true) end)
+            task.delay(4, function() F.avatarCapturePlayer(player, "CharacterReady", false) end)
+        end)
+    local appearanceOk, appearanceConnection = pcall(function()
+        return player.CharacterAppearanceLoaded:Connect(function()
+            local character = player.Character
+            if character then F.avatarInspection.Descriptions[character] = nil end
+            task.defer(function() F.avatarCapturePlayer(player, "AppearanceLoaded", true) end)
+        end)
+    end)
+    if appearanceOk then
+        F.avatarInspection.Connections[#F.avatarInspection.Connections + 1] = appearanceConnection
+    end
+    F.avatarCapturePlayer(player, "Initial", true)
+end
+
+function F.startAvatarInspection()
+    if F.avatarInspection.Active then return end
+    F.avatarInspection.Active = true
+    F.avatarInspection.StartedAt = os.clock()
+    for _, player in ipairs(Players:GetPlayers()) do
+        F.avatarWatchPlayer(player)
+    end
+    F.avatarInspection.Connections[#F.avatarInspection.Connections + 1] =
+        Players.PlayerAdded:Connect(F.avatarWatchPlayer)
+    task.spawn(function()
+        while F.avatarInspection.Active do
+            task.wait(3)
+            if not F.avatarInspection.Active then break end
+            for _, player in ipairs(Players:GetPlayers()) do
+                F.avatarWatchPlayer(player)
+                F.avatarCapturePlayer(player, "Periodic", false)
+            end
+            F.avatarWriteProgress(false)
+        end
+    end)
+    F.avatarWriteProgress(true)
+    F.log("Avatar inspection v3.8 enabled | full body, joints, wraps, accessories, pose")
+end
+
+function F.finishAvatarInspection()
+    if not F.avatarInspection.Active then return end
+    for _, player in ipairs(Players:GetPlayers()) do
+        F.avatarCapturePlayer(player, "Final", false)
+    end
+    F.avatarInspection.Active = false
+    for _, connection in ipairs(F.avatarInspection.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(F.avatarInspection.Connections)
+    F.avatarWriteProgress(true)
+end
+
+F.V38 = {
+    SchemaVersion = 3.8,
+    Events = {}, EventOmitted = 0, Connections = {},
+    Observed = setmetatable({}, { __mode = "k" }), ObservedCount = 0,
+    TagWatch = {}, TagEventCount = 0,
+    AssetIndex = {}, AssetList = {}, AssetOmitted = 0,
+    DependencyEdges = {}, DependencyOmitted = 0,
+    RemoteStats = {}, RecentInputs = {}, RecentRemotes = {}, RecentEffects = {},
+    SampledCamera = nil, LastCameraSample = 0,
+    PlayerCharacters = setmetatable({}, { __mode = "k" }),
+    CharacterSnapshots = {}, CharacterDeaths = {},
+    BaselinePose = setmetatable({}, { __mode = "k" }),
+    WeaponSnapshots = {}, WeaponOmitted = 0,
+    ListenerMarkers = 0,
+    CallbacksWrapped = setmetatable({}, { __mode = "k" }),
+    CallbackCoverage = { NamecallHook = false, DirectCalls = "NotIntercepted", CallbackWrappingOptIn = false },
+    Missing = {}, MissingCounts = {},
+    Coverage = { TrackedObjects = 0, ObserversOmitted = 0, EventRecordsOmitted = 0, UnknownUnreplicatedObjects = true },
+    MaxTrackedPlayerCharacters = 150
+}
+
+function F.V38.digest(value)
+    if type(value) == "string" then return F.comparisonDigest(value) end
+    local ok, encoded = pcall(function() return HttpService:JSONEncode(value) end)
+    if ok and type(encoded) == "string" then return F.comparisonDigest(encoded) end
+    return F.comparisonDigest(F.sanitizeString(tostring(value)))
+end
+
+function F.V38.addEvent(kind, object, details)
+    if not runtimeTraceActive then return end
+    local r = F.V38
+    if #r.Events >= CONFIG.V38MaxEvents then
+        r.EventOmitted = r.EventOmitted + 1
+        return
+    end
+    local row = {
+        Time = os.clock() - runtimeStartedAt, Kind = kind,
+        Object = object and F.safeFullName(object) or nil,
+        ClassName = object and F.safeClassName(object) or nil,
+        Details = details
+    }
+    r.Events[#r.Events + 1] = row
+    if kind == "SoundPlayed" or kind == "ParticleEnabled" or kind == "ParticleEmitted"
+        or kind == "BeamEnabled" or kind == "TrailEnabled" or kind == "VisualCreated" then
+        r.RecentEffects[#r.RecentEffects + 1] = row
+        if #r.RecentEffects > 150 then table.remove(r.RecentEffects, 1) end
+        F.V38.trackEffectCorrelation(row)
+    end
+    if journalRecord then journalRecord("Runtime", { Kind = "V38:" .. kind, Data = row }) end
+end
+
+function F.V38.connect(signal, callback)
+    if not signal then return false end
+    local ok, connection = pcall(function() return signal:Connect(callback) end)
+    if ok and connection then
+        F.V38.Connections[#F.V38.Connections + 1] = connection
+        return true
+    end
+    return false
+end
+
+function F.V38.signal(object, eventName, callback)
+    local ok, signal = pcall(function() return object[eventName] end)
+    return ok and F.V38.connect(signal, callback) or false
+end
+
+function F.V38.propertySignal(object, key, callback)
+    local ok, signal = pcall(function() return object:GetPropertyChangedSignal(key) end)
+    return ok and F.V38.connect(signal, callback) or false
+end
+
+function F.V38.relativeFrame(root, part)
+    local ok, value = pcall(function() return root.CFrame:ToObjectSpace(part.CFrame) end)
+    if not ok then return nil end
+    local components = { value:GetComponents() }
+    for i = 1, #components do components[i] = math.floor(components[i] * 1000 + 0.5) / 1000 end
+    return components
+end
+
+function F.V38.frameKey(value)
+    if typeof(value) ~= "CFrame" then return nil end
+    local raw = { value:GetComponents() }
+    local out = {}
+    for i, n in ipairs(raw) do out[i] = (n >= 0 and math.floor(n * 100 + 0.5) or math.ceil(n * 100 - 0.5)) / 100 end
+    return out
+end
+
+function F.V38.captureJoint(joint, character)
+    local props = F.avatarProps(joint, {
+        "Part0", "Part1", "Attachment0", "Attachment1", "C0", "C1", "Enabled", "Transform", "Active"
+    })
+    local row = {
+        Name = F.safeName(joint), Path = F.safeFullName(joint), ClassName = F.safeClassName(joint),
+        Properties = props
+    }
+    local ok0, c0 = pcall(function() return joint.C0 end)
+    local ok1, c1 = pcall(function() return joint.C1 end)
+    if ok0 then row.QuantizedC0 = F.V38.frameKey(c0) end
+    if ok1 then row.QuantizedC1 = F.V38.frameKey(c1) end
+    if row.ClassName == "Motor6D" then
+        local ok, transform = pcall(function() return joint.Transform end)
+        if ok and typeof(transform) == "CFrame" then
+            local position = transform.Position.Magnitude
+            local axis, angle = transform:ToAxisAngle()
+            if position >= CONFIG.V38PoseTranslationTolerance
+                or math.abs(angle) >= CONFIG.V38PoseRotationTolerance then
+                row.PoseDifferenceFromRest = {
+                    TranslationStuds = math.floor(position * 1000 + 0.5) / 1000,
+                    RotationRadians = math.floor(math.abs(angle) * 1000 + 0.5) / 1000,
+                    Observation = "May be normal animation; not an avatar mismatch"
+                }
+            end
+            if not F.V38.BaselinePose[joint] then
+                F.V38.BaselinePose[joint] = F.V38.frameKey(transform)
+            end
+            row.FirstObservedTransform = F.V38.BaselinePose[joint]
+        end
+    end
+    return row
+end
+
+function F.V38.diffJoints(previous, current)
+    local old = {}
+    for _, joint in ipairs(previous or {}) do old[tostring(joint.Path or joint.Name) .. "|" .. tostring(joint.ClassName)] = joint end
+    local changes = {}
+    for _, joint in ipairs(current or {}) do
+        local key = tostring(joint.Path or joint.Name) .. "|" .. tostring(joint.ClassName)
+        local prior = old[key]
+        if prior then
+            local before = F.V38.digest(prior)
+            local after = F.V38.digest(joint)
+            if before ~= after then
+                changes[#changes + 1] = { Joint = key, Before = prior, After = joint }
+            end
+            old[key] = nil
+        else
+            changes[#changes + 1] = { Joint = key, Change = "Added" }
+        end
+        if #changes >= 60 then break end
+    end
+    for key in pairs(old) do
+        if #changes >= 60 then break end
+        changes[#changes + 1] = { Joint = key, Change = "Removed" }
+    end
+    return changes
+end
+
+function F.V38.captureAccessory(accessory, handle, character)
+    local row = {
+        Name = F.safeName(accessory), Path = F.safeFullName(accessory),
+        AccessoryType = F.avatarRead(accessory, "AccessoryType"),
+        AttachmentPoint = F.avatarRead(accessory, "AttachmentPoint"),
+        Welds = {}, Attachments = {}, Wraps = {}, LinkedBodyParts = {}, LinkingMethod = nil
+    }
+    local found = {}
+    local descendantsOk, descendants = pcall(function() return accessory:GetDescendants() end)
+    if not descendantsOk then return row end
+    local bodyAttachments = {}
+    for _, body in ipairs(character:GetChildren()) do
+        if body:IsA("BasePart") then
+            for _, attachment in ipairs(body:GetChildren()) do
+                if attachment:IsA("Attachment") then
+                    local name = F.safeName(attachment)
+                    bodyAttachments[name] = bodyAttachments[name] or {}
+                    bodyAttachments[name][#bodyAttachments[name] + 1] = body
+                end
+            end
+        end
+    end
+    for _, item in ipairs(descendants) do
+        local class = F.safeClassName(item)
+        if F.AVATAR_JOINT_CLASSES[class] and #row.Welds < 30 then
+            local info = F.V38.captureJoint(item, character)
+            row.Welds[#row.Welds + 1] = info
+            for _, field in ipairs({ "Part0", "Part1", "Attachment0", "Attachment1" }) do
+                local ok, ref = pcall(function() return item[field] end)
+                if ok and typeof(ref) == "Instance" then
+                    local bodyPart = ref:IsA("Attachment") and ref.Parent or ref
+                    if bodyPart and bodyPart.Parent == character and not found[bodyPart] then
+                        found[bodyPart] = true
+                        row.LinkedBodyParts[#row.LinkedBodyParts + 1] = F.safeName(bodyPart)
+                        row.LinkingMethod = "JointReference"
+                    end
+                end
+            end
+        elseif class == "Attachment" and #row.Attachments < 30 then
+            local attachmentName = F.safeName(item)
+            row.Attachments[#row.Attachments + 1] = {
+                Name = attachmentName, Path = F.safeFullName(item),
+                Properties = F.avatarProps(item, { "CFrame", "Position", "Orientation", "Axis", "SecondaryAxis" })
+            }
+            for _, body in ipairs(bodyAttachments[attachmentName] or {}) do
+                if not found[body] then
+                    found[body] = true
+                    row.LinkedBodyParts[#row.LinkedBodyParts + 1] = F.safeName(body)
+                    if not row.LinkingMethod then row.LinkingMethod = "MatchingAttachmentName (inferred)" end
+                end
+            end
+        elseif (class == "WrapLayer" or class == "WrapTarget") and #row.Wraps < 24 then
+            row.Wraps[#row.Wraps + 1] = {
+                Name = F.safeName(item), ClassName = class,
+                Properties = F.avatarProps(item, class == "WrapLayer"
+                    and { "ReferenceMeshId", "CageMeshId", "Order", "Puffiness", "AutoSkin" }
+                    or { "CageMeshId", "Stiffness" })
+            }
+        end
+    end
+    table.sort(row.LinkedBodyParts)
+    return row
+end
+
+function F.V38.buildRigHierarchy(record)
+    local result = {
+        RigType = record.RigType, Parts = {}, Joints = record.BodyJoints,
+        Accessories = {}, RootPart = "HumanoidRootPart",
+        PoseExplanation = "PoseDifferenceFromRest is an observation, not evidence of tampering"
+    }
+    for _, part in ipairs(record.BodyParts) do
+        result.Parts[#result.Parts + 1] = {
+            Name = part.Name, Path = part.Path, ClassName = part.ClassName,
+            Properties = part.Properties, RelativeToRoot = part.RelativeToRoot,
+            AttachmentsAndWraps = part.Children, OriginalSize = part.OriginalSize
+        }
+    end
+    for _, accessory in ipairs(record.Accessories) do
+        result.Accessories[#result.Accessories + 1] = {
+            Name = accessory.Name, Path = accessory.Path,
+            LinkedBodyParts = accessory.LinkedBodyParts, LinkingMethod = accessory.LinkingMethod,
+            Attachments = accessory.Attachments, Welds = accessory.Welds, Wraps = accessory.Wraps,
+            Handle = accessory.Handle
+        }
+    end
+    return result
+end
+
+function F.V38.compareAppearance(record)
+    local result, comparisons = {}, {}
+    local descriptions = record.Description or {}
+    local bodyAssetKeys = {
+        Head = "Head", Torso = "Torso", UpperTorso = "Torso", LowerTorso = "Torso",
+        ["Left Arm"] = "LeftArm", ["Right Arm"] = "RightArm",
+        LeftUpperArm = "LeftArm", LeftLowerArm = "LeftArm", LeftHand = "LeftArm",
+        RightUpperArm = "RightArm", RightLowerArm = "RightArm", RightHand = "RightArm",
+        ["Left Leg"] = "LeftLeg", ["Right Leg"] = "RightLeg",
+        LeftUpperLeg = "LeftLeg", LeftLowerLeg = "LeftLeg", LeftFoot = "LeftLeg",
+        RightUpperLeg = "RightLeg", RightLowerLeg = "RightLeg", RightFoot = "RightLeg"
+    }
+    local pairsOfColors = {
+        Head = "HeadColor", Torso = "TorsoColor", UpperTorso = "TorsoColor",
+        LowerTorso = "TorsoColor", ["Left Arm"] = "LeftArmColor", ["Right Arm"] = "RightArmColor",
+        ["Left Leg"] = "LeftLegColor", ["Right Leg"] = "RightLegColor",
+        LeftUpperArm = "LeftArmColor", RightUpperArm = "RightArmColor",
+        LeftUpperLeg = "LeftLegColor", RightUpperLeg = "RightLegColor"
+    }
+    for _, part in ipairs(record.BodyParts) do
+        local key = pairsOfColors[part.Name]
+        local expected = key and descriptions[key]
+        local actual = part.Properties.Color
+        if type(actual) == "table" and type(expected) == "table"
+            and expected.__type == "Color3" and actual.__type == "Color3" then
+            local distance = math.abs((actual.r or 0) - (expected.r or 0))
+                + math.abs((actual.g or 0) - (expected.g or 0))
+                + math.abs((actual.b or 0) - (expected.b or 0))
+            if distance > 0.08 then
+                result[#result + 1] = { BodyPart = part.Name, Property = "Color", Expected = expected,
+                    Observed = actual, Reason = "Description and locally rendered color differ" }
+            end
+        end
+        local bodyId = descriptions[bodyAssetKeys[part.Name]]
+        if part.Properties.MeshId and tonumber(bodyId) and tonumber(bodyId) > 0 then
+            comparisons[#comparisons + 1] = {
+                BodyPart = part.Name, DescriptionAssetId = bodyId,
+                RenderedMeshId = part.Properties.MeshId, TextureId = part.Properties.TextureID,
+                Status = "Different asset identifier namespaces; cannot assert mismatch from ID comparison alone"
+            }
+        end
+    end
+    for name, descriptionKey in pairs({
+        BodyHeightScale = "HeightScale", BodyWidthScale = "WidthScale", BodyDepthScale = "DepthScale",
+        HeadScale = "HeadScale", BodyTypeScale = "BodyTypeScale", BodyProportionScale = "ProportionScale"
+    }) do
+        local actual = record.ScaleValues[name]
+        local expected = descriptions[descriptionKey]
+        if type(actual) == "number" and type(expected) == "number"
+            and math.abs(actual - expected) > 0.03 then
+            result[#result + 1] = { Property = name, Expected = expected, Observed = actual,
+                Reason = "AppliedDescription and replicated humanoid scale value differ" }
+        end
+    end
+    return result, comparisons
+end
+
+function F.V38.makeRigDocument()
+    local byId = {}
+    for _, row in ipairs(F.avatarInspection.Records) do
+        if row.RigHierarchy then byId[tostring(row.UserId)] = {
+            UserId = row.UserId, Name = row.Name, TimeSeconds = row.TimeSeconds,
+            Hierarchy = row.RigHierarchy, JointChanges = row.JointChanges,
+            AppearanceDiscrepancies = row.AppearanceDiscrepancies,
+            AssetIdentityComparisons = row.AssetIdentityComparisons
+        } end
+    end
+    local rigs = {}
+    for _, row in pairs(byId) do rigs[#rigs + 1] = row end
+    table.sort(rigs, function(a, b) return a.UserId < b.UserId end)
+    return { Schema = "Synergy.RigHierarchy", Version = 1, DumpId = currentDumpId,
+        TotalPlayers = #rigs, Note = "Best-effort client-replicated rig, not mesh binary data", Players = rigs }
+end
+
+function F.V38.trackAssets(object, properties, source)
+    if type(properties) ~= "table" then return end
+    local r = F.V38
+    for property, value in pairs(properties) do
+        if (type(value) == "string" or type(value) == "number") and type(property) == "string" then
+            value = tostring(value)
+            local k = string.lower(property)
+            if k:find("id", 1, true) or k:find("texture", 1, true)
+                or k == "head" or k == "torso" or k == "leftarm" or k == "rightarm"
+                or k == "leftleg" or k == "rightleg" or k == "face"
+                or k == "shirt" or k == "pants" or k == "graphictshirt"
+                or k:find("animation", 1, true) or k:find("accessory", 1, true)
+                or k:find("map", 1, true) or k:find("image", 1, true)
+                or k:find("asset", 1, true) or k:find("graphic", 1, true)
+                or k:find("template", 1, true) or k == "video" then
+                local id = value:match("[?&]id=(%d+)") or value:match("rbxassetid://(%d+)")
+                    or value:match("^%s*(%d+)%s*$")
+                if id and id ~= "0" then
+                    local entry = r.AssetIndex[id]
+                    if not entry then
+                        if #r.AssetList >= CONFIG.V38MaxAssetIds then
+                            r.AssetOmitted = r.AssetOmitted + 1
+                        else
+                            entry = { Id = id, TotalReferences = 0, Properties = {}, References = {}, ReferenceOmitted = 0, _Seen = {} }
+                            r.AssetIndex[id] = entry
+                            r.AssetList[#r.AssetList + 1] = entry
+                        end
+                    end
+                    if entry then
+                        local path = F.safeFullName(object)
+                        local key = path .. "|" .. property
+                        if not entry._Seen[key] then
+                            entry.TotalReferences = entry.TotalReferences + 1
+                            entry.Properties[property] = (entry.Properties[property] or 0) + 1
+                            if #entry.References < CONFIG.V38MaxReferencesPerAsset then
+                                entry.References[#entry.References + 1] = {
+                                    Path = path, ClassName = F.safeClassName(object),
+                                    Property = property, Source = source
+                                }
+                            else
+                                entry.ReferenceOmitted = entry.ReferenceOmitted + 1
+                            end
+                            entry._Seen[key] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+function F.V38.visualEvent(kind, object, details)
+    F.V38.addEvent(kind, object, details)
+end
+
+function F.V38.watchMarker(track, marker, log)
+    if type(marker) ~= "string" or #marker == 0 or #marker > 80 then return end
+    local r = F.V38
+    if not r.TrackMarkerNames then r.TrackMarkerNames = setmetatable({}, { __mode = "k" }) end
+    local names = r.TrackMarkerNames[track]
+    if not names then names = {} r.TrackMarkerNames[track] = names end
+    if names[marker] or r.ListenerMarkers >= CONFIG.V38MaxMarkerListeners then return end
+    local ok, signal = pcall(function() return track:GetMarkerReachedSignal(marker) end)
+    if ok and F.V38.connect(signal, function(value)
+        log("AnimationMarkerReached", { Marker = marker, Value = F.sanitizeString(tostring(value)) })
+    end) then
+        names[marker] = true
+        r.ListenerMarkers = r.ListenerMarkers + 1
+    end
+end
+
+function F.V38.discoverAnimationMarkers(track, log)
+    if not CONFIG.V38DiscoverAnimationMarkers then return end
+    local r = F.V38
+    local ok, assetId = pcall(function() return track.Animation.AnimationId end)
+    if not ok or type(assetId) ~= "string" or assetId == "" then return end
+    r.MarkerLookupCache = r.MarkerLookupCache or {}
+    local cached = r.MarkerLookupCache[assetId]
+    if type(cached) == "table" then
+        for _, name in ipairs(cached) do F.V38.watchMarker(track, name, log) end
+        return
+    end
+    if cached == false or (r.MarkerLookupsRequested or 0) >= CONFIG.V38MaxMarkerAssetLookups then return end
+    r.MarkerLookupsRequested = (r.MarkerLookupsRequested or 0) + 1
+    r.MarkerLookupCache[assetId] = false
+    task.spawn(function()
+        r.MarkerLookupsActive = r.MarkerLookupsActive or 0
+        local startedWait = os.clock()
+        while r.MarkerLookupsActive >= CONFIG.V38MaxMarkerLookupConcurrent
+            and runtimeTraceActive and os.clock() - startedWait < 6 do
+            task.wait(0.2)
+        end
+        if not runtimeTraceActive then return end
+        r.MarkerLookupsActive = r.MarkerLookupsActive + 1
+        local loaded, sequence = pcall(function()
+            return game:GetService("KeyframeSequenceProvider"):GetKeyframeSequenceAsync(assetId)
+        end)
+        local discovered, seen = {}, {}
+        if loaded and sequence then
+            local framesOk, frames = pcall(function() return sequence:GetKeyframes() end)
+            if framesOk then
+                for _, frame in ipairs(frames) do
+                    local markersOk, markers = pcall(function() return frame:GetMarkers() end)
+                    if markersOk then
+                        for _, marker in ipairs(markers) do
+                            local name = F.safeName(marker)
+                            if not seen[name] and #discovered < 40 then
+                                seen[name] = true
+                                discovered[#discovered + 1] = name
+                            end
+                        end
+                    end
+                end
+            end
+            pcall(function() sequence:Destroy() end)
+        else
+            F.V38.markMissing("AnimationMarkerAssetUnavailable", assetId)
+        end
+        r.MarkerLookupsActive = math.max(0, r.MarkerLookupsActive - 1)
+        r.MarkerLookupCache[assetId] = discovered
+        if runtimeTraceActive then
+            for _, name in ipairs(discovered) do F.V38.watchMarker(track, name, log) end
+        end
+    end)
+end
+
+function F.V38.watchAnimationTrack(track, animator, alreadyPlaying)
+    local r = F.V38
+    if not r.Active or not track then return end
+    if not r.Tracks then r.Tracks = setmetatable({}, { __mode = "k" }) end
+    if r.Tracks[track] then return end
+    r.Tracks[track] = true
+    local function log(event, details)
+        F.V38.addEvent(event, animator, {
+            Track = F.avatarRead(track, "Name"), Animation = F.avatarRead(track, "Animation"),
+            AnimationId = (function()
+                local ok, id = pcall(function() return track.Animation.AnimationId end)
+                return ok and id or nil
+            end)(),
+            Properties = F.avatarProps(track, { "TimePosition", "Priority", "Speed", "WeightCurrent", "WeightTarget" }),
+            Details = details
+        })
+    end
+    log(alreadyPlaying and "AnimationObservedPlaying" or "AnimationStarted", nil)
+    F.V38.signal(track, "Stopped", function() log("AnimationStopped", nil) end)
+    F.V38.signal(track, "Ended", function() log("AnimationEnded", nil) end)
+    F.V38.signal(track, "DidLoop", function() log("AnimationLooped", nil) end)
+    F.V38.signal(track, "KeyframeReached", function(name)
+        log("AnimationKeyframeReached", { Keyframe = F.sanitizeString(tostring(name)) })
+    end)
+    for _, marker in ipairs({ "Fire", "Shoot", "Hit", "Step", "Footstep", "Swing", "Equip", "Reload",
+        "Impact", "Attack", "Damage", "Sound", "Whoosh", "End", "Marker", "Start" }) do
+        F.V38.watchMarker(track, marker, log)
+    end
+    F.V38.discoverAnimationMarkers(track, log)
+end
+
+function F.V38.watchAnimator(animator)
+    F.V38.signal(animator, "AnimationPlayed", function(track)
+        F.V38.watchAnimationTrack(track, animator)
+    end)
+    local ok, tracks = pcall(function() return animator:GetPlayingAnimationTracks() end)
+    if ok and type(tracks) == "table" then
+        for _, track in ipairs(tracks) do F.V38.watchAnimationTrack(track, animator, true) end
+    end
+end
+
+function F.V38.watchVisual(object, className)
+    if className == "Animator" then
+        F.V38.watchAnimator(object)
+    elseif className == "Sound" then
+        for _, event in ipairs({ "Played", "Paused", "Resumed", "Stopped", "Ended", "DidLoop" }) do
+            F.V38.signal(object, event, function()
+                F.V38.visualEvent("Sound" .. event, object, F.avatarProps(object,
+                    { "SoundId", "TimePosition", "Volume", "PlaybackSpeed", "Playing" }))
+            end)
+        end
+        F.V38.propertySignal(object, "SoundId", function()
+            F.V38.visualEvent("SoundIdChanged", object, { SoundId = F.avatarRead(object, "SoundId") })
+        end)
+    elseif className == "ParticleEmitter" then
+        for _, prop in ipairs({ "Enabled", "Rate", "Texture", "Color", "Transparency", "Size", "Speed" }) do
+            F.V38.propertySignal(object, prop, function()
+                local value = F.avatarRead(object, prop)
+                F.V38.visualEvent((prop == "Enabled" and value == true) and "ParticleEnabled"
+                    or "ParticlePropertyChanged", object, { Property = prop, Value = value })
+            end)
+        end
+        -- ParticleEmitter:Emit(count) has no passive event; do not falsely report emitted particles.
+    elseif className == "Beam" or className == "Trail" then
+        F.V38.propertySignal(object, "Enabled", function()
+            local active = F.avatarRead(object, "Enabled")
+            F.V38.visualEvent(className .. (active and "Enabled" or "Disabled"), object,
+                { Enabled = active })
+        end)
+    end
+    local visualFields = {
+        BasePart = { "Color", "Material", "MaterialVariant", "Transparency", "Size" },
+        MeshPart = { "MeshId", "TextureID" },
+        SpecialMesh = { "MeshId", "TextureId", "Scale" },
+        Decal = { "Texture", "Transparency" }, Texture = { "Texture", "Transparency" },
+        SurfaceAppearance = { "ColorMap", "NormalMap", "MetalnessMap", "RoughnessMap" },
+        MaterialVariant = { "ColorMap", "NormalMap", "MetalnessMap", "RoughnessMap", "BaseMaterial" },
+        AudioPlayer = { "AssetId", "Playing", "Volume", "TimePosition" }
+    }
+    local fields = visualFields[className]
+    if not fields and F.safeIsA(object, "BasePart") then fields = visualFields.BasePart end
+    local merged, seen = {}, {}
+    if F.safeIsA(object, "BasePart") then
+        for _, property in ipairs(visualFields.BasePart) do
+            if not seen[property] then seen[property] = true merged[#merged + 1] = property end
+        end
+    end
+    if fields then
+        for _, property in ipairs(fields) do
+            if not seen[property] then seen[property] = true merged[#merged + 1] = property end
+        end
+    end
+    for _, property in ipairs(merged) do
+        F.V38.propertySignal(object, property, function()
+            F.V38.visualEvent("VisualPropertyChanged", object, {
+                Property = property, Value = F.avatarRead(object, property)
+            })
+        end)
+    end
+end
+
+function F.V38.weaponAppearance(tool, phase)
+    local items, truncated = {}, false
+    local ok, descendants = pcall(function() return tool:GetDescendants() end)
+    if not ok then return { Phase = phase, Error = "DescendantsInaccessible" } end
+    for index, item in ipairs(descendants) do
+        if index > 140 then truncated = true break end
+        local class = F.safeClassName(item)
+        if F.safeIsA(item, "BasePart") or class == "SpecialMesh" or class == "Decal"
+            or class == "Texture" or class == "SurfaceAppearance" or class == "MaterialVariant" then
+            items[#items + 1] = { Path = F.safeFullName(item), ClassName = class,
+                Properties = F.avatarProps(item, {
+                    "MeshId", "TextureID", "TextureId", "Texture", "Color", "Material",
+                    "MaterialVariant", "Transparency", "Size", "ColorMap", "NormalMap", "MetalnessMap", "RoughnessMap"
+                }) }
+        end
+    end
+    return { Phase = phase, Time = os.clock() - runtimeStartedAt, Tool = F.safeFullName(tool),
+        ToolProperties = F.avatarProps(tool, { "Grip", "GripForward", "GripRight", "GripUp",
+            "GripPos", "RequiresHandle", "TextureId", "Enabled" }),
+        Items = items, Truncated = truncated }
+end
+
+function F.V38.firstPersonState(tool, event)
+    local camera = workspace.CurrentCamera
+    local row = {
+        Event = event, Camera = camera and F.avatarProps(camera,
+            { "CFrame", "Focus", "CameraType", "CameraSubject", "FieldOfView" }) or nil,
+        Tool = tool and F.safeFullName(tool) or nil, Arms = {}, Joints = {}, Tracks = {}
+    }
+    local character = LocalPlayer and LocalPlayer.Character
+    if character then
+        for _, part in ipairs(character:GetDescendants()) do
+            local name = F.safeName(part)
+            if (F.safeIsA(part, "BasePart") and
+                (name:find("Arm") or name:find("Hand") or name:find("View") or name:find("Weapon")))
+                and #row.Arms < 40 then
+                row.Arms[#row.Arms + 1] = { Path = F.safeFullName(part),
+                    Properties = F.avatarProps(part, { "CFrame", "Size", "LocalTransparencyModifier" }) }
+            elseif F.safeClassName(part) == "Motor6D" and #row.Joints < 50 then
+                row.Joints[#row.Joints + 1] = F.V38.captureJoint(part, character)
+            elseif F.safeClassName(part) == "Animator" then
+                row.Tracks = F.getAnimatorPlaybackTracks(part) or {}
+            end
+        end
+    end
+    return row
+end
+
+function F.V38.watchWeapon(tool)
+    if not LocalPlayer then return end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local character = LocalPlayer.Character
+    if not ((backpack and F.safeIsDescendantOf(tool, backpack))
+        or (character and F.safeIsDescendantOf(tool, character))) then return end
+    local r = F.V38
+    if not r.Weapons then r.Weapons = setmetatable({}, { __mode = "k" }) end
+    if r.Weapons[tool] then return end
+    r.Weapons[tool] = true
+    local function snapshot(phase)
+        if not runtimeTraceActive then return end
+        if #r.WeaponSnapshots >= 350 then r.WeaponOmitted = r.WeaponOmitted + 1 return end
+        local record = F.V38.weaponAppearance(tool, phase)
+        record.Viewmodel = F.V38.firstPersonState(tool, phase)
+        r.WeaponSnapshots[#r.WeaponSnapshots + 1] = record
+        F.V38.addEvent("Tool" .. phase, tool, { AppearanceSnapshot = #r.WeaponSnapshots })
+    end
+    snapshot("Observed")
+    F.V38.signal(tool, "Equipped", function()
+        snapshot("Equipped")
+        task.delay(0.12, function()
+            if runtimeTraceActive then snapshot("EquippedSettled") end
+        end)
+    end)
+    F.V38.signal(tool, "Unequipped", function() snapshot("Unequipped") end)
+    F.V38.signal(tool, "Activated", function() snapshot("Activated") end)
+    F.V38.signal(tool, "Deactivated", function() snapshot("Deactivated") end)
+end
+
+function F.V38.watchConstraint(object, className)
+    local fields = {
+        "Enabled", "Active", "Part0", "Part1", "Attachment0", "Attachment1",
+        "C0", "C1", "LimitsEnabled", "TargetAngle", "AngularVelocity", "Length"
+    }
+    for _, property in ipairs(fields) do
+        F.V38.propertySignal(object, property, function()
+            F.V38.addEvent("PhysicsPropertyChanged", object,
+                { Property = property, Value = F.avatarRead(object, property) })
+        end)
+    end
+end
+
+function F.V38.watchTags(tag)
+    local r = F.V38
+    if r.TagWatch[tag] then return end
+    local count = 0
+    for _ in pairs(r.TagWatch) do count = count + 1 end
+    if count >= CONFIG.V38MaxTags then
+        F.V38.markMissing("LimitReached", "TagWatcherCap")
+        return
+    end
+    r.TagWatch[tag] = true
+    for _, action in ipairs({ "Added", "Removed" }) do
+        local ok, signal = pcall(function()
+            return action == "Added" and CollectionService:GetInstanceAddedSignal(tag)
+                or CollectionService:GetInstanceRemovedSignal(tag)
+        end)
+        if ok then
+            F.V38.connect(signal, function(object)
+                r.TagEventCount = r.TagEventCount + 1
+                F.V38.addEvent("Tag" .. action, object, { Tag = tag })
+            end)
+        end
+    end
+end
+
+function F.V38.observeInstance(object, className)
+    local r = F.V38
+    if not runtimeTraceActive or r.Observed[object] then return end
+    className = className or F.safeClassName(object)
+    local isVisual = SELECTION.Visuals and (F.safeIsA(object, "BasePart")
+        or className == "Animator" or className == "Sound" or className == "ParticleEmitter"
+        or className == "Beam" or className == "Trail" or className == "AudioPlayer"
+        or className == "MeshPart" or className == "Part" or className == "SpecialMesh"
+        or className == "Decal" or className == "Texture" or className == "MaterialVariant"
+        or className == "SurfaceAppearance")
+    local isPhysics = SELECTION.Structure and PHYSICS_CLASSES[className]
+        and className ~= "Attachment" and className ~= "Bone"
+    local isTool = className == "Tool"
+    local isBindable = (className == "BindableEvent"
+        or className == "BindableFunction" or className == "RemoteFunction")
+    if not isVisual and not isPhysics and not isTool and not isBindable then return end
+    if r.ObservedCount >= CONFIG.V38MaxObserved then
+        r.Coverage.ObserversOmitted = r.Coverage.ObserversOmitted + 1
+        return
+    end
+    local commonPart = F.safeIsA(object, "BasePart") and not isTool
+    if commonPart then
+        r.LowPriorityObserved = r.LowPriorityObserved or 0
+        local parent = object.Parent
+        local isEquipment = parent and (F.safeIsA(parent, "Tool") or F.safeIsA(parent, "Accessory"))
+        local isCharacter = parent and F.safeIsA(parent, "Model")
+            and parent:FindFirstChildOfClass("Humanoid") ~= nil
+        if not isEquipment and not isCharacter then
+            if r.LowPriorityObserved >= 500 then
+                r.Coverage.ObserversOmitted = r.Coverage.ObserversOmitted + 1
+                return
+            end
+            r.LowPriorityObserved = r.LowPriorityObserved + 1
+        end
+    end
+    r.Observed[object] = true
+    r.ObservedCount = r.ObservedCount + 1
+    if isVisual then F.V38.watchVisual(object, className) end
+    if isPhysics then F.V38.watchConstraint(object, className) end
+    if isTool then F.V38.watchWeapon(object) end
+    if isBindable then F.V38.watchBindable(object, className) end
+end
+
+function F.V38.markMissing(category, detail)
+    local r = F.V38
+    local key = tostring(category) .. "|" .. tostring(detail)
+    r.MissingCounts[key] = (r.MissingCounts[key] or 0) + 1
+    if not r.Missing[key] then
+        local count = 0
+        for _ in pairs(r.Missing) do count = count + 1 end
+        if count < 120 then r.Missing[key] = true end
+    end
+end
+
+function F.V38.inferValue(value, depth, seen)
+    local kind = typeof(value)
+    if kind == "buffer" then
+        local size = nil
+        if type(buffer) == "table" and type(buffer.len) == "function" then
+            local ok, result = pcall(buffer.len, value)
+            if ok then size = result end
+        end
+        return { Type = "buffer", Length = size }
+    end
+    if kind ~= "table" then
+        return { Type = kind, InstanceClass = kind == "Instance" and F.safeClassName(value) or nil }
+    end
+    if seen[value] then return { Type = "table", Circular = true } end
+    if depth >= CONFIG.V38MaxNestedDepth then return { Type = "table", DepthLimit = true } end
+    seen[value] = true
+    local entries, n, omitted = {}, 0, 0
+    for key, child in pairs(value) do
+        n = n + 1
+        if n <= CONFIG.V38MaxNestedItems then
+            entries[#entries + 1] = {
+                KeyType = typeof(key), Key = F.sanitizeString(tostring(key)):sub(1, 80),
+                Shape = F.V38.inferValue(child, depth + 1, seen)
+            }
+        else
+            omitted = omitted + 1
+        end
+    end
+    seen[value] = nil
+    table.sort(entries, function(a, b)
+        return a.KeyType == b.KeyType and a.Key < b.Key or a.KeyType < b.KeyType
+    end)
+    return { Type = "table", Size = n, Entries = entries, Omitted = omitted,
+        Note = "Observed client-side schema; not a definitive remote contract" }
+end
+
+function F.V38.inferPacked(packed)
+    local results = {}
+    if type(packed) ~= "table" then return results end
+    for index = 1, math.min(packed.n or #packed, 24) do
+        local ok, shape = pcall(F.V38.inferValue, packed[index], 0, {})
+        results[index] = ok and shape or { Type = typeof(packed[index]), AnalysisError = true }
+    end
+    return results
+end
+
+function F.V38.onRemoteRecord(record)
+    local r = F.V38
+    local key = tostring(record.Path) .. "|" .. tostring(record.Method) .. "|" .. tostring(record.Direction)
+    local stats = r.RemoteStats[key]
+    if not stats then
+        r.RemoteStatsCount = r.RemoteStatsCount or 0
+        if r.RemoteStatsCount >= 5000 then
+            r.RemoteStatsOmitted = (r.RemoteStatsOmitted or 0) + 1
+            return
+        end
+        r.RemoteStatsCount = r.RemoteStatsCount + 1
+        stats = { Path = record.Path, Method = record.Method, Direction = record.Direction,
+            Calls = 0, FirstTime = record.Time, LastTime = nil, PeakCallsPerSecond = 0,
+            MinInterval = nil, MaxInterval = nil, Seconds = {}, Samples = {} }
+        r.RemoteStats[key] = stats
+    end
+    stats.Calls = stats.Calls + 1
+    local second = math.floor(record.Time)
+    stats.Seconds[second] = (stats.Seconds[second] or 0) + 1
+    stats.PeakCallsPerSecond = math.max(stats.PeakCallsPerSecond, stats.Seconds[second])
+    if stats.LastTime then
+        local delta = math.max(0, record.Time - stats.LastTime)
+        stats.MinInterval = math.min(stats.MinInterval or delta, delta)
+        stats.MaxInterval = math.max(stats.MaxInterval or delta, delta)
+    end
+    stats.LastTime = record.Time
+    if #stats.Samples < 12 then
+        stats.Samples[#stats.Samples + 1] = { Time = record.Time, Shape = record.ArgumentShape }
+    end
+    local recent = { Time = record.Time, Path = record.Path, Method = record.Method }
+    r.RecentRemotes[#r.RecentRemotes + 1] = recent
+    if #r.RecentRemotes > 150 then table.remove(r.RecentRemotes, 1) end
+    for i = #r.RecentInputs, 1, -1 do
+        local input = r.RecentInputs[i]
+        if record.Time - input.Time > 1.2 then break end
+        if input.Time <= record.Time then
+            F.V38.addCorrelation(input, recent, nil)
+            break
+        end
+    end
+end
+
+function F.V38.addCorrelation(input, remote, effect)
+    local r = F.V38
+    if not r.Correlations then r.Correlations = {} end
+    if #r.Correlations >= 1500 then return end
+    r.Correlations[#r.Correlations + 1] = {
+        Input = input, Remote = remote,
+        Effect = effect and { Kind = effect.Kind, Time = effect.Time, Object = effect.Object } or nil,
+        Analysis = "Temporal proximity only; causality is not established"
+    }
+end
+
+function F.V38.trackEffectCorrelation(row)
+    if not row or not row.Time then return end
+    for i = #F.V38.RecentRemotes, 1, -1 do
+        local remote = F.V38.RecentRemotes[i]
+        if row.Time - remote.Time > 0.9 then break end
+        if remote.Time <= row.Time then
+            F.V38.addCorrelation(nil, remote, row)
+            return
+        end
+    end
+end
+
+function F.V38.scanSource(source, record, path)
+    if type(source) ~= "string" or not record then return end
+    local r = F.V38
+    local n = 0
+    local aliases = {}
+    for lineNumber, line in ipairs(string.split(source, "\n")) do
+        local alias, expression = line:match("local%s+([%w_]+)%s*=%s*(.+)")
+        if alias and expression and #expression < 220 and
+            (expression:find("GetService", 1, true) or expression:find("WaitForChild", 1, true)
+                or expression:find("FindFirstChild", 1, true)) then
+            aliases[alias] = expression
+        end
+        local edges = {}
+        local requireExpr = line:match("require%s*%(%s*([^%)]+)")
+        if requireExpr then
+            edges[#edges + 1] = { Kind = "Require", TargetExpression = requireExpr:sub(1, 170),
+                Confidence = requireExpr:find("script.", 1, true) and "Medium" or "Low" }
+        end
+        for _, method in ipairs({ "FireServer", "InvokeServer", "OnClientEvent", "OnClientInvoke",
+            "Fire", "Invoke" }) do
+            local pos = line:find(method, 1, true)
+            if pos then
+                local prefix = line:sub(1, pos - 1)
+                local expr = prefix:match("([%w_%.%[%]\"']+):?$") or "Unknown"
+                local alias = expr:match("^([%w_]+)$")
+                local probablePath = alias and aliases[alias]
+                edges[#edges + 1] = { Kind = "RemoteOrBindableReference", Method = method,
+                    TargetExpression = expr:sub(1, 170),
+                    ProbableSourceExpression = probablePath,
+                    Confidence = probablePath and "Medium" or "Low",
+                    DirectCallCandidate = (method == "FireServer" or method == "InvokeServer")
+                        and prefix:match("%.$") ~= nil or nil }
+            end
+        end
+        for _, edge in ipairs(edges) do
+            if #r.DependencyEdges >= CONFIG.V38MaxDependencyEdges then
+                r.DependencyOmitted = r.DependencyOmitted + 1
+                return
+            end
+            edge.ScriptPath = record.Path
+            edge.ScriptClass = record.ClassName
+            edge.File = path
+            edge.Line = lineNumber
+            edge.Text = line:sub(1, 240)
+            r.DependencyEdges[#r.DependencyEdges + 1] = edge
+        end
+        if #edges > 0 then n = n + #edges end
+        if n >= 150 then break end
+    end
+end
+
+function F.V38.watchCallbacks(object, className)
+    if not CONFIG.V38CaptureCallbackCalls then return end
+    if className ~= "RemoteFunction" and className ~= "BindableFunction" then return end
+    local property = className == "RemoteFunction" and "OnClientInvoke" or "OnInvoke"
+    local existing = F.V38.CallbacksWrapped[object]
+    if existing then
+        local readOk, current = pcall(function() return object[property] end)
+        if readOk and current == existing.Wrapper then return end
+        F.V38.CallbacksWrapped[object] = nil
+    end
+    local ok, original = pcall(function() return object[property] end)
+    if not ok then
+        if not F.V38.CallbackDenied then F.V38.CallbackDenied = setmetatable({}, { __mode = "k" }) end
+        if not F.V38.CallbackDenied[object] then
+            F.V38.CallbackDenied[object] = true
+            F.V38.markMissing("CallbackReadDenied", F.safeFullName(object))
+        end
+        return
+    end
+    if type(original) ~= "function" then return end
+    local function wrapper(...)
+        local args = table.pack(...)
+        F.V38.addEvent("CallbackInvoked", object, {
+            CallbackProperty = property, ArgumentShape = F.V38.inferPacked(args),
+            Arguments = F.serializePackedRuntimeValues(args)
+        })
+        -- Calling original directly preserves errors and yielding behavior of its callback.
+        local returns = table.pack(original(...))
+        F.V38.addEvent("CallbackReturned", object, {
+            CallbackProperty = property, Returns = F.serializePackedRuntimeValues(returns)
+        })
+        return table.unpack(returns, 1, returns.n)
+    end
+    local installed = pcall(function() object[property] = wrapper end)
+    if installed then
+        F.V38.CallbacksWrapped[object] = { Property = property, Original = original, Wrapper = wrapper }
+        F.V38.addEvent("CallbackWrapperInstalled", object, { Property = property })
+    else
+        F.V38.markMissing("CallbackWriteDenied", F.safeFullName(object))
+    end
+end
+
+function F.V38.watchBindable(object, className)
+    if className == "BindableEvent" then
+        F.V38.signal(object, "Event", function(...)
+            local args = table.pack(...)
+            F.V38.addEvent("BindableEventFired", object, {
+                Arguments = F.serializePackedRuntimeValues(args), ArgumentShape = F.V38.inferPacked(args)
+            })
+        end)
+    elseif className == "BindableFunction" or className == "RemoteFunction" then
+        if not F.V38.CallbackCandidates then
+            F.V38.CallbackCandidates = setmetatable({}, { __mode = "k" })
+        end
+        F.V38.CallbackCandidates[object] = className
+        F.V38.watchCallbacks(object, className)
+    end
+end
+
+function F.V38.collisionMatrix()
+    local physics = game:GetService("PhysicsService")
+    local ok, groups = pcall(function() return physics:GetRegisteredCollisionGroups() end)
+    if not ok then
+        ok, groups = pcall(function() return physics:GetCollisionGroups() end)
+    end
+    if not ok or type(groups) ~= "table" then
+        F.V38.markMissing("ApiUnavailable", "CollisionGroups")
+        return { Available = false, Groups = {}, Matrix = {} }
+    end
+    local names = {}
+    for _, entry in ipairs(groups) do
+        local name = entry.name or entry.Name
+        if type(name) == "string" then names[#names + 1] = name end
+    end
+    table.sort(names)
+    local matrix = {}
+    for _, a in ipairs(names) do
+        local row = {}
+        for _, b in ipairs(names) do
+            local works, collides = pcall(function() return physics:CollisionGroupsAreCollidable(a, b) end)
+            row[b] = works and collides or "Unavailable"
+        end
+        matrix[a] = row
+    end
+    return { Available = true, Groups = names, Matrix = matrix }
+end
+
+function F.V38.characterSnapshot(player, character, cause)
+    if not character then return nil end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    local snapshot = {
+        UserId = player.UserId, Name = F.safeName(player), Event = cause,
+        Time = os.clock() - runtimeStartedAt, Attributes = F.getAttributes(character),
+        CharacterParts = {}, Inventory = {}, Humanoid = humanoid and F.avatarProps(humanoid,
+            { "RigType", "MaxHealth", "HipHeight", "WalkSpeed", "JumpPower" }) or nil
+    }
+    for _, child in ipairs(character:GetChildren()) do
+        if #snapshot.CharacterParts >= 100 then break end
+        snapshot.CharacterParts[#snapshot.CharacterParts + 1] = {
+            Name = F.safeName(child), ClassName = F.safeClassName(child),
+            Attributes = F.optionalMap(F.getAttributes(child)),
+            Size = F.safeIsA(child, "BasePart") and F.avatarRead(child, "Size") or nil
+        }
+    end
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") and #snapshot.Inventory < 60 then
+                snapshot.Inventory[#snapshot.Inventory + 1] = F.safeName(tool)
+            end
+        end
+    end
+    table.sort(snapshot.Inventory)
+    table.sort(snapshot.CharacterParts, function(a, b) return a.Name < b.Name end)
+    return snapshot
+end
+
+function F.V38.diffCharacterSnapshots(previous, current)
+    local result = {
+        AddedParts = {}, RemovedParts = {}, ChangedParts = {},
+        AddedTools = {}, RemovedTools = {}, ChangedAttributes = {},
+        HumanoidChanged = F.V38.digest(previous.Humanoid) ~= F.V38.digest(current.Humanoid),
+        PreviousHumanoid = previous.Humanoid, CurrentHumanoid = current.Humanoid
+    }
+    local oldParts, newParts = {}, {}
+    for _, item in ipairs(previous.CharacterParts or {}) do
+        oldParts[item.Name .. "|" .. item.ClassName] = item
+    end
+    for _, item in ipairs(current.CharacterParts or {}) do
+        local key = item.Name .. "|" .. item.ClassName
+        newParts[key] = true
+        if not oldParts[key] then
+            if #result.AddedParts < 40 then result.AddedParts[#result.AddedParts + 1] = key end
+        elseif F.V38.digest(oldParts[key]) ~= F.V38.digest(item) then
+            if #result.ChangedParts < 40 then result.ChangedParts[#result.ChangedParts + 1] = {
+                Key = key, Before = oldParts[key], After = item } end
+        end
+    end
+    for key in pairs(oldParts) do
+        if not newParts[key] and #result.RemovedParts < 40 then
+            result.RemovedParts[#result.RemovedParts + 1] = key
+        end
+    end
+    local oldTools, newTools = {}, {}
+    for _, name in ipairs(previous.Inventory or {}) do oldTools[name] = true end
+    for _, name in ipairs(current.Inventory or {}) do
+        newTools[name] = true
+        if not oldTools[name] and #result.AddedTools < 50 then
+            result.AddedTools[#result.AddedTools + 1] = name
+        end
+    end
+    for name in pairs(oldTools) do
+        if not newTools[name] and #result.RemovedTools < 50 then
+            result.RemovedTools[#result.RemovedTools + 1] = name
+        end
+    end
+    local attrNames = {}
+    for key in pairs(previous.Attributes or {}) do attrNames[key] = true end
+    for key in pairs(current.Attributes or {}) do attrNames[key] = true end
+    for key in pairs(attrNames) do
+        local before = previous.Attributes and previous.Attributes[key]
+        local after = current.Attributes and current.Attributes[key]
+        if F.V38.digest(before) ~= F.V38.digest(after) and #result.ChangedAttributes < 50 then
+            result.ChangedAttributes[#result.ChangedAttributes + 1] = {
+                Name = key, Before = before, After = after }
+        end
+    end
+    return result
+end
+
+function F.V38.watchCharacter(player, character)
+    if not character or not runtimeTraceActive then return end
+    local r = F.V38
+    if r.PlayerCharacters[character] then return end
+    r.PlayerCharacters[character] = true
+    local snapshot = F.V38.characterSnapshot(player, character, "Spawn")
+    local previous = r.CharacterSnapshots[player.UserId]
+    local difference = nil
+    if previous then difference = F.V38.diffCharacterSnapshots(previous, snapshot) end
+    r.CharacterSnapshots[player.UserId] = snapshot
+    F.V38.addEvent("CharacterSpawned", character, { Player = player.UserId,
+        RespawnDifferences = difference, Snapshot = snapshot })
+    local function watchHumanoid(humanoid)
+        if not humanoid or not humanoid:IsA("Humanoid") then return end
+        if not r.Humanoids then r.Humanoids = setmetatable({}, { __mode = "k" }) end
+        if r.Humanoids[humanoid] then return end
+        r.Humanoids[humanoid] = true
+        F.V38.signal(humanoid, "Died", function()
+            if not runtimeTraceActive then return end
+            local row = { Time = os.clock() - runtimeStartedAt,
+                PlayerUserId = player.UserId, Name = F.safeName(player),
+                Character = F.safeFullName(character),
+                LastPosition = F.avatarRead(character:FindFirstChild("HumanoidRootPart"), "Position"),
+                Humanoid = F.avatarProps(humanoid, { "Health", "MaxHealth" }) }
+            if #r.CharacterDeaths < 700 then r.CharacterDeaths[#r.CharacterDeaths + 1] = row end
+            F.V38.addEvent("PlayerDied", character, row)
+        end)
+    end
+    watchHumanoid(character:FindFirstChildOfClass("Humanoid"))
+    F.V38.connect(character.ChildAdded, function(child)
+        if child:IsA("Humanoid") then watchHumanoid(child) end
+    end)
+end
+
+function F.V38.watchPlayer(player)
+    local r = F.V38
+    if not r.Players then r.Players = setmetatable({}, { __mode = "k" }) end
+    if r.Players[player] then return end
+    r.Players[player] = true
+    F.V38.signal(player, "CharacterAdded", function(char)
+        F.V38.watchCharacter(player, char)
+        task.delay(1, function()
+            if runtimeTraceActive then
+                local snap = F.V38.characterSnapshot(player, char, "CharacterReady")
+                if snap then r.CharacterSnapshots[player.UserId] = snap end
+            end
+        end)
+    end)
+    F.V38.signal(player, "CharacterRemoving", function(char)
+        F.V38.addEvent("CharacterRemoving", char, { PlayerUserId = player.UserId })
+    end)
+    F.V38.watchCharacter(player, player.Character)
+end
+
+function F.V38.startRuntime()
+    local r = F.V38
+    if r.Active or not runtimeTraceActive then return end
+    r.Active = true
+    r.CallbackCoverage = {
+        NamecallHook = CONFIG.RuntimeTraceOutgoingRemotes and capabilities.hookmetamethod or false,
+        DirectCalls = "NotIntercepted: direct method calls may bypass __namecall",
+        CallbackWrappingOptIn = CONFIG.V38CaptureCallbackCalls,
+        CallbackLimitations = "Existing readable callback only; later replacements not reliably observable"
+    }
+    if CONFIG.V38CaptureCallbackCalls then
+        task.spawn(function()
+            while runtimeTraceActive and r.Active do
+                task.wait(1)
+                if not runtimeTraceActive or not r.Active then break end
+                for candidate, className in pairs(r.CallbackCandidates or {}) do
+                    if candidate.Parent then F.V38.watchCallbacks(candidate, className) end
+                end
+            end
+        end)
+    end
+    for _, player in ipairs(Players:GetPlayers()) do F.V38.watchPlayer(player) end
+    F.V38.connect(Players.PlayerAdded, function(player)
+        F.V38.watchPlayer(player)
+        F.V38.addEvent("PlayerJoined", player, { UserId = player.UserId })
+    end)
+    F.V38.connect(Players.PlayerRemoving, function(player)
+        F.V38.addEvent("PlayerLeft", player, {
+            UserId = player.UserId, LastCharacter = r.CharacterSnapshots[player.UserId]
+        })
+    end)
+    local inputService = game:GetService("UserInputService")
+    F.V38.connect(inputService.InputBegan, function(input, consumed)
+        if consumed or not runtimeTraceActive then return end
+        local kind = input.UserInputType
+        local key = input.KeyCode
+        local allowedActionKey = kind == Enum.UserInputType.Keyboard and (
+            key == Enum.KeyCode.E or key == Enum.KeyCode.R or key == Enum.KeyCode.F
+            or key == Enum.KeyCode.Q or key == Enum.KeyCode.Space)
+        if kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch
+            and kind ~= Enum.UserInputType.Gamepad1 and not allowedActionKey then return end
+        local item = { Time = os.clock() - runtimeStartedAt, Type = tostring(kind),
+            KeyCode = tostring(input.KeyCode), ScreenPosition = F.serializeRuntimeValue(input.Position) }
+        r.RecentInputs[#r.RecentInputs + 1] = item
+        if #r.RecentInputs > 100 then table.remove(r.RecentInputs, 1) end
+        F.V38.addEvent("UserInput", nil, item)
+    end)
+    local ok, allTags = pcall(function() return CollectionService:GetAllTags() end)
+    if ok and type(allTags) == "table" then
+        for _, tag in ipairs(allTags) do F.V38.watchTags(tag) end
+    end
+    task.spawn(function()
+        while runtimeTraceActive and r.Active do
+            task.wait(3)
+            if not runtimeTraceActive or not r.Active then break end
+            local success, tags = pcall(function() return CollectionService:GetAllTags() end)
+            if success and type(tags) == "table" then
+                for _, tag in ipairs(tags) do F.V38.watchTags(tag) end
+            end
+        end
+    end)
+    F.V38.connect(game.DescendantAdded, function(object)
+        if not runtimeTraceActive then return end
+        local className = F.safeClassName(object)
+        F.V38.observeInstance(object, className)
+        for _, tag in ipairs(F.getTags(object)) do F.V38.watchTags(tag) end
+        if SELECTION.Visuals and (className == "ParticleEmitter" or className == "Sound"
+            or className == "Beam" or className == "Trail" or className == "Fire"
+            or className == "Smoke" or className == "Sparkles") then
+            F.V38.addEvent("VisualCreated", object, { ClassName = className })
+        end
+    end)
+    local okCamera, runService = pcall(function() return game:GetService("RunService") end)
+    if okCamera then
+        F.V38.connect(runService.Heartbeat, function()
+            if not runtimeTraceActive then return end
+            local now = os.clock()
+            if now - r.LastCameraSample < CONFIG.V38CameraSampleSeconds then return end
+            r.LastCameraSample = now
+            local camera = workspace.CurrentCamera
+            if not camera then return end
+            local state = F.avatarProps(camera, { "CFrame", "FieldOfView", "CameraType", "CameraSubject" })
+            local key = F.V38.digest(state)
+            if r.SampledCamera == key then return end
+            r.SampledCamera = key
+            F.V38.addEvent("CameraChanged", camera, state)
+        end)
+    end
+end
+
+function F.V38.stopRuntime()
+    local r = F.V38
+    r.Active = false
+    for object, values in pairs(r.CallbacksWrapped) do
+        pcall(function()
+            if object[values.Property] == values.Wrapper then
+                object[values.Property] = values.Original
+            end
+        end)
+        r.CallbacksWrapped[object] = nil
+    end
+    for _, connection in ipairs(r.Connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    table.clear(r.Connections)
+end
+
+function F.V38.buildEffectGroups()
+    local rows = {}
+    for _, event in ipairs(F.V38.Events) do
+        if event.Kind == "SoundPlayed" or event.Kind == "ParticleEnabled"
+            or event.Kind == "BeamEnabled" or event.Kind == "TrailEnabled"
+            or event.Kind == "VisualCreated" then
+            rows[#rows + 1] = event
+        end
+    end
+    table.sort(rows, function(a, b) return a.Time < b.Time end)
+    local groups, current = {}, nil
+    for _, row in ipairs(rows) do
+        if not current or row.Time - current.StartSeconds > CONFIG.V38EffectGroupWindow then
+            if #groups >= 2500 then break end
+            current = { StartSeconds = row.Time, EndSeconds = row.Time, Events = {} }
+            groups[#groups + 1] = current
+        end
+        current.EndSeconds = row.Time
+        if #current.Events < 50 then
+            current.Events[#current.Events + 1] = { Time = row.Time, Kind = row.Kind, Path = row.Object }
+        end
+    end
+    return { WindowSeconds = CONFIG.V38EffectGroupWindow, Groups = groups,
+        Caveat = "Temporal clustering only. Emit(count) and non-replicated effects cannot be observed passively." }
+end
+
+function F.V38.makeCoverage()
+    local r = F.V38
+    local unavailable = {}
+    for key in pairs(r.Missing) do unavailable[#unavailable + 1] = {
+        Category = key, Count = r.MissingCounts[key] } end
+    table.sort(unavailable, function(a, b) return a.Category < b.Category end)
+    local issueCategories = {}
+    local issueSamples = {}
+    for _, issue in ipairs(errors) do
+        local stage = tostring(issue.Stage or "Unknown")
+        local reason = tostring(issue.Error or "")
+        local kind = "UnknownCause"
+        if stage == "ReadProperty" or stage == "SerializeProperty" then
+            kind = "PropertyInaccessibleOrSerializationFailed"
+        elseif stage:find("Decompile") or reason:lower():find("decompil") then
+            kind = "DecompilationFailed"
+        elseif reason:lower():find("destroy") or reason:lower():find("parent") then
+            kind = "PossiblyRemovedObject"
+        elseif reason:lower():find("limit") or reason:lower():find("maximum") then
+            kind = "LimitReached"
+        end
+        issueCategories[kind] = (issueCategories[kind] or 0) + 1
+        if #issueSamples < 40 then issueSamples[#issueSamples + 1] = {
+            Kind = kind, Stage = stage, Path = issue.Path, Property = issue.Property,
+            Message = reason:sub(1, 160) } end
+    end
+    local caps = {
+        VisualSnapshot = visualSnapshotOmitted, VisualRuntime = visualDynamicOmitted,
+        VisualAnimation = visualAnimationPlaybackOmitted, GUI = guiCapture.SnapshotOmitted,
+        RuntimeEvents = r.EventOmitted, RemoteUsage = remoteUsageOverflow,
+        Tags = tagOmitted, Physics = physicsOmitted, Interactions = interactionOmitted,
+        AvatarRecords = F.avatarInspection.Skipped, WeaponSnapshots = r.WeaponOmitted,
+        AssetIds = r.AssetOmitted, DependencyEdges = r.DependencyOmitted,
+        RemoteStats = r.RemoteStatsOmitted or 0,
+        Observers = r.Coverage.ObserversOmitted,
+        LocalDecompilerSkipped = clientDecompileStats.Skipped,
+        ModuleDecompilerSkipped = moduleDecompileStats.Skipped
+    }
+    local partial = #errors > 0 or clientDecompileStats.Failed > 0 or moduleDecompileStats.Failed > 0
+    for name, count in pairs(caps) do
+        if count > 0 then
+            partial = true
+            unavailable[#unavailable + 1] = { Category = "LimitReached:" .. name, Count = count }
+        end
+    end
+    return {
+        Schema = "Synergy.CaptureCoverage", Version = 1, DumpId = currentDumpId,
+        Selection = SELECTION,
+        Totals = {
+            TraversedNodes = nodeCount, RegisteredIds = nextInstanceId,
+            Remotes = F.totalRemoteCount(), Scripts = F.totalScriptCount(),
+            VisualSnapshot = visualSnapshotSaved, VisualRuntime = #visualDynamicRecords,
+            AvatarRecords = #F.avatarInspection.Records, RuntimeEvents = #runtimeEventRecords,
+            V38Events = #r.Events, Observers = r.ObservedCount, Assets = #r.AssetList,
+            LocalDecompilerSucceeded = clientDecompileStats.Succeeded,
+            LocalDecompilerFailed = clientDecompileStats.Failed,
+            ModuleDecompilerSucceeded = moduleDecompileStats.Succeeded,
+            ModuleDecompilerFailed = moduleDecompileStats.Failed
+        },
+        Limits = caps, IncompleteCategories = unavailable,
+        ErrorClassification = issueCategories, ErrorSamples = issueSamples,
+        Partial = partial,
+        Limitations = {
+            "Inaccessible properties may be security-restricted; no server-side access is implied.",
+            "Unreplicated/streamed-out objects cannot be enumerated or counted reliably.",
+            "Callback wrapping requires opt-in and an existing readable callback.",
+            "Direct remote calls can bypass __namecall; coverage cannot be measured fully.",
+            "Animation marker listeners support named candidates, not every unknown name.",
+            "Failed decompilation cannot distinguish server-only source from network failure.",
+            "A full client-side view is not evidence of complete game replication."
+        }
+    }
+end
+
+function F.V38.export(writtenFiles)
+    local r = F.V38
+    r.CallbackCoverage.NamecallHook = runtimeOutgoingHookInstalled == true
+    local function write(name, document)
+        F.writeJSONDocument(OUTPUT_FOLDER .. "/" .. name, document, name, writtenFiles, false)
+    end
+    write("coverage.json", F.V38.makeCoverage())
+    if SELECTION.AvatarInspection then write("rig_hierarchy.json", F.V38.makeRigDocument()) end
+    if SELECTION.Visuals or SELECTION.AvatarInspection then
+        table.sort(r.AssetList, function(a, b) return a.Id < b.Id end)
+        for _, asset in ipairs(r.AssetList) do asset._Seen = nil end
+        write("asset_catalogue.json", { DumpId = currentDumpId, UniqueAssets = #r.AssetList,
+            Omitted = r.AssetOmitted, Assets = r.AssetList })
+    end
+    if SELECTION.Structure then write("collision_matrix.json", F.V38.collisionMatrix()) end
+    if SELECTION.LocalSources or SELECTION.ModuleSources then
+        write("source_dependency_graph.json", { DumpId = currentDumpId,
+            Edges = r.DependencyEdges, Total = #r.DependencyEdges, Omitted = r.DependencyOmitted,
+            Caveat = "Static source heuristics; dynamic requires and remote bindings may be unresolved" })
+    end
+    if SELECTION.Runtime then
+        local bursts = {}
+        for _, stat in pairs(r.RemoteStats) do
+            local seconds = {}
+            for second, count in pairs(stat.Seconds) do
+                seconds[#seconds + 1] = { Second = second, Calls = count }
+            end
+            table.sort(seconds, function(a, b) return a.Second < b.Second end)
+            stat.Seconds = seconds
+            bursts[#bursts + 1] = stat
+        end
+        table.sort(bursts, function(a, b) return a.Path < b.Path end)
+        write("runtime_v38_events.json", {
+            DumpId = currentDumpId, Total = #r.Events,
+            OmittedByCap = r.EventOmitted, Events = r.Events,
+            MarkerCoverage = "Known marker candidates, KeyframeReached and best-effort asset marker discovery",
+            MarkerLookupsRequested = r.MarkerLookupsRequested or 0,
+            MarkerListenerCount = r.ListenerMarkers
+        })
+        write("runtime_traffic_analysis.json", {
+            DumpId = currentDumpId, RemoteStats = bursts,
+            RemoteStatsOmitted = r.RemoteStatsOmitted or 0,
+            Correlations = r.Correlations or {}, CallbackCoverage = r.CallbackCoverage,
+            EffectGroups = F.V38.buildEffectGroups(),
+            Limitations = "Direct calls and server-only interactions cannot be measured conclusively"
+        })
+        write("runtime_weapon_viewmodels.json", { DumpId = currentDumpId,
+            Snapshots = r.WeaponSnapshots, Omitted = r.WeaponOmitted,
+            PlayerDeaths = r.CharacterDeaths, LastCharacterSnapshots = r.CharacterSnapshots })
+    end
 end
 
 
@@ -5791,6 +7964,7 @@ function F.buildModuleDecompileResult(entry, guard)
     end
 
     local bytecodeBytes = #bytecode
+    local bytecodeDigest = SELECTION.CombatResearch and F.comparisonDigest(bytecode) or nil
     local success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
     bytecode = nil
 
@@ -5805,6 +7979,7 @@ function F.buildModuleDecompileResult(entry, guard)
             HttpStatus = statusCode,
             Attempts = attempts,
             BytecodeBytes = bytecodeBytes,
+            BytecodeDigest = bytecodeDigest,
             Reason = F.compactDecompilerError(requestError)
         }
     end
@@ -5815,6 +7990,8 @@ function F.buildModuleDecompileResult(entry, guard)
         HttpStatus = statusCode,
         Attempts = attempts,
         BytecodeBytes = bytecodeBytes,
+        BytecodeDigest = bytecodeDigest,
+        SourceDigest = SELECTION.CombatResearch and F.comparisonDigest(source) or nil,
         SourceBytes = #source
     }
 end
@@ -5846,6 +8023,7 @@ function F.applyModuleDecompileResult(entry, result)
             HttpStatus = result.HttpStatus,
             Attempts = result.Attempts,
             BytecodeBytes = result.BytecodeBytes,
+            BytecodeDigest = result.BytecodeDigest,
             Reason = result.Reason
         }
         moduleDecompileStats.Failed = moduleDecompileStats.Failed + 1
@@ -5875,8 +8053,12 @@ function F.applyModuleDecompileResult(entry, result)
         HttpStatus = result.HttpStatus,
         Attempts = result.Attempts,
         BytecodeBytes = result.BytecodeBytes,
+        BytecodeDigest = result.BytecodeDigest,
+        SourceDigest = result.SourceDigest,
         SourceBytes = result.SourceBytes
     }
+    F.scanSourceReferences(source, record, path)
+    F.V38.scanSource(source, record, path)
 
     moduleDecompileStats.Succeeded = moduleDecompileStats.Succeeded + 1
     moduleDecompileStats.Written = moduleDecompileStats.Written + 1
@@ -5951,6 +8133,7 @@ function F.applyClientDecompileResult(entry, result)
             HttpStatus = result.HttpStatus,
             Attempts = result.Attempts,
             BytecodeBytes = result.BytecodeBytes,
+            BytecodeDigest = result.BytecodeDigest,
             Reason = result.Reason or "client decompilation failed"
         }
         clientDecompileStats.Failed = clientDecompileStats.Failed + 1
@@ -5978,8 +8161,12 @@ function F.applyClientDecompileResult(entry, result)
         HttpStatus = result.HttpStatus,
         Attempts = result.Attempts,
         BytecodeBytes = result.BytecodeBytes,
+        BytecodeDigest = result.BytecodeDigest,
+        SourceDigest = result.SourceDigest,
         SourceBytes = result.SourceBytes
     }
+    F.scanSourceReferences(result.Source, record, path)
+    F.V38.scanSource(result.Source, record, path)
     clientDecompileStats.Succeeded = clientDecompileStats.Succeeded + 1
     clientDecompileStats.Written = clientDecompileStats.Written + 1
     clientDecompileStats.SourceBytes = clientDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
@@ -6656,6 +8843,7 @@ end
 
 function F.stopRuntimeTrace()
     runtimeTraceActive = false
+    F.V38.stopRuntime()
     runtimeHookState.Active = false
 
     F.disconnectConnections(runtimeCharacterConnections)
@@ -6748,7 +8936,7 @@ function F.prepareSelectedSnapshotNodes()
                 or (CONFIG.SkipEngineInternals and parentOk and parent == game
                     and (F.safeName(object) == "CoreGui" or F.safeName(object) == "CorePackages"))
             if not isIgnored then
-                local matched = (SELECTION.GUI and GUI_CLASSES[className])
+                local matched = (SELECTION.GUI and F.GUI_CLASSES[className])
                     or (SELECTION.Remotes and REMOTE_BUCKETS[className])
                     or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources)
                         and SCRIPT_BUCKETS[className])
@@ -6806,6 +8994,13 @@ function F.run()
         activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
         activeRegistry.__SynergyStructureDumperActive = activeRegistryToken
     end
+    if SELECTION.ClosureResearch then SELECTION.CombatResearch = true end
+    if SELECTION.CombatResearch then
+        for _, key in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
+            SELECTION[key] = true
+        end
+    end
+    if SELECTION.OutgoingHook or SELECTION.CallbackTrace then SELECTION.Runtime = true end
     local chosen = {}
     for name, enabled in pairs(SELECTION) do
         if enabled then chosen[#chosen + 1] = name end
@@ -6816,6 +9011,8 @@ function F.run()
     CONFIG.GuiCapture = SELECTION.GUI
     CONFIG.VisualCapture = SELECTION.Visuals
     CONFIG.RuntimeTrace = SELECTION.Runtime
+    CONFIG.RuntimeTraceOutgoingRemotes = SELECTION.Runtime and SELECTION.OutgoingHook
+    CONFIG.V38CaptureCallbackCalls = SELECTION.Runtime and SELECTION.CallbackTrace
     CONFIG.RuntimeTraceGui = SELECTION.Runtime and SELECTION.GUI
     CONFIG.DecompileLocalScripts = SELECTION.LocalSources
     CONFIG.DecompileModuleScripts = SELECTION.ModuleSources
@@ -6879,6 +9076,45 @@ function F.run()
     checkpointStage("runtime_start")
     runtimeStartedAt = os.clock()
     F.startRuntimeTrace()
+    if SELECTION.AvatarInspection then F.startAvatarInspection() end
+
+    if SELECTION.AvatarInspection and not SELECTION.Structure and not SELECTION.GUI
+        and not SELECTION.Remotes and not SELECTION.Scripts and not SELECTION.Values
+        and not SELECTION.PlayersTools and not SELECTION.Visuals and not SELECTION.Runtime
+        and not SELECTION.LocalSources and not SELECTION.ModuleSources then
+        checkpointStage("avatar_inspection_only")
+        local endsAt = os.clock() + CONFIG.RuntimeTracePostSeconds
+        while os.clock() < endsAt do
+            task.wait(math.min(1, math.max(0.03, endsAt - os.clock())))
+        end
+        F.finishAvatarInspection()
+        F.V38.export(nil)
+        snapshotBusy = false
+        snapshotFinalized = true
+        F.writeSafe(ERRORS_FILE, F.encodeJSON(errors, "errors.json"))
+        F.writeSafe(WARNINGS_FILE, F.encodeJSON(warnings, "warnings.json"))
+        F.writeSafe(META_FILE, F.encodeJSON({
+            Schema = SCHEMA_NAME, SchemaVersion = SCHEMA_VERSION,
+            DumpId = currentDumpId, Mode = "AvatarInspectionOnly", Selection = SELECTION,
+            GeneratedAtUnix = os.time(), ElapsedSeconds = os.clock() - started,
+            AvatarInspectionFile = AVATAR_INSPECTION_FILE,
+            AvatarRecords = #F.avatarInspection.Records, AvatarPlayers = F.avatarInspection.UniquePlayers,
+            Errors = #errors, Warnings = #warnings
+        }, "meta.json"))
+        F.writeSafe(MANIFEST_FILE, F.encodeJSON({
+            Schema = SCHEMA_NAME, SchemaVersion = SCHEMA_VERSION,
+            DumpId = currentDumpId, Complete = true, Status = "Complete",
+            Stage = "complete", Mode = "AvatarInspectionOnly", Selection = SELECTION,
+            Folder = OUTPUT_FOLDER, Files = { "avatar_inspection.json", "meta.json", "manifest.json" },
+            GeneratedAtUnix = os.time()
+        }, "manifest.json"))
+        currentStage = "complete"
+        if flushRecovery then flushRecovery(true) end
+        if writeDiagnostics then writeDiagnostics("Complete") end
+        F.log("Avatar inspection finished:", AVATAR_INSPECTION_FILE)
+        print("dump finished")
+        return
+    end
 
     if not SELECTION.Structure and not SELECTION.GUI and not SELECTION.Remotes
         and not SELECTION.Scripts and not SELECTION.Values and not SELECTION.PlayersTools
@@ -6887,6 +9123,9 @@ function F.run()
         snapshotFinalized = true
         checkpointStage("runtime_only")
         F.finishRuntimeTraceAfterSnapshot()
+        if SELECTION.AvatarInspection then
+            F.finishAvatarInspection()
+        end
         F.writeSafe(ERRORS_FILE, F.encodeJSON(errors, "errors.json"))
         F.writeSafe(WARNINGS_FILE, F.encodeJSON(warnings, "warnings.json"))
         F.writeSafe(META_FILE, F.encodeJSON({
@@ -6894,7 +9133,9 @@ function F.run()
             DumpId = currentDumpId, Mode = "RuntimeOnly", Selection = SELECTION,
             GeneratedAtUnix = os.time(), ElapsedSeconds = os.clock() - started,
             Events = #runtimeEventRecords, GuiChanges = #guiCapture.Records,
-            RecoveryFolder = recoveryState.Folder, Errors = #errors, Warnings = #warnings
+            RecoveryFolder = recoveryState.Folder, Errors = #errors, Warnings = #warnings,
+            AvatarInspectionFile = SELECTION.AvatarInspection and AVATAR_INSPECTION_FILE or nil,
+            AvatarRecords = SELECTION.AvatarInspection and #F.avatarInspection.Records or nil
         }, "meta.json"))
         F.writeSafe(MANIFEST_FILE, F.encodeJSON({
             Schema = SCHEMA_NAME, SchemaVersion = SCHEMA_VERSION,
@@ -7124,6 +9365,96 @@ function F.run()
     F.decompileQueuedModules(scriptsDocument)
     if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
         F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+    end
+    if SELECTION.CombatResearch then
+        checkpointStage("combat_research_export")
+        local candidates = {}
+        local normalizedCounts = {}
+        for _, bucket in pairs(remoteIndex) do
+            for _, entry in ipairs(bucket) do
+                local normalized = F.normalizeComparisonPath(entry.Path)
+                local key = entry.ClassName .. "|" .. normalized
+                normalizedCounts[key] = (normalizedCounts[key] or 0) + 1
+                candidates[#candidates + 1] = {
+                    Path = entry.Path, NormalizedPath = normalized,
+                    StableKey = key, Name = entry.Name, ClassName = entry.ClassName,
+                    ParentId = entry.ParentId, Attributes = entry.Attributes,
+                    Tags = entry.Tags, Client = entry.Client,
+                    LooksSessionGenerated = normalized ~= entry.Path
+                }
+            end
+        end
+        table.sort(candidates, function(a, b)
+            return a.StableKey < b.StableKey or
+                (a.StableKey == b.StableKey and a.Path < b.Path)
+        end)
+        for _, entry in ipairs(candidates) do
+            entry.NormalizedPathGroupCount = normalizedCounts[entry.StableKey]
+            entry.NormalizedPathAmbiguous = normalizedCounts[entry.StableKey] > 1
+        end
+        local scripts = {}
+        for _, bucket in pairs(scriptIndex) do
+            for _, entry in ipairs(bucket) do
+                scripts[#scripts + 1] = {
+                    ClassName = entry.ClassName, Path = entry.Path,
+                    StableKey = entry.ClassName .. "|" .. F.normalizeComparisonPath(entry.Path),
+                    Decompile = entry.Decompile
+                }
+            end
+        end
+        table.sort(scripts, function(a, b) return a.StableKey < b.StableKey end)
+        local weapons = {}
+        for _, entry in ipairs(toolRecords) do
+            weapons[#weapons + 1] = {
+                Name = entry.Name, Path = entry.Path,
+                NormalizedPath = F.normalizeComparisonPath(entry.Path),
+                InventorySource = entry.Source,
+                Location = entry.Location,
+                IsLocalPlayer = entry.IsLocalPlayer,
+                Attributes = entry.Attributes, Properties = entry.Properties
+            }
+        end
+        F.writeJSONDocument(COMBAT_RESEARCH_FILE, {
+            Schema = "Averyn.CombatResearch", Version = 1,
+            DumpId = currentDumpId,
+            PlaceId = game.PlaceId, GameId = game.GameId, JobId = F.sanitizeString(game.JobId),
+            Method = "Passive enumeration, script source analysis and optional outbound trace",
+            Caveats = {
+                "Client observation cannot reveal server-only source or authoritative validation.",
+                "Normalized HEX64 names are patterns, not guaranteed identities.",
+                "Instance IDs are dump-local, not stable across servers.",
+                "A matching remote path does not prove identical argument schemas.",
+                "Outgoing FireServer/InvokeServer activity requires the opt-in hook; without it, it is unobserved."
+            },
+            OutgoingHookEnabled = CONFIG.RuntimeTraceOutgoingRemotes,
+            OutgoingHookInstalled = runtimeOutgoingHookInstalled,
+            SourcesSucceeded = clientDecompileStats.Succeeded + moduleDecompileStats.Succeeded,
+            SourceReferenceCount = #combatSourceReferences,
+            SourceReferenceRecordsDropped = combatSourceRefsDropped,
+            RemoteCount = #candidates, Remotes = candidates,
+            Scripts = scripts, Weapons = weapons,
+            RemoteUsageFile = REMOTE_USAGE_FILE,
+            ToolObservations = combatToolCounts,
+            RemoteLifecycle = combatRemoteLifecycleCounts,
+            EventsSaved = #combatEvents, EventsDropped = combatDropped
+        }, "combat_research.json", writtenFiles, true)
+        F.writeJSONDocument(COMBAT_EVENTS_FILE, {
+            DumpId = currentDumpId, Total = #combatEvents, Dropped = combatDropped,
+            Description = "Cumulative client tool events and remote lifecycle; not a server-side firing log",
+            Events = combatEvents
+        }, "combat_events.json", writtenFiles, false)
+        F.writeJSONDocument(SOURCE_REFERENCES_FILE, {
+            DumpId = currentDumpId, Total = #combatSourceReferences,
+            Dropped = combatSourceRefsDropped, Records = combatSourceReferences
+        }, "source_references.json", writtenFiles, false)
+        F.writeJSONDocument(CONNECTION_RESEARCH_FILE, {
+            DumpId = currentDumpId,
+            Enabled = SELECTION.ClosureResearch,
+            Total = #combatConnectionRecords,
+            Dropped = combatConnectionDropped,
+            Description = "Best-effort optional Tool.Activated callback/upvalue inspection. Snapshot-only evidence.",
+            Records = combatConnectionRecords
+        }, "connection_research.json", writtenFiles, false)
     end
     if SELECTION.Runtime then F.writeJSONDocument(REMOTE_USAGE_FILE, {
         DumpId = currentDumpId, TotalUniqueRemotes = #remoteUsageRecords,
@@ -7355,6 +9686,12 @@ function F.run()
     )
 
     end
+    if SELECTION.AvatarInspection then
+        F.finishAvatarInspection()
+        F.writeJSONDocument(AVATAR_INSPECTION_FILE, F.avatarInspectionDocument(),
+            "avatar_inspection.json", writtenFiles, true)
+    end
+    F.V38.export(writtenFiles)
     F.writeJSONDocument(WARNINGS_FILE, warnings, "warnings.json", writtenFiles, true)
 
     local totalElapsed = os.clock() - started
@@ -7367,6 +9704,13 @@ function F.run()
             Saved = recoveryState.Saved, FailedWrites = recoveryState.FailedWrites },
         Selection = SELECTION,
         OutputFolder = OUTPUT_FOLDER,
+        AvatarInspection = SELECTION.AvatarInspection and {
+            File = AVATAR_INSPECTION_FILE,
+            Records = #F.avatarInspection.Records,
+            UniquePlayers = F.avatarInspection.UniquePlayers,
+            CapturePeriodSeconds = CONFIG.RuntimeTracePostSeconds,
+            ReadOnly = true
+        } or nil,
         AdditionalIndexes = SELECTION.Structure and { TAGS_FILE, INTERACTIONS_FILE, PHYSICS_FILE } or {},
         IdSemantics = "Snapshot-local. IDs are stable only inside this dump.",
         PathSemantics = "Human-readable path. Paths are not guaranteed to be unique.",
@@ -7374,7 +9718,19 @@ function F.run()
             Name = F.sanitizeString(game.Name),
             PlaceId = game.PlaceId,
             GameId = game.GameId,
-            JobId = F.sanitizeString(game.JobId)
+            JobId = F.sanitizeString(game.JobId),
+            CreatorId = F.avatarRead(game, "CreatorId"),
+            CreatorType = F.avatarRead(game, "CreatorType"),
+            PlaceVersion = F.avatarRead(game, "PlaceVersion")
+        },
+        V38 = {
+            CoverageFile = OUTPUT_FOLDER .. "/coverage.json",
+            RigHierarchyFile = SELECTION.AvatarInspection and OUTPUT_FOLDER .. "/rig_hierarchy.json" or nil,
+            RuntimeEventsFile = SELECTION.Runtime and OUTPUT_FOLDER .. "/runtime_v38_events.json" or nil,
+            AssetCatalogueFile = (SELECTION.Visuals or SELECTION.AvatarInspection) and OUTPUT_FOLDER .. "/asset_catalogue.json" or nil,
+            SourceGraphFile = (SELECTION.LocalSources or SELECTION.ModuleSources) and OUTPUT_FOLDER .. "/source_dependency_graph.json" or nil,
+            Observers = F.V38.ObservedCount, RuntimeEvents = #F.V38.Events,
+            EventsOmitted = F.V38.EventOmitted
         },
         Player = LocalPlayer and {
             Name = F.safeName(LocalPlayer),
@@ -7517,6 +9873,20 @@ function F.run()
                 HookIntegrityRecords = #runtimeHookState.HookIntegrityRecords
             },
             CategoryDroppedDueToCap = runtimeEventCategoryDropped
+        },
+        CombatResearch = {
+            Enabled = SELECTION.CombatResearch,
+            RemoteCount = F.totalRemoteCount(),
+            ToolEvents = #combatEvents,
+            ToolEventsDropped = combatDropped,
+            SourceReferences = #combatSourceReferences,
+            SourceReferencesDropped = combatSourceRefsDropped,
+            ClosureResearchEnabled = SELECTION.ClosureResearch,
+            ClosureSnapshots = #combatConnectionRecords,
+            Files = SELECTION.CombatResearch and {
+                COMBAT_RESEARCH_FILE, COMBAT_EVENTS_FILE, SOURCE_REFERENCES_FILE,
+                CONNECTION_RESEARCH_FILE
+            } or nil
         },
         Capabilities = capabilities
     }
@@ -7818,7 +10188,7 @@ function F.showSelectionWindow()
         Name = "Header", BackgroundTransparency = 1,
         Position = UDim2.fromOffset(18, 9), Size = UDim2.new(1, -36, 0, 55), Active = true
     }, panel)
-    local heading = label(header, "Game Structure Dump", 18, lightText, Enum.Font.GothamBold)
+    local heading = label(header, "Game Structure Dump v3.8", 18, lightText, Enum.Font.GothamBold)
     heading.Size = UDim2.new(1, -40, 0, 26)
     local subheading = label(header, "Choose exactly what to capture", 12, subtleColor)
     subheading.Position = UDim2.fromOffset(0, 28)
@@ -7850,10 +10220,15 @@ function F.showSelectionWindow()
         { "Scripts", "Scripts index", "LocalScripts, ModuleScripts and script paths" },
         { "Values", "Values & attributes", "ValueBase objects and attributes" },
         { "PlayersTools", "Players & tools", "Players, inventory, weapons and references" },
-        { "Visuals", "Visual assets", "Animations, sounds, effects and meshes" },
-        { "Runtime", "Runtime capture", "Remote calls, changes, logs and character" },
+        { "AvatarInspection", "Avatar / Korblox inspector", "Full R6/R15 rig, wraps, accessories, joints, animation pose" },
+        { "Visuals", "Visual assets", "Animations, particles, new audio, assets and material variants" },
+        { "Runtime", "Runtime capture", "Events, animation markers, remote schemas and character" },
         { "LocalSources", "Decompile LocalScripts", "Source files, if the executor supports it" },
         { "ModuleSources", "Decompile ModuleScripts", "Source files using the configured endpoint" },
+        { "CombatResearch", "Combat research (3-server)", "Weapons, remote identities, source refs and cross-server signatures" },
+        { "ClosureResearch", "Connections / upvalues (optional)", "Inspect Tool.Activated callbacks; requires supported executor" },
+        { "OutgoingHook", "Outgoing hook (risky)", "Optional __namecall tracing; can crash some executors" },
+    { "CallbackTrace", "Callback tracing (risky)", "Opt-in wrapping of existing OnInvoke/OnClientInvoke callbacks" },
     }
     local function updateRow(key)
         local elements = rows[key]
@@ -7889,6 +10264,22 @@ function F.showSelectionWindow()
         row.MouseButton1Click:Connect(function()
             if dumpRunning then return end
             SELECTION[key] = not SELECTION[key]
+            if key == "CombatResearch" and SELECTION.CombatResearch then
+                for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
+                    SELECTION[dependency] = true
+                    updateRow(dependency)
+                end
+            elseif key == "ClosureResearch" and SELECTION.ClosureResearch then
+                SELECTION.CombatResearch = true
+                updateRow("CombatResearch")
+                for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
+                    SELECTION[dependency] = true
+                    updateRow(dependency)
+                end
+            elseif (key == "OutgoingHook" or key == "CallbackTrace") and SELECTION[key] then
+                SELECTION.Runtime = true
+                updateRow("Runtime")
+            end
             updateRow(key)
         end)
         updateRow(key)
@@ -7933,7 +10324,7 @@ function F.showSelectionWindow()
             status.TextColor3 = Color3.fromRGB(255, 173, 137)
             return
         end
-        if SELECTION.Runtime then
+        if SELECTION.Runtime or SELECTION.AvatarInspection then
             local seconds = tonumber(runtimeBox.Text)
             if not seconds or seconds < 0 or seconds > 600 then
                 status.Text = "Use a runtime duration from 0 to 600 seconds."
