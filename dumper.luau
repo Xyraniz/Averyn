@@ -5112,11 +5112,14 @@ dumpNode = function(object, parentId, context)
     local isScript = SCRIPT_BUCKETS[className] ~= nil
     local needsAttributes = not CONFIG.FastSelectiveCapture or SELECTION.Structure
         or SELECTION.Values or SELECTION.PlayersTools or SELECTION.Runtime
+        or (SELECTION.InteractionResearch and (isRemote or className == "Tool"))
         or (SELECTION.Remotes and isRemote) or isVisual
     local needsTags = not CONFIG.FastSelectiveCapture or SELECTION.Structure
-        or (SELECTION.Remotes and isRemote) or isValue or isVisual
+        or ((SELECTION.Remotes or SELECTION.InteractionResearch) and isRemote)
+        or isValue or isVisual
     local needsProperties = not CONFIG.FastSelectiveCapture or SELECTION.Structure
-        or SELECTION.PlayersTools or isVisual or isValue
+        or SELECTION.PlayersTools or (SELECTION.InteractionResearch and className == "Tool")
+        or isVisual or isValue
         or (SELECTION.GUI and F.GUI_CLASSES[className])
         or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources) and isScript)
     local attributes = needsAttributes and F.getAttributes(object) or {}
@@ -5190,12 +5193,17 @@ dumpNode = function(object, parentId, context)
 
     if SELECTION.Values then F.registerAttributes(id, name, className, path, attributes) end
     if SELECTION.GUI then F.captureSnapshotGui(object, id, parentId, name, className, path, properties) end
-    if SELECTION.Remotes then F.registerRemote(object, id, name, className, parentId, path, attributes, tags) end
-    if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
+    if SELECTION.Remotes or SELECTION.InteractionResearch then
+        F.registerRemote(object, id, name, className, parentId, path, attributes, tags)
+    end
+    if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources
+        or SELECTION.InteractionResearch then
         F.registerScript(object, id, name, className, parentId, path, properties)
     end
     if SELECTION.Values then F.registerValue(object, id, name, className, parentId, path, attributes, tags) end
-    if SELECTION.PlayersTools then F.registerToolDescendant(parentToolState, object, id, className, name) end
+    if SELECTION.PlayersTools or SELECTION.InteractionResearch then
+        F.registerToolDescendant(parentToolState, object, id, className, name)
+    end
 
     if SELECTION.PlayersTools then
         F.scanAttributesForPlayerReferences(id, attributes)
@@ -5220,7 +5228,8 @@ dumpNode = function(object, parentId, context)
     F.V38.observeInstance(object, className)
 
     local currentToolState = parentToolState
-    if SELECTION.PlayersTools and (className == "Tool" or F.safeIsA(object, "Tool")) then
+    if (SELECTION.PlayersTools or SELECTION.InteractionResearch)
+        and (className == "Tool" or F.safeIsA(object, "Tool")) then
         currentToolState = F.createToolRecord(
             object,
             id,
@@ -8597,7 +8606,7 @@ function F.makeRuntimeEventDocument(records, category)
 end
 
 flushRuntimeTrace = function()
-    if not capabilities.writefile then
+    if not SELECTION.Runtime or not capabilities.writefile then
         return
     end
 
@@ -8865,6 +8874,9 @@ function F.prepareSelectedSnapshotNodes()
                     and (F.safeName(object) == "CoreGui" or F.safeName(object) == "CorePackages"))
             if not isIgnored then
                 local matched = (SELECTION.GUI and F.GUI_CLASSES[className])
+                    or (SELECTION.InteractionResearch and (REMOTE_BUCKETS[className]
+                        or SCRIPT_BUCKETS[className] or INTERACTION_CLASSES[className]
+                        or RESEARCH_INTERACTION_SIGNALS[className] or className == "Tool"))
                     or (SELECTION.Remotes and REMOTE_BUCKETS[className])
                     or ((SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources)
                         and SCRIPT_BUCKETS[className])
@@ -8922,13 +8934,11 @@ function F.run()
         activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
         activeRegistry.__AverynDumperActive = activeRegistryToken
     end
-    if SELECTION.ClosureResearch then SELECTION.InteractionResearch = true end
-    if SELECTION.InteractionResearch then
-        for _, key in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
-            SELECTION[key] = true
-        end
+    if not SELECTION.InteractionResearch then SELECTION.ClosureResearch = false end
+    if not SELECTION.Runtime then
+        SELECTION.OutgoingHook = false
+        SELECTION.CallbackTrace = false
     end
-    if SELECTION.OutgoingHook or SELECTION.CallbackTrace then SELECTION.Runtime = true end
     local chosen = {}
     for name, enabled in pairs(SELECTION) do
         if enabled then chosen[#chosen + 1] = name end
@@ -8938,13 +8948,13 @@ function F.run()
     F.log("Adaptive frame yielding enabled; recovery checkpoints and full final exports remain active")
     CONFIG.GuiCapture = SELECTION.GUI
     CONFIG.VisualCapture = SELECTION.Visuals
-    CONFIG.RuntimeTrace = SELECTION.Runtime
+    CONFIG.RuntimeTrace = SELECTION.Runtime or SELECTION.InteractionResearch
     CONFIG.RuntimeTraceOutgoingRemotes = SELECTION.Runtime and SELECTION.OutgoingHook
     CONFIG.V38CaptureCallbackCalls = SELECTION.Runtime and SELECTION.CallbackTrace
     CONFIG.RuntimeTraceGui = SELECTION.Runtime and SELECTION.GUI
     CONFIG.DecompileLocalScripts = SELECTION.LocalSources
     CONFIG.DecompileModuleScripts = SELECTION.ModuleSources
-    CONFIG.RuntimePrimeBeforeSnapshot = SELECTION.Runtime and not SELECTION.Structure
+    CONFIG.RuntimePrimeBeforeSnapshot = CONFIG.RuntimeTrace and not SELECTION.Structure
     clientDecompileStats.Enabled = CONFIG.DecompileLocalScripts
     moduleDecompileStats.Enabled = CONFIG.DecompileModuleScripts
     if not capabilities.writefile then
@@ -9046,7 +9056,8 @@ function F.run()
 
     if not SELECTION.Structure and not SELECTION.GUI and not SELECTION.Remotes
         and not SELECTION.Scripts and not SELECTION.Values and not SELECTION.PlayersTools
-        and not SELECTION.Visuals and not SELECTION.LocalSources and not SELECTION.ModuleSources then
+        and not SELECTION.Visuals and not SELECTION.LocalSources and not SELECTION.ModuleSources
+        and not SELECTION.InteractionResearch then
         snapshotBusy = false
         snapshotFinalized = true
         checkpointStage("runtime_only")
@@ -9085,7 +9096,9 @@ function F.run()
     end
 
     checkpointStage("prepare_players")
-    if SELECTION.PlayersTools then F.preparePlayerDescriptors() end
+    if SELECTION.PlayersTools or SELECTION.InteractionResearch then
+        F.preparePlayerDescriptors()
+    end
     checkpointStage("select_snapshot_nodes")
     F.prepareSelectedSnapshotNodes()
 
@@ -9283,6 +9296,20 @@ function F.run()
 
     checkpointStage("runtime_post_capture")
     F.finishRuntimeTraceAfterSnapshot()
+    if SELECTION.AvatarInspection and not CONFIG.RuntimeTrace then
+        local observationSeconds = math.max(0, tonumber(CONFIG.RuntimeTracePostSeconds) or 0)
+        local remaining = observationSeconds - (os.clock() - F.avatarInspection.StartedAt)
+        if remaining > 0 then
+            checkpointStage("character_observation")
+        end
+        while remaining > 0 and F.avatarInspection.Active do
+            if selectionStatus and selectionStatus.Parent then
+                selectionStatus.Text = string.format("Character observation: %ds left", math.ceil(remaining))
+            end
+            task.wait(math.min(0.5, remaining))
+            remaining = observationSeconds - (os.clock() - F.avatarInspection.StartedAt)
+        end
+    end
 
     if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
         F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts_pre_decompile.json", nil, false)
@@ -9346,7 +9373,7 @@ function F.run()
             Schema = "Averyn.InteractionResearch", Version = 1,
             DumpId = currentDumpId,
             PlaceId = game.PlaceId, GameId = game.GameId, JobId = F.sanitizeString(game.JobId),
-            Method = "Passive enumeration, script source analysis and optional outbound trace",
+            Method = "Passive enumeration and interaction observation; optional source analysis and outbound trace",
             Caveats = {
                 "Client observation cannot reveal server-only source or authoritative validation.",
                 "Normalized high-entropy path components are patterns, not guaranteed identities.",
@@ -9361,7 +9388,7 @@ function F.run()
             SourceReferenceRecordsDropped = interactionSourceRefsDropped,
             RemoteCount = #candidates, Remotes = candidates,
             Scripts = scripts, Tools = tools,
-            RemoteUsageFile = REMOTE_USAGE_FILE,
+            RemoteUsageFile = SELECTION.Runtime and REMOTE_USAGE_FILE or nil,
             ToolObservations = interactionToolCounts,
             RemoteLifecycle = interactionRemoteLifecycleCounts,
             EventsSaved = #interactionEvents, EventsDropped = interactionDropped
@@ -9740,7 +9767,8 @@ function F.run()
             Files = { VISUAL_ASSETS_FILE, RUNTIME_VISUAL_ASSETS_FILE }
         },
         RuntimeTrace = {
-            Enabled = CONFIG.RuntimeTrace,
+            Enabled = SELECTION.Runtime,
+            InteractionObserversEnabled = CONFIG.RuntimeTrace and SELECTION.InteractionResearch,
             Frozen = runtimeHookState.Frozen,
             FreezeInfo = runtimeHookState.FreezeInfo,
             PostSeconds = CONFIG.RuntimeTracePostSeconds,
@@ -9873,7 +9901,8 @@ function F.run()
             Warnings = #warnings
         },
         RuntimeTrace = {
-            Enabled = CONFIG.RuntimeTrace,
+            Enabled = SELECTION.Runtime,
+            InteractionObserversEnabled = CONFIG.RuntimeTrace and SELECTION.InteractionResearch,
             FilesAreAuxiliary = true,
             RollingWindow = true,
             WindowSeconds = CONFIG.RuntimeRingWindowSeconds,
@@ -10141,84 +10170,176 @@ function F.showSelectionWindow()
     create("UIListLayout", { Padding = UDim.new(0, 6),
         SortOrder = Enum.SortOrder.LayoutOrder }, body)
 
-    local rows = {}
     local compactLayout = width < 340
-    local optionRowHeight = compactLayout and 104 or 78
-    local optionTitleHeight = compactLayout and 36 or 21
-    local optionDescriptionHeight = compactLayout and 52 or 39
-    local definitions = {
-        { "Structure", "Instance & World Snapshot", "Export hierarchy, instance properties, tags, physics and interaction data." },
-        { "GUI", "Interface Hierarchy", "Capture GUI objects, layouts, text, input controls and visual properties." },
-        { "Remotes", "Remote & Bindable Registry", "Index RemoteEvents, RemoteFunctions and Bindables with their paths." },
-        { "Scripts", "Script Location Index", "Locate LocalScripts, ModuleScripts and Scripts in the instance tree." },
-        { "Values", "Values & Attribute Index", "Record ValueBase contents and attributes attached to instances." },
-        { "PlayersTools", "Players & Tool Inventories", "Record players, their inventories, tools and ownership references." },
-        { "AvatarInspection", "Character & Rig Inspection", "Inspect standard and custom rigs, accessories, joints and poses." },
-        { "Visuals", "Animation, Audio & Effects", "Catalogue animation IDs, sounds, particles, meshes and effect assets." },
-        { "Runtime", "Live Activity Recorder", "Track remote activity, value changes, GUI events and character state." },
-        { "LocalSources", "LocalScript Source Export", "Reconstruct and save readable source files from client LocalScripts." },
-        { "ModuleSources", "ModuleScript Source Export", "Decompile ModuleScript bytecode and save the recovered Luau sources." },
-        { "InteractionResearch", "Interactions & Remote Analysis", "Inspect tools, prompts, clicks, remote lifecycles and script references." },
-        { "ClosureResearch", "Callback & Upvalue Analysis", "Inspect native interaction callbacks, connected functions and upvalues." },
-        { "OutgoingHook", "Outgoing Remote Interception", "Trace FireServer and InvokeServer calls; alters the namecall hook." },
-        { "CallbackTrace", "Invoke Callback Monitoring", "Observe OnInvoke and OnClientInvoke calls by wrapping handlers." },
+    local optionRowHeight = compactLayout and 92 or 75
+    local advancedRowHeight = compactLayout and 58 or 51
+    local categories = {
+        { Key = "Structure", Title = "World Structure", Description = "Map instances, properties, physics, constraints and CollectionService tags.", Flags = { "Structure" } },
+        { Key = "GUI", Title = "Interface Analysis", Description = "Document ScreenGuis, layouts, controls, text and interface properties.", Flags = { "GUI" } },
+        { Key = "Remotes", Title = "Remote Registry", Description = "Index RemoteEvents, RemoteFunctions and bindables with their paths.", Flags = { "Remotes" } },
+        { Key = "Scripts", Title = "Script Analysis", Description = "Index script locations. Optionally recover LocalScript and ModuleScript sources.", Flags = { "Scripts" }, Advanced = {
+            { Key = "LocalSources", Title = "Recover LocalScript sources", Description = "Save decompiled client LocalScripts as Luau files." },
+            { Key = "ModuleSources", Title = "Recover ModuleScript sources", Description = "Save decompiled accessible ModuleScripts as Luau files." }
+        } },
+        { Key = "Values", Title = "Values & Attributes", Description = "Record ValueBase contents and instance attributes.", Flags = { "Values" } },
+        { Key = "Players", Title = "Players & Characters", Description = "Inspect player inventories, tools, accessories, joints and custom rigs.", Flags = { "PlayersTools", "AvatarInspection" } },
+        { Key = "Visuals", Title = "Asset Inspection", Description = "Catalogue animations, sounds, meshes, particles and effect resources.", Flags = { "Visuals" } },
+        { Key = "Runtime", Title = "Runtime Monitoring", Description = "Observe remote traffic, state changes, interface activity and logs.", Flags = { "Runtime" }, Advanced = {
+            { Key = "OutgoingHook", Title = "Intercept outgoing remotes", Description = "Opt in to FireServer/InvokeServer interception; installs a hook." },
+            { Key = "CallbackTrace", Title = "Monitor invoke callbacks", Description = "Opt in to wrapping readable OnInvoke/OnClientInvoke callbacks." }
+        } },
+        { Key = "InteractionResearch", Title = "Interaction Analysis", Description = "Track tools, prompts, clicks, remotes and script relationships.", Flags = { "InteractionResearch" }, Advanced = {
+            { Key = "ClosureResearch", Title = "Inspect callbacks & upvalues", Description = "Best-effort analysis of interaction signal connections and closures." }
+        } }
     }
-    local function updateRow(key)
-        local elements = rows[key]
-        if not elements then return end
-        local on = SELECTION[key]
-        elements.Check.BackgroundColor3 = on and accent or surfaceColor
-        elements.Tick.Visible = on
-        elements.Row.BackgroundColor3 = on and selectedSurfaceColor or surfaceColor
+    local categoryActive = {}
+    local advancedActive = {}
+    local cards = {}
+    local status
+    for _, category in ipairs(categories) do
+        categoryActive[category.Key] = false
+        for _, detail in ipairs(category.Advanced or {}) do
+            advancedActive[detail.Key] = false
+        end
     end
-    for order, item in ipairs(definitions) do
-        local key, title, subtitle = item[1], item[2], item[3]
-        local row = create("TextButton", {
-            Name = key, Text = "", BackgroundColor3 = surfaceColor,
-            AutoButtonColor = false, Size = UDim2.new(1, -6, 0, optionRowHeight),
-            LayoutOrder = order
+    local function syncSelection()
+        for key in pairs(SELECTION) do SELECTION[key] = false end
+        for _, category in ipairs(categories) do
+            if categoryActive[category.Key] then
+                for _, flag in ipairs(category.Flags) do SELECTION[flag] = true end
+                for _, detail in ipairs(category.Advanced or {}) do
+                    SELECTION[detail.Key] = advancedActive[detail.Key] == true
+                end
+            end
+        end
+    end
+    local function refreshCategory(category)
+        local card = cards[category.Key]
+        if not card then return end
+        local active = categoryActive[category.Key]
+        card.Row.BackgroundColor3 = active and selectedSurfaceColor or surfaceColor
+        card.Check.BackgroundColor3 = active and accent or mainColor
+        card.Tick.Visible = active
+        card.RowStroke.Color = active and accent or darkBorder
+        for _, detail in ipairs(category.Advanced or {}) do
+            local option = card.Details[detail.Key]
+            option.Check.BackgroundColor3 = advancedActive[detail.Key] and accent or mainColor
+            option.Tick.Visible = advancedActive[detail.Key]
+            option.Row.BackgroundColor3 = advancedActive[detail.Key]
+                and Color3.fromRGB(49, 49, 49) or Color3.fromRGB(35, 35, 35)
+        end
+    end
+    local function refreshCount()
+        local count = 0
+        for _, category in ipairs(categories) do
+            if categoryActive[category.Key] then count = count + 1 end
+            refreshCategory(category)
+        end
+        syncSelection()
+        if status then
+            status.Text = string.format("%d of %d categories selected", count, #categories)
+            status.TextColor3 = subtleColor
+        end
+    end
+
+    for order, category in ipairs(categories) do
+        local card = create("Frame", {
+            Name = category.Key, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(1, -6, 0, optionRowHeight), LayoutOrder = order
         }, body)
-        round(row, 9)
+        cards[category.Key] = { Details = {} }
+        local main = create("TextButton", {
+            Name = "Select", Text = "", BackgroundColor3 = surfaceColor,
+            AutoButtonColor = false, Size = UDim2.new(1, 0, 0, optionRowHeight)
+        }, card)
+        round(main, 9)
+        local mainStroke = create("UIStroke", {
+            Color = darkBorder, Transparency = 0.55, Thickness = 1
+        }, main)
         local check = create("Frame", {
-            BackgroundColor3 = accent, Size = UDim2.fromOffset(21, 21),
+            BackgroundColor3 = mainColor, Size = UDim2.fromOffset(21, 21),
             Position = UDim2.new(0, 13, 0.5, -10), BorderSizePixel = 0
-        }, row)
+        }, main)
         round(check, 6)
+        stroke(check)
         local tick = label(check, "✓", 15, Color3.fromRGB(17, 17, 17), Enum.Font.GothamBold)
         tick.TextXAlignment = Enum.TextXAlignment.Center
-        local name = label(row, title, compactLayout and 12 or 13, lightText, Enum.Font.GothamMedium)
-        name.Position = UDim2.fromOffset(45, compactLayout and 9 or 11)
-        name.Size = UDim2.new(1, -55, 0, optionTitleHeight)
+        local hasAdvanced = category.Advanced ~= nil
+        local name = label(main, category.Title, compactLayout and 12 or 13, lightText, Enum.Font.GothamMedium)
+        name.Position = UDim2.fromOffset(45, 9)
+        name.Size = UDim2.new(1, hasAdvanced and -132 or -55, 0, compactLayout and 30 or 23)
         name.TextWrapped = true
         name.TextYAlignment = Enum.TextYAlignment.Top
-        local description = label(row, subtitle, 11, subtleColor)
-        description.Position = UDim2.fromOffset(45, compactLayout and 46 or 35)
-        description.Size = UDim2.new(1, -55, 0, optionDescriptionHeight)
+        local description = label(main, category.Description, 11, subtleColor)
+        description.Position = UDim2.fromOffset(45, compactLayout and 39 or 32)
+        description.Size = UDim2.new(1, -55, 0, compactLayout and 46 or 38)
         description.TextWrapped = true
         description.TextYAlignment = Enum.TextYAlignment.Top
-        rows[key] = { Row = row, Check = check, Tick = tick }
-        row.MouseButton1Click:Connect(function()
+        cards[category.Key].Row = main
+        cards[category.Key].RowStroke = mainStroke
+        cards[category.Key].Check = check
+        cards[category.Key].Tick = tick
+        main.MouseButton1Click:Connect(function()
             if dumpRunning then return end
-            SELECTION[key] = not SELECTION[key]
-            if key == "InteractionResearch" and SELECTION.InteractionResearch then
-                for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
-                    SELECTION[dependency] = true
-                    updateRow(dependency)
-                end
-            elseif key == "ClosureResearch" and SELECTION.ClosureResearch then
-                SELECTION.InteractionResearch = true
-                updateRow("InteractionResearch")
-                for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
-                    SELECTION[dependency] = true
-                    updateRow(dependency)
-                end
-            elseif (key == "OutgoingHook" or key == "CallbackTrace") and SELECTION[key] then
-                SELECTION.Runtime = true
-                updateRow("Runtime")
-            end
-            updateRow(key)
+            categoryActive[category.Key] = not categoryActive[category.Key]
+            refreshCount()
         end)
-        updateRow(key)
+
+        if hasAdvanced then
+            local detailsHeight = #category.Advanced * advancedRowHeight + 8
+            local expanded = false
+            local optionsButton = create("TextButton", {
+                Name = "Configure", Text = "OPTIONS  +", Font = Enum.Font.GothamBold,
+                TextSize = 10, TextColor3 = accent, BackgroundTransparency = 1,
+                Size = UDim2.fromOffset(85, 27),
+                Position = UDim2.new(1, -94, 0, 4)
+            }, card)
+            local detailsFrame = create("Frame", {
+                Name = "Advanced", BackgroundColor3 = Color3.fromRGB(23, 23, 23),
+                BorderSizePixel = 0, Visible = false,
+                Position = UDim2.fromOffset(0, optionRowHeight + 3),
+                Size = UDim2.new(1, 0, 0, detailsHeight - 3)
+            }, card)
+            round(detailsFrame, 9)
+            for index, detail in ipairs(category.Advanced) do
+                local row = create("TextButton", {
+                    Name = detail.Key, Text = "", BackgroundColor3 = Color3.fromRGB(35, 35, 35),
+                    AutoButtonColor = false, Size = UDim2.new(1, -12, 0, advancedRowHeight - 5),
+                    Position = UDim2.fromOffset(6, 5 + (index - 1) * advancedRowHeight)
+                }, detailsFrame)
+                round(row, 7)
+                local extraCheck = create("Frame", {
+                    BackgroundColor3 = mainColor, Size = UDim2.fromOffset(18, 18),
+                    Position = UDim2.new(0, 9, 0.5, -9), BorderSizePixel = 0
+                }, row)
+                round(extraCheck, 5)
+                stroke(extraCheck)
+                local extraTick = label(extraCheck, "✓", 13, Color3.fromRGB(17, 17, 17), Enum.Font.GothamBold)
+                extraTick.TextXAlignment = Enum.TextXAlignment.Center
+                local extraTitle = label(row, detail.Title, 11, lightText, Enum.Font.GothamMedium)
+                extraTitle.Position = UDim2.fromOffset(35, 3)
+                extraTitle.Size = UDim2.new(1, -40, 0, 17)
+                local extraDescription = label(row, detail.Description, 10, subtleColor)
+                extraDescription.Position = UDim2.fromOffset(35, 20)
+                extraDescription.Size = UDim2.new(1, -40, 0, advancedRowHeight - 25)
+                extraDescription.TextWrapped = true
+                extraDescription.TextYAlignment = Enum.TextYAlignment.Top
+                cards[category.Key].Details[detail.Key] = { Row = row, Check = extraCheck, Tick = extraTick }
+                row.MouseButton1Click:Connect(function()
+                    if dumpRunning then return end
+                    advancedActive[detail.Key] = not advancedActive[detail.Key]
+                    if advancedActive[detail.Key] then categoryActive[category.Key] = true end
+                    refreshCount()
+                end)
+            end
+            optionsButton.MouseButton1Click:Connect(function()
+                if dumpRunning then return end
+                expanded = not expanded
+                detailsFrame.Visible = expanded
+                optionsButton.Text = expanded and "OPTIONS  -" or "OPTIONS  +"
+                card.Size = UDim2.new(1, -6, 0, optionRowHeight + (expanded and detailsHeight or 0))
+            end)
+        end
     end
 
     local footer = create("Frame", {
@@ -10226,7 +10347,7 @@ function F.showSelectionWindow()
         Position = UDim2.new(0, 18, 1, -118),
         Size = UDim2.new(1, -36, 0, 108)
     }, panel)
-    local runtimeTitle = label(footer, "Extra live capture (seconds)", 12, subtleColor)
+    local runtimeTitle = label(footer, "Live observation (seconds)", 12, subtleColor)
     runtimeTitle.Size = UDim2.new(1, -70, 0, 26)
     local runtimeBox = create("TextBox", {
         Text = tostring(CONFIG.RuntimeTracePostSeconds),
@@ -10245,11 +10366,12 @@ function F.showSelectionWindow()
     }, footer)
     round(start, 10)
     selectionStartButton = start
-    local status = label(footer, "", 11, subtleColor)
+    status = label(footer, "", 11, subtleColor)
     status.Position = UDim2.fromOffset(0, 82)
     status.Size = UDim2.new(1, 0, 0, 23)
     status.TextTruncate = Enum.TextTruncate.AtEnd
     selectionStatus = status
+    refreshCount()
 
     start.MouseButton1Click:Connect(function()
         if dumpRunning then return end
@@ -10260,7 +10382,7 @@ function F.showSelectionWindow()
             status.TextColor3 = Color3.fromRGB(202, 202, 202)
             return
         end
-        if SELECTION.Runtime or SELECTION.AvatarInspection then
+        if SELECTION.Runtime or SELECTION.AvatarInspection or SELECTION.InteractionResearch then
             local seconds = tonumber(runtimeBox.Text)
             if not seconds or seconds < 0 or seconds > 600 then
                 status.Text = "Set a capture time between 0 and 600 seconds."
