@@ -17,7 +17,7 @@ local SELECTION = {
     Runtime = false,
     LocalSources = false,
     ModuleSources = false,
-    CombatResearch = false,
+    InteractionResearch = false,
     ClosureResearch = false,
     OutgoingHook = false,
     CallbackTrace = false
@@ -28,7 +28,7 @@ local selectionStartButton
 local selectedSnapshotNodes
 local dumpRunning = false
 local SCHEMA_NAME = "Averyn.GameStructureDump"
-local SCHEMA_VERSION = 3.8
+local SCHEMA_VERSION = 3.9
 
 local META_FILE = OUTPUT_FOLDER .. "/meta.json"
 local TREE_FILE = OUTPUT_FOLDER .. "/structure.txt"
@@ -51,9 +51,9 @@ local STATE_FILE = OUTPUT_FOLDER .. "/state.json"
 local RUNTIME_FILES = {
     Events = OUTPUT_FOLDER .. "/runtime_events.json",
     Gui = OUTPUT_FOLDER .. "/runtime_gui.json",
-    EventsGame = OUTPUT_FOLDER .. "/runtime_events_game.json",
-    EventsReplicator = OUTPUT_FOLDER .. "/runtime_events_replicator.json",
-    EventsAnalytics = OUTPUT_FOLDER .. "/runtime_events_analytics.json",
+    EventsRemoteEvent = OUTPUT_FOLDER .. "/runtime_events_remote_event.json",
+    EventsUnreliableRemoteEvent = OUTPUT_FOLDER .. "/runtime_events_unreliable_remote_event.json",
+    EventsRemoteFunction = OUTPUT_FOLDER .. "/runtime_events_remote_function.json",
     EventsOther = OUTPUT_FOLDER .. "/runtime_events_other.json",
     Values = OUTPUT_FOLDER .. "/runtime_values.json",
     Attributes = OUTPUT_FOLDER .. "/runtime_attributes.json",
@@ -75,8 +75,8 @@ local TAGS_FILE = OUTPUT_FOLDER .. "/tags.json"
 local INTERACTIONS_FILE = OUTPUT_FOLDER .. "/interactions.json"
 local PHYSICS_FILE = OUTPUT_FOLDER .. "/physics.json"
 local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
-local COMBAT_RESEARCH_FILE = OUTPUT_FOLDER .. "/combat_research.json"
-local COMBAT_EVENTS_FILE = OUTPUT_FOLDER .. "/combat_events.json"
+local INTERACTION_RESEARCH_FILE = OUTPUT_FOLDER .. "/interaction_research.json"
+local INTERACTION_EVENTS_FILE = OUTPUT_FOLDER .. "/interaction_events.json"
 local SOURCE_REFERENCES_FILE = OUTPUT_FOLDER .. "/source_references.json"
 local CONNECTION_RESEARCH_FILE = OUTPUT_FOLDER .. "/connection_research.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
@@ -125,17 +125,20 @@ local CONFIG = {
     RuntimeRingWindowSeconds = 30,
     RuntimeTraceIncomingRemotes = true,
     RuntimeTraceOutgoingRemotes = false,
-    CombatMaxEvents = 14000,
-    CombatMaxSourceReferences = 14000,
-    CombatMaxReferencesPerScript = 110,
-    CombatMaxToolDescendants = 150,
-    CombatMaxRemoteCandidates = 6000,
-    CombatMaxConnectionRecords = 800,
-    CombatMaxClosuresPerTool = 24,
-    CombatMaxUpvalueNodes = 900,
+    InteractionMaxEvents = 14000,
+    InteractionMaxSourceReferences = 14000,
+    InteractionMaxReferencesPerScript = 110,
+    InteractionMaxToolDescendants = 150,
+    InteractionMaxObservedTools = 1200,
+    InteractionMaxObservedInteractions = 1200,
+    InteractionMaxGuiButtonObservers = 200,
+    InteractionMaxRemoteCandidates = 6000,
+    InteractionMaxConnectionRecords = 800,
+    InteractionMaxClosuresPerSignal = 24,
+    InteractionMaxUpvalueNodes = 900,
     RuntimeTraceDynamicRemotes = true,
     RuntimeTraceToolAttributes = true,
-    RuntimeTraceInterestingAttributes = true,
+    RuntimeTraceAllAttributes = true,
     RuntimeTraceAllValues = true,
     RuntimeCaptureCaller = true,
     RuntimeCaptureCallerStack = false,
@@ -174,9 +177,9 @@ local CONFIG = {
     RuntimeFlushDuringSnapshot = false,
     RuntimeMaxEvents = 40000,
     RuntimeMaxEventsPerCategory = {
-        Game = 16000,
-        Replicator = 16000,
-        Analytics = 4000,
+        RemoteEvent = 20000,
+        UnreliableRemoteEvent = 10000,
+        RemoteFunction = 8000,
         Other = 8000
     },
     RuntimeMaxTimelineRecords = 40000,
@@ -193,11 +196,7 @@ local CONFIG = {
     LocalDecompilerWorkers = 3,
     LocalDecompilerTimeout = 10,
     LocalDecompilerAbortAfterTimeouts = 4,
-    LocalDecompilerPriorityNames = {
-        "GunClient", "GunCursorController", "AimController", "WeaponCrosshair",
-        "ShotTracerClient", "BulletVisualizer", "HitMarker", "DuelController",
-        "KnifeClient", "ThrowingKnifeVisualizer", "PlayerScriptsLoader"
-    },
+    LocalDecompilerPriority = "HierarchyDepthThenPath",
     ModuleDecompilerEndpoint = "https://decompiler.bytefall.dev/decompile",
     ModuleDecompilerWorkers = 4,
     ModuleDecompilerTimeout = 10,
@@ -293,15 +292,15 @@ local invalidClassWarned = setmetatable({}, { __mode = "k" })
 local invalidClassNameCount = 0
 local runtimeEventRecords = {}
 local runtimeEventCategoryRecords = {
-    Game = {},
-    Replicator = {},
-    Analytics = {},
+    RemoteEvent = {},
+    UnreliableRemoteEvent = {},
+    RemoteFunction = {},
     Other = {}
 }
 local runtimeEventCategoryDropped = {
-    Game = 0,
-    Replicator = 0,
-    Analytics = 0,
+    RemoteEvent = 0,
+    UnreliableRemoteEvent = 0,
+    RemoteFunction = 0,
     Other = 0
 }
 local runtimeValueRecords = {}
@@ -391,17 +390,17 @@ local recoveryState = { Folder = nil, Buffers = { Snapshot = {}, Runtime = {}, I
 local remoteUsageByKey = {}
 local remoteUsageRecords = {}
 local remoteUsageOverflow = 0
-local combatEvents = {}
-local combatDropped = 0
-local combatSourceReferences = {}
-local combatSourceRefsDropped = 0
-local combatObservedTools = setmetatable({}, { __mode = "k" })
-local combatObservedRemotes = setmetatable({}, { __mode = "k" })
-local combatToolCounts = { Tools = 0, Activations = 0, Equips = 0 }
-local combatRemoteLifecycleCounts = { Added = 0, Removed = 0, Renamed = 0, Reparented = 0 }
-local combatObservedRemoteCount = 0
-local combatConnectionRecords = {}
-local combatConnectionDropped = 0
+local interactionEvents = {}
+local interactionDropped = 0
+local interactionSourceReferences = {}
+local interactionSourceRefsDropped = 0
+local interactionObservedTools = setmetatable({}, { __mode = "k" })
+local interactionObservedRemotes = setmetatable({}, { __mode = "k" })
+local interactionToolCounts = { Tools = 0, Activations = 0, Equips = 0 }
+local interactionRemoteLifecycleCounts = { Added = 0, Removed = 0, Renamed = 0, Reparented = 0 }
+local interactionObservedRemoteCount = 0
+local interactionConnectionRecords = {}
+local interactionConnectionDropped = 0
 local REMOTE_USAGE_LIMIT = 6000
 local REMOTE_USAGE_SAMPLE_LIMIT = 12
 local tagRecords = {}
@@ -868,22 +867,26 @@ end
 
 function F.normalizeComparisonPath(path)
     return tostring(path or ""):gsub("[^%.]+", function(part)
-        if #part == 64 and part:match("^[a-fA-F0-9]+$") then
-            return "<HEX64>"
+        if part:match("^[%x]+$") and #part >= 32 and #part <= 128 then
+            return "<HEX>"
+        end
+        if part:match("^%x%x%x%x%x%x%x%x%-[%x]+%-[%x]+%-[%x]+%-[%x]+$")
+            and #part == 36 then
+            return "<UUID>"
         end
         return part
     end)
 end
 
 function F.researchEvent(kind, object, details)
-    if not SELECTION.CombatResearch then return end
-    if #combatEvents >= CONFIG.CombatMaxEvents then
-        combatDropped = combatDropped + 1
+    if not SELECTION.InteractionResearch then return end
+    if #interactionEvents >= CONFIG.InteractionMaxEvents then
+        interactionDropped = interactionDropped + 1
         return
     end
     local className = object and F.safeClassName(object) or nil
     local path = object and F.safeFullName(object) or nil
-    combatEvents[#combatEvents + 1] = {
+    interactionEvents[#interactionEvents + 1] = {
         Time = os.clock() - runtimeStartedAt,
         Kind = kind,
         Name = object and F.safeName(object) or nil,
@@ -895,18 +898,25 @@ function F.researchEvent(kind, object, details)
 end
 
 function F.scanSourceReferences(source, record, file)
-    if not SELECTION.CombatResearch or type(source) ~= "string" or not record then return end
+    if not SELECTION.InteractionResearch or type(source) ~= "string" or not record then return end
     local tokens = {
-        "gunkill", "shootlocalbeam", "fireserver", "invokeserver",
-        "packages.net", "onclientevent", "weapon", "gunclient",
-        "raycast", "shoot", "projectile", "bullet", "ammo",
-        "register", "getupvalue", "getconnections", "matchstate"
+        "require(", "getservice(", "findfirstchild(", "waitforchild(",
+        "findfirstancestor(", "getdescendants(", "getchildren(",
+        "fireserver(", "invokeserver(", "onclientevent", "onclientinvoke",
+        "remoteevent", "remotefunction", "bindableevent", "bindablefunction",
+        "getattribute(", "setattribute(", "getpropertychangedsignal(",
+        "gettagged(", "getinstanceaddedsignal(", "getinstanceremovedsignal(",
+        ":connect(", ":once(", ":fire(", ":invoke(",
+        "activated:connect", "triggered:connect", "touched:connect",
+        "raycast(", "blockcast(", "shapecast(", "overlapparts(",
+        "getconnections(", "getupvalue(", "getupvalues(", "hookfunction(",
+        "hookmetamethod(", "getnamecallmethod(", "task.spawn(", "task.defer("
     }
     local lines = string.split(source, "\n")
     local perScript = 0
     for index, line in ipairs(lines) do
-        if #combatSourceReferences >= CONFIG.CombatMaxSourceReferences then
-            combatSourceRefsDropped = combatSourceRefsDropped + 1
+        if #interactionSourceReferences >= CONFIG.InteractionMaxSourceReferences then
+            interactionSourceRefsDropped = interactionSourceRefsDropped + 1
             return
         end
         local lower = string.lower(line)
@@ -915,7 +925,7 @@ function F.scanSourceReferences(source, record, file)
             if string.find(lower, token, 1, true) then matched[#matched + 1] = token end
         end
         if #matched > 0 then
-            combatSourceReferences[#combatSourceReferences + 1] = {
+            interactionSourceReferences[#interactionSourceReferences + 1] = {
                 ScriptPath = record.Path,
                 ScriptClass = record.ClassName,
                 File = file,
@@ -926,7 +936,7 @@ function F.scanSourceReferences(source, record, file)
                 Next = index < #lines and lines[index + 1]:sub(1, 200) or nil
             }
             perScript = perScript + 1
-            if perScript >= CONFIG.CombatMaxReferencesPerScript then break end
+            if perScript >= CONFIG.InteractionMaxReferencesPerScript then break end
         end
     end
 end
@@ -2798,55 +2808,18 @@ function F.registerToolDescendant(toolState, object, id, className, name)
     end
 end
 
-local RUNTIME_KEYWORDS = {
-    "team",
-    "red",
-    "blue",
-    "match",
-    "round",
-    "player",
-    "owner",
-    "enemy",
-    "ally",
-    "score",
-    "state",
-    "teleport",
-    "spawn",
-    "respawn",
-    "winner",
-    "dead",
-    "ammo",
-    "reload",
-    "fire",
-    "shoot",
-    "gun",
-    "weapon",
-    "tool",
-    "damage",
-    "projectile",
-    "velocity",
-    "speed",
-    "position",
-    "movement",
-    "security",
-    "detect",
-    "kick",
-    "ban"
-}
-
 local flushRuntimeTrace
 local freezeRuntimeTrace
 
-function F.isRuntimeInteresting(name, path)
-    local haystack = string.lower((name or "") .. " " .. (path or ""))
-
-    for _, keyword in ipairs(RUNTIME_KEYWORDS) do
-        if string.find(haystack, keyword, 1, true) then
-            return true
-        end
+function F.shouldPrimeRuntimeAttributes(object)
+    if not CONFIG.RuntimeTraceAllAttributes and not CONFIG.RuntimeTraceToolAttributes then
+        return false
     end
-
-    return false
+    local maxObservers = tonumber(CONFIG.RuntimeMaxObservedAttributes) or 0
+    if maxObservers > 0 and (runtimeObserverCounts.Attributes or 0) >= maxObservers then
+        return false
+    end
+    return true
 end
 
 function F.trimRuntimeArray(records, maxCount, cutoffTime)
@@ -3001,33 +2974,12 @@ function F.appendRuntimeTimeline(record)
 end
 
 function F.classifyRuntimeRemote(remote, path)
-    local text = string.lower(
-        (path or F.safeFullName(remote) or "")
-            .. " "
-            .. F.safeName(remote)
-    )
-
-    if string.find(text, "__replicatorinternal", 1, true)
-        or string.find(text, "replicatorclient", 1, true)
-        or string.find(text, "replicator", 1, true)
-    then
-        return "Replicator"
+    local className = F.safeClassName(remote)
+    if className == "RemoteEvent" or className == "UnreliableRemoteEvent"
+        or className == "RemoteFunction" then
+        return className
     end
-
-    if string.find(text, "analytics", 1, true)
-        or string.find(text, "telemetry", 1, true)
-        or string.find(text, "metrics", 1, true)
-    then
-        return "Analytics"
-    end
-
-    if string.find(text, "robloxreplicatedstorage", 1, true)
-        or string.find(text, "coregui", 1, true)
-    then
-        return "Other"
-    end
-
-    return "Game"
+    return "Other"
 end
 
 function F.captureRuntimeCallerStack()
@@ -3505,23 +3457,24 @@ local function researchToolDetails(tool)
     end
     for _, child in ipairs(descendants) do
         local className = F.safeClassName(child)
-        local name = F.safeName(child)
-        local lower = string.lower(name)
-        if className == "LocalScript" or className == "ModuleScript"
-            or REMOTE_BUCKETS[className]
-            or (F.safeIsA(child, "ValueBase") and (
-                lower:find("ammo", 1, true) or lower:find("reload", 1, true)
-                or lower:find("fire", 1, true) or lower:find("cooldown", 1, true)
-                or lower:find("damage", 1, true) or lower:find("bullet", 1, true)
-                or lower:find("shot", 1, true)))
+        local isValue = F.safeIsA(child, "ValueBase")
+        if isValue or SCRIPT_BUCKETS[className] or REMOTE_BUCKETS[className]
+            or className == "Animation" or className == "Sound"
+            or className == "ParticleEmitter" or className == "Beam"
+            or className == "Trail" or className == "ProximityPrompt"
+            or className == "ClickDetector" or className == "Attachment"
+            or className == "Motor6D" or className == "WeldConstraint"
         then
-            local entry = { Name = name, ClassName = className, Path = F.safeFullName(child) }
-            if F.safeIsA(child, "ValueBase") then
+            local entry = { Name = F.safeName(child), ClassName = className,
+                Path = F.safeFullName(child) }
+            if isValue then
                 local value, readable = F.safeGet(child, "Value")
                 if readable then entry.Value = F.serializeRuntimeValue(value) end
             end
+            local attributes = F.getAttributes(child)
+            if next(attributes) ~= nil then entry.Attributes = attributes end
             details.Children[#details.Children + 1] = entry
-            if #details.Children >= CONFIG.CombatMaxToolDescendants then
+            if #details.Children >= CONFIG.InteractionMaxToolDescendants then
                 details.Truncated = true
                 break
             end
@@ -3531,38 +3484,39 @@ local function researchToolDetails(tool)
 end
 
 -- Optional research-only closure inspection. Nothing is hooked, called, or mutated.
--- It is deliberately capped and excluded from the main Silent Aim runtime.
-function F.captureResearchToolConnections(tool, phase)
-    if not SELECTION.CombatResearch or not SELECTION.ClosureResearch then return end
-    if #combatConnectionRecords >= CONFIG.CombatMaxConnectionRecords then
-        combatConnectionDropped = combatConnectionDropped + 1
+-- Connections are inspected without invoking or replacing game callbacks.
+function F.captureResearchConnections(object, signalName, phase)
+    if not SELECTION.InteractionResearch or not SELECTION.ClosureResearch then return end
+    if #interactionConnectionRecords >= CONFIG.InteractionMaxConnectionRecords then
+        interactionConnectionDropped = interactionConnectionDropped + 1
         return
     end
     local record = {
         Time = os.clock() - runtimeStartedAt,
-        ToolPath = F.safeFullName(tool), Phase = phase,
+        ObjectPath = F.safeFullName(object), ClassName = F.safeClassName(object),
+        Signal = signalName, Phase = phase,
         Available = capabilities.getconnections,
         Connections = {}, RemoteReferences = {},
         VisitedNodes = 0
     }
     if not capabilities.getconnections then
         record.Status = "getconnections unavailable"
-        combatConnectionRecords[#combatConnectionRecords + 1] = record
+        interactionConnectionRecords[#interactionConnectionRecords + 1] = record
         return
     end
     local okConnections, connections = pcall(function()
-        return getconnections(tool.Activated)
+        return getconnections(object[signalName])
     end)
     if not okConnections or type(connections) ~= "table" then
         record.Status = "getconnections failed: " .. F.sanitizeString(connections)
-        combatConnectionRecords[#combatConnectionRecords + 1] = record
+        interactionConnectionRecords[#interactionConnectionRecords + 1] = record
         return
     end
     record.Status = "Inspected"
     record.TotalConnections = #connections
     local seen = {}
     local function inspect(value, route, depth)
-        if depth > 5 or record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then return end
+        if depth > 5 or record.VisitedNodes >= CONFIG.InteractionMaxUpvalueNodes then return end
         record.VisitedNodes = record.VisitedNodes + 1
         local kind = typeof(value)
         if kind == "Instance" then
@@ -3584,7 +3538,7 @@ function F.captureResearchToolConnections(tool, phase)
                 if count >= 100 then break end
                 count = count + 1
                 inspect(item, route .. "." .. F.sanitizeString(tostring(key)):sub(1, 70), depth + 1)
-                if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+                if record.VisitedNodes >= CONFIG.InteractionMaxUpvalueNodes then break end
             end
         elseif kind == "function" then
             if seen[value] then return end
@@ -3597,7 +3551,7 @@ function F.captureResearchToolConnections(tool, phase)
                         if n >= 40 then break end
                         n = n + 1
                         inspect(item, route .. ".upvalue[" .. tostring(key) .. "]", depth + 1)
-                        if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+                        if record.VisitedNodes >= CONFIG.InteractionMaxUpvalueNodes then break end
                     end
                 end
             elseif capabilities.getupvalue then
@@ -3608,13 +3562,13 @@ function F.captureResearchToolConnections(tool, phase)
                     if resolved ~= nil then
                         inspect(resolved, route .. ".upvalue[" .. tostring(index) .. "]", depth + 1)
                     end
-                    if record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes then break end
+                    if record.VisitedNodes >= CONFIG.InteractionMaxUpvalueNodes then break end
                 end
             end
         end
     end
     for index, connection in ipairs(connections) do
-        if index > CONFIG.CombatMaxClosuresPerTool then break end
+        if index > CONFIG.InteractionMaxClosuresPerSignal then break end
         local info = { Index = index }
         local ok, callback = pcall(function() return connection.Function end)
         if ok and type(callback) == "function" then
@@ -3635,30 +3589,19 @@ function F.captureResearchToolConnections(tool, phase)
         if statusOk and type(enabled) == "boolean" then info.Enabled = enabled end
         record.Connections[#record.Connections + 1] = info
     end
-    record.Truncated = #connections > CONFIG.CombatMaxClosuresPerTool
-        or record.VisitedNodes >= CONFIG.CombatMaxUpvalueNodes
-    combatConnectionRecords[#combatConnectionRecords + 1] = record
+    record.Truncated = #connections > CONFIG.InteractionMaxClosuresPerSignal
+        or record.VisitedNodes >= CONFIG.InteractionMaxUpvalueNodes
+    interactionConnectionRecords[#interactionConnectionRecords + 1] = record
 end
 
 function F.watchResearchTool(tool)
-    if not SELECTION.CombatResearch or not runtimeTraceActive
-        or not F.safeIsA(tool, "Tool") or combatObservedTools[tool] then return end
-    local belongsToPlayer = false
-    local ok, parent = pcall(function() return tool.Parent end)
-    if ok and LocalPlayer then
-        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-        local character = LocalPlayer.Character
-        local starterGear = LocalPlayer:FindFirstChildOfClass("StarterGear")
-        belongsToPlayer = (parent == backpack or parent == character or parent == starterGear)
-            or (backpack and F.safeIsDescendantOf(tool, backpack))
-            or (character and F.safeIsDescendantOf(tool, character))
-            or (starterGear and F.safeIsDescendantOf(tool, starterGear))
-    end
-    if not belongsToPlayer then return end
-    combatObservedTools[tool] = true
-    combatToolCounts.Tools = combatToolCounts.Tools + 1
+    if not SELECTION.InteractionResearch or not runtimeTraceActive
+        or not F.safeIsA(tool, "Tool") or interactionObservedTools[tool] then return end
+    if interactionToolCounts.Tools >= CONFIG.InteractionMaxObservedTools then return end
+    interactionObservedTools[tool] = true
+    interactionToolCounts.Tools = interactionToolCounts.Tools + 1
     F.researchEvent("ToolObserved", tool, researchToolDetails(tool))
-    F.captureResearchToolConnections(tool, "Observed")
+    F.captureResearchConnections(tool, "Activated", "Observed")
     local function listen(signalName, callback)
         local connected, connection = pcall(function()
             return tool[signalName]:Connect(callback)
@@ -3669,12 +3612,12 @@ function F.watchResearchTool(tool)
     end
     listen("Equipped", function()
         if not runtimeTraceActive then return end
-        combatToolCounts.Equips = combatToolCounts.Equips + 1
+        interactionToolCounts.Equips = interactionToolCounts.Equips + 1
         F.researchEvent("ToolEquipped", tool, researchToolDetails(tool))
         if SELECTION.ClosureResearch then
             task.defer(function()
                 if runtimeTraceActive and tool.Parent then
-                    F.captureResearchToolConnections(tool, "Equipped")
+                    F.captureResearchConnections(tool, "Activated", "Equipped")
                 end
             end)
         end
@@ -3684,7 +3627,7 @@ function F.watchResearchTool(tool)
     end)
     listen("Activated", function()
         if not runtimeTraceActive then return end
-        combatToolCounts.Activations = combatToolCounts.Activations + 1
+        interactionToolCounts.Activations = interactionToolCounts.Activations + 1
         F.researchEvent("ToolActivated", tool, {
             Enabled = select(1, F.safeGet(tool, "Enabled")),
             Attributes = F.optionalMap(F.getAttributes(tool))
@@ -3695,17 +3638,62 @@ function F.watchResearchTool(tool)
     end)
 end
 
+local RESEARCH_INTERACTION_SIGNALS = {
+    ProximityPrompt = { "Triggered", "TriggerEnded", "PromptButtonHoldBegan", "PromptButtonHoldEnded" },
+    ClickDetector = { "MouseClick", "RightMouseClick", "MouseHoverEnter", "MouseHoverLeave" },
+    DragDetector = { "DragStart", "DragEnd", "DragContinue" },
+    TextButton = { "Activated" }, ImageButton = { "Activated" }
+}
+local researchObservedInteractions = setmetatable({}, { __mode = "k" })
+local researchInteractionCount = 0
+local researchGuiButtonCount = 0
+
+function F.watchResearchInteraction(object, className)
+    if not SELECTION.InteractionResearch or not runtimeTraceActive
+        or researchObservedInteractions[object] then return end
+    className = className or F.safeClassName(object)
+    local signals = RESEARCH_INTERACTION_SIGNALS[className]
+    if not signals or researchInteractionCount >= CONFIG.InteractionMaxObservedInteractions then return end
+    local isGuiButton = className == "TextButton" or className == "ImageButton"
+    if isGuiButton and researchGuiButtonCount >= CONFIG.InteractionMaxGuiButtonObservers then return end
+    researchObservedInteractions[object] = true
+    researchInteractionCount = researchInteractionCount + 1
+    if isGuiButton then researchGuiButtonCount = researchGuiButtonCount + 1 end
+    F.researchEvent("InteractionObserved", object, { Signals = signals })
+    for _, signalName in ipairs(signals) do
+        local okSignal, signal = pcall(function() return object[signalName] end)
+        if okSignal and signal then
+            if SELECTION.ClosureResearch then
+                F.captureResearchConnections(object, signalName, "Observed")
+            end
+            local okConnect, connection = pcall(function()
+                return signal:Connect(function(...)
+                    if not runtimeTraceActive then return end
+                    local packed = table.pack(...)
+                    F.researchEvent("InteractionSignal", object, {
+                        Signal = signalName, ArgumentCount = packed.n,
+                        Arguments = F.serializePackedRuntimeValues(packed)
+                    })
+                end)
+            end)
+            if okConnect and connection then
+                runtimeConnections[#runtimeConnections + 1] = connection
+            end
+        end
+    end
+end
+
 function F.watchResearchRemote(remote)
-    if not SELECTION.CombatResearch or not runtimeTraceActive
-        or combatObservedRemotes[remote] then return end
+    if not SELECTION.InteractionResearch or not runtimeTraceActive
+        or interactionObservedRemotes[remote] then return end
     local className = F.safeClassName(remote)
     if not REMOTE_BUCKETS[className] then return end
-    if combatObservedRemoteCount >= CONFIG.CombatMaxRemoteCandidates then return end
-    combatObservedRemotes[remote] = true
-    combatObservedRemoteCount = combatObservedRemoteCount + 1
+    if interactionObservedRemoteCount >= CONFIG.InteractionMaxRemoteCandidates then return end
+    interactionObservedRemotes[remote] = true
+    interactionObservedRemoteCount = interactionObservedRemoteCount + 1
     local lastName = F.safeName(remote)
     local lastParent = remote.Parent
-    combatRemoteLifecycleCounts.Added = combatRemoteLifecycleCounts.Added + 1
+    interactionRemoteLifecycleCounts.Added = interactionRemoteLifecycleCounts.Added + 1
     F.researchEvent("RemoteObserved", remote, {
         Attributes = F.optionalMap(F.getAttributes(remote)),
         Tags = F.getTags(remote),
@@ -3716,7 +3704,7 @@ function F.watchResearchRemote(remote)
             if not runtimeTraceActive then return end
             local newName = F.safeName(remote)
             if newName == lastName then return end
-            combatRemoteLifecycleCounts.Renamed = combatRemoteLifecycleCounts.Renamed + 1
+            interactionRemoteLifecycleCounts.Renamed = interactionRemoteLifecycleCounts.Renamed + 1
             F.researchEvent("RemoteRenamed", remote, { From = lastName, To = newName })
             lastName = newName
         end)
@@ -3727,12 +3715,12 @@ function F.watchResearchRemote(remote)
             if not runtimeTraceActive then return end
             if newParent == lastParent then return end
             if newParent == nil then
-                combatRemoteLifecycleCounts.Removed = combatRemoteLifecycleCounts.Removed + 1
+                interactionRemoteLifecycleCounts.Removed = interactionRemoteLifecycleCounts.Removed + 1
                 F.researchEvent("RemoteRemoved", remote, {
                     PreviousParentPath = lastParent and F.safeFullName(lastParent) or nil
                 })
             else
-                combatRemoteLifecycleCounts.Reparented = combatRemoteLifecycleCounts.Reparented + 1
+                interactionRemoteLifecycleCounts.Reparented = interactionRemoteLifecycleCounts.Reparented + 1
                 F.researchEvent("RemoteReparented", remote, {
                     PreviousParentPath = lastParent and F.safeFullName(lastParent) or nil,
                     NewParentPath = F.safeFullName(newParent)
@@ -3911,26 +3899,13 @@ function F.installOutgoingRemoteHook()
 end
 
 function F.shouldWatchRuntimeAttributes(object, name, path, attributes)
-    if not runtimeTraceActive then
-        return false
-    end
-
+    if not runtimeTraceActive then return false end
     if CONFIG.RuntimeTraceToolAttributes and F.safeIsA(object, "Tool") then
         return true
     end
-
-    if not CONFIG.RuntimeTraceInterestingAttributes or next(attributes or {}) == nil then
-        return false
-    end
-
-    if F.safeIsA(object, "Player")
-        or F.safeIsA(object, "Humanoid")
-        or F.safeIsA(object, "BasePart")
-    then
-        return true
-    end
-
-    return F.isRuntimeInteresting(name, path)
+    if not CONFIG.RuntimeTraceAllAttributes then return false end
+    if next(attributes or {}) ~= nil then return true end
+    return F.safeIsA(object, "Player") or F.safeIsA(object, "Humanoid")
 end
 
 function F.watchRuntimeAttributes(object, id, name, className, path, attributes)
@@ -4049,7 +4024,7 @@ function F.watchRuntimeValue(object, id, name, className, path)
         return
     end
 
-    if not CONFIG.RuntimeTraceAllValues and not F.isRuntimeInteresting(name, path) then
+    if not CONFIG.RuntimeTraceAllValues then
         return
     end
 
@@ -4464,7 +4439,9 @@ function F.appendRuntimeLog(message, messageType)
     table.insert(runtimeLogRecords, record)
     if journalRecord then journalRecord("Runtime", { Kind = "Log", Data = record }) end
 
-    if F.isRuntimeInteresting(record.Message, "") then
+    local severity = tostring(messageType)
+    if severity == "Enum.MessageType.MessageError"
+        or severity == "Enum.MessageType.MessageWarning" then
         F.appendRuntimeTimeline({
             Time = record.Time,
             Kind = "Log",
@@ -4650,32 +4627,17 @@ function F.primeRuntimeObservers()
                 F.watchRuntimeRemote(object, instanceIds[object], name, className, path)
             end
 
-            if CONFIG.RuntimeTraceToolAttributes
-                or CONFIG.RuntimeTraceInterestingAttributes
-            then
-                local shouldPrimeAttributes = F.safeIsA(object, "Tool")
-                    or F.safeIsA(object, "Player")
-                    or F.safeIsA(object, "Humanoid")
-                    or F.safeIsA(object, "BasePart")
-                    or F.isRuntimeInteresting(name, path)
-
-                if shouldPrimeAttributes then
-                    local attributes = F.getAttributes(object)
-                    F.watchRuntimeAttributes(
-                        object,
-                        instanceIds[object],
-                        name,
-                        className,
-                        path,
-                        attributes
-                    )
-                end
+            if F.shouldPrimeRuntimeAttributes(object) then
+                local attributes = F.getAttributes(object)
+                F.watchRuntimeAttributes(object, instanceIds[object], name,
+                    className, path, attributes)
             end
 
             if F.safeIsA(object, "ValueBase") then
                 F.watchRuntimeValue(object, instanceIds[object], name, className, path)
             end
             F.watchResearchTool(object)
+            F.watchResearchInteraction(object, className)
             F.watchRuntimeGui(object)
             F.V38.observeInstance(object, className)
 
@@ -4747,8 +4709,9 @@ function F.startRuntimeTrace()
                     local name = F.safeName(object)
                     local path = F.safeFullName(object)
                     F.V38.observeInstance(object, className)
-                    if SELECTION.CombatResearch then
+                    if SELECTION.InteractionResearch then
                         F.watchResearchTool(object)
+                        F.watchResearchInteraction(object, className)
                         F.watchResearchRemote(object)
                     end
 
@@ -4759,7 +4722,7 @@ function F.startRuntimeTrace()
                     end
 
                     if CONFIG.RuntimeTraceToolAttributes
-                        or CONFIG.RuntimeTraceInterestingAttributes
+                        or CONFIG.RuntimeTraceAllAttributes
                     then
                         F.watchRuntimeAttributes(
                             object,
@@ -4850,7 +4813,7 @@ function F.startRuntimeTrace()
     end
 
     if LocalPlayer then
-        if SELECTION.CombatResearch then
+        if SELECTION.InteractionResearch then
             for _, parent in ipairs({
                 LocalPlayer:FindFirstChildOfClass("Backpack"),
                 LocalPlayer.Character,
@@ -4872,7 +4835,7 @@ function F.startRuntimeTrace()
                 end
 
                 F.watchLocalCharacter(newCharacter)
-                if SELECTION.CombatResearch then
+                if SELECTION.InteractionResearch then
                     for _, child in ipairs(newCharacter:GetChildren()) do
                         F.watchResearchTool(child)
                     end
@@ -5162,6 +5125,11 @@ dumpNode = function(object, parentId, context)
         for _, tag in ipairs(tags) do F.V38.watchTags(tag) end
     end
     local properties = needsProperties and F.getUsefulProperties(object, className) or {}
+    local metaRecord = instanceMetaById[id]
+    if metaRecord then
+        metaRecord.HasAttributes = next(attributes) ~= nil
+        metaRecord.IsValueBase = F.classIsA(object, className, "ValueBase")
+    end
     if SELECTION.Visuals then F.V38.trackAssets(object, properties, "Snapshot") end
 
     if SELECTION.Structure and #tags > 0 then
@@ -5245,6 +5213,7 @@ dumpNode = function(object, parentId, context)
 
     F.watchRuntimeRemote(object, id, name, className, path)
     F.watchResearchTool(object)
+    F.watchResearchInteraction(object, className)
     F.watchRuntimeAttributes(object, id, name, className, path, attributes)
     F.watchRuntimeValue(object, id, name, className, path)
     F.watchRuntimeGui(object)
@@ -5528,84 +5497,54 @@ function F.buildPlayerIndex()
 end
 
 local STATE_BUCKETS = {
-    Team = { "team", "teams", "red", "blue", "ally", "allies", "enemy", "enemies" },
-    Match = { "match", "round", "duel", "gamephase", "gamestate" },
-    Player = { "player", "players", "owner", "userid", "username" },
-    Teleport = { "teleport", "teleporting", "spawn", "respawn", "respawned" },
-    Score = { "score", "kills", "kill", "deaths", "death", "winner", "win" }
+    Players = function(meta) return meta.ClassName == "Player" end,
+    Values = function(meta) return meta.IsValueBase == true end,
+    Attributes = function(meta) return meta.HasAttributes == true end,
+    Tools = function(meta) return meta.ClassName == "Tool" end,
+    Remotes = function(meta) return REMOTE_BUCKETS[meta.ClassName] ~= nil end,
+    Interfaces = function(meta) return F.GUI_CLASSES[meta.ClassName] == true end,
+    Humanoids = function(meta) return meta.ClassName == "Humanoid" end
 }
 
 function F.stateRecordFromMeta(meta, valueById)
     local record = {
-        Id = meta.Id,
-        Name = meta.Name,
-        ClassName = meta.ClassName,
-        Path = meta.Path,
-        ParentId = meta.ParentId
+        Id = meta.Id, Name = meta.Name, ClassName = meta.ClassName,
+        Path = meta.Path, ParentId = meta.ParentId
     }
-
     local valueRecord = valueById[meta.Id]
-    if valueRecord then
-        record.Value = valueRecord.Value
-    end
-
+    if valueRecord then record.Value = valueRecord.Value end
     return record
 end
 
 function F.buildStateIndex(instanceIndex)
-    local buckets = {}
-    local counts = {}
-    local valueById = {}
-
-    for _, valueRecord in ipairs(valueRecords) do
-        valueById[valueRecord.Id] = valueRecord
-    end
-
+    local buckets, counts, valueById, attributeIds = {}, {}, {}, {}
+    for _, valueRecord in ipairs(valueRecords) do valueById[valueRecord.Id] = valueRecord end
+    for _, row in ipairs(attributeIndex) do attributeIds[row.Id] = true end
     for bucketName in pairs(STATE_BUCKETS) do
         buckets[bucketName] = {}
         counts[bucketName] = 0
     end
-
     for _, meta in ipairs(instanceIndex) do
-        local tokenSet = {}
-        local nameTokenSet = {}
-
-        for _, token in ipairs(F.tokenizeText(meta.Name or "")) do
-            local lowered = string.lower(token)
-            tokenSet[lowered] = true
-            nameTokenSet[lowered] = true
-        end
-
-        for _, token in ipairs(F.tokenizeText(meta.Path or "")) do
-            tokenSet[string.lower(token)] = true
-        end
-
-        for bucketName, keywords in pairs(STATE_BUCKETS) do
-            local matched = bucketName == "Player" and meta.ClassName == "Player"
-            local searchSet = bucketName == "Player" and nameTokenSet or tokenSet
-
-            if not matched then
-                for _, keyword in ipairs(keywords) do
-                    if searchSet[keyword] then
-                        matched = true
-                        break
-                    end
-                end
+        local className = meta.ClassName
+        for bucketName, predicate in pairs(STATE_BUCKETS) do
+            local matched
+            if bucketName == "Values" then
+                matched = predicate(meta) or valueById[meta.Id] ~= nil
+            elseif bucketName == "Attributes" then
+                matched = predicate(meta) or attributeIds[meta.Id] == true
+            else
+                matched = predicate(meta)
             end
-
             if matched then
                 counts[bucketName] = counts[bucketName] + 1
                 if #buckets[bucketName] < CONFIG.StateIndexMaxPerBucket then
-                    table.insert(buckets[bucketName], F.stateRecordFromMeta(meta, valueById))
+                    buckets[bucketName][#buckets[bucketName] + 1] =
+                        F.stateRecordFromMeta(meta, valueById)
                 end
             end
         end
     end
-
-    return {
-        Counts = counts,
-        Buckets = buckets
-    }
+    return { Counts = counts, Buckets = buckets }
 end
 
 function F.finalizeIndexes()
@@ -5720,7 +5659,7 @@ function F.buildSummary(elapsed, pathStats)
         "Registered IDs: " .. tostring(nextInstanceId),
         "Remotes / Bindables: " .. tostring(F.totalRemoteCount()),
         "Scripts: " .. tostring(F.totalScriptCount()),
-        "Combat Research: " .. tostring(SELECTION.CombatResearch),
+        "Interaction Research: " .. tostring(SELECTION.InteractionResearch),
         "Outgoing Hook (opt-in): " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes),
         "LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued),
         "LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded),
@@ -5749,9 +5688,9 @@ function F.buildSummary(elapsed, pathStats)
         "Runtime Trace Frozen: " .. tostring(runtimeHookState.Frozen),
         "Runtime Ring Window: " .. tostring(CONFIG.RuntimeRingWindowSeconds) .. "s",
         "Runtime Remote Events: " .. tostring(#runtimeEventRecords),
-        "  Game: " .. tostring(#runtimeEventCategoryRecords.Game),
-        "  Replicator: " .. tostring(#runtimeEventCategoryRecords.Replicator),
-        "  Analytics: " .. tostring(#runtimeEventCategoryRecords.Analytics),
+        "  RemoteEvent: " .. tostring(#runtimeEventCategoryRecords.RemoteEvent),
+        "  UnreliableRemoteEvent: " .. tostring(#runtimeEventCategoryRecords.UnreliableRemoteEvent),
+        "  RemoteFunction: " .. tostring(#runtimeEventCategoryRecords.RemoteFunction),
         "  Other: " .. tostring(#runtimeEventCategoryRecords.Other),
         "Runtime Value Changes: " .. tostring(#runtimeValueRecords),
         "Runtime Attribute Changes: " .. tostring(#runtimeAttributeRecords),
@@ -5907,8 +5846,8 @@ function F.selectOutputFolder()
     INTERACTIONS_FILE = move(INTERACTIONS_FILE)
     PHYSICS_FILE = move(PHYSICS_FILE)
     REMOTE_USAGE_FILE = move(REMOTE_USAGE_FILE)
-    COMBAT_RESEARCH_FILE = move(COMBAT_RESEARCH_FILE)
-    COMBAT_EVENTS_FILE = move(COMBAT_EVENTS_FILE)
+    INTERACTION_RESEARCH_FILE = move(INTERACTION_RESEARCH_FILE)
+    INTERACTION_EVENTS_FILE = move(INTERACTION_EVENTS_FILE)
     SOURCE_REFERENCES_FILE = move(SOURCE_REFERENCES_FILE)
     CONNECTION_RESEARCH_FILE = move(CONNECTION_RESEARCH_FILE)
     MODULE_SOURCES_FOLDER = move(MODULE_SOURCES_FOLDER)
@@ -5945,17 +5884,6 @@ F.avatarInspection = {
     StartedAt = nil, MaxRecords = 480, MaxAccessories = 48
 }
 
-F.AVATAR_BODY_NAMES = {
-    "Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart",
-    "Left Arm", "Right Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand",
-    "RightUpperArm", "RightLowerArm", "RightHand",
-    "Left Leg", "Right Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "RightUpperLeg", "RightLowerLeg", "RightFoot"
-}
-F.AVATAR_LEG_NAMES = {
-    "RightUpperLeg", "RightLowerLeg", "RightFoot", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "Right Leg", "Left Leg"
-}
 F.AVATAR_DESCRIPTION_PROPERTIES = {
     "RightLeg", "LeftLeg", "RightArm", "LeftArm", "Torso", "Head", "Face",
     "Shirt", "Pants", "GraphicTShirt", "HairAccessory", "HatAccessory",
@@ -6094,34 +6022,43 @@ function F.avatarCapturePlayer(player, reason, force)
                 record.DescriptionError = "Humanoid missing at capture"
             end
 
-            local legParts = {}
-            local bodyParts = {}
+            local legParts, bodyParts = {}, {}
             local rigRoot = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
-            for _, name in ipairs(F.AVATAR_BODY_NAMES) do
-                local part = character:FindFirstChild(name)
-                if part and part:IsA("BasePart") then
-                    bodyParts[part] = true
-                    for _, legName in ipairs(F.AVATAR_LEG_NAMES) do
-                        if legName == name then legParts[part] = true break end
+            record.RootPart = rigRoot and F.safeFullName(rigRoot) or nil
+            local descendantsOk, descendants = pcall(function() return character:GetDescendants() end)
+            if descendantsOk then
+                for _, part in ipairs(descendants) do
+                    if F.safeIsA(part, "BasePart")
+                        and not part:FindFirstAncestorOfClass("Accessory")
+                        and not part:FindFirstAncestorOfClass("Tool") then
+                        if #record.BodyParts >= 180 then
+                            record.BodyPartsOmitted = (record.BodyPartsOmitted or 0) + 1
+                        else
+                            bodyParts[part] = true
+                            local name = F.safeName(part)
+                            local lowerName = string.lower(name)
+                            local isLeg = lowerName:find("leg", 1, true) ~= nil
+                                or lowerName:find("foot", 1, true) ~= nil
+                            if isLeg then legParts[part] = true end
+                            local fields = F.avatarProps(part, F.AVATAR_PART_PROPERTIES)
+                            F.V38.trackAssets(part, fields, "AvatarBody")
+                            local extra = F.avatarChildNames(part, {
+                                Attachment = true, SpecialMesh = true, Vector3Value = true,
+                                SurfaceAppearance = true, WrapLayer = true, WrapTarget = true
+                            }, 30)
+                            local item = {
+                                Name = name, Path = F.safeFullName(part), ClassName = part.ClassName,
+                                Properties = fields, Children = extra,
+                                RelativeToRoot = rigRoot and F.V38.relativeFrame(rigRoot, part) or nil,
+                                OriginalSize = (part:FindFirstChild("OriginalSize") and
+                                    F.avatarRead(part:FindFirstChild("OriginalSize"), "Value")) or nil
+                            }
+                            record.BodyParts[#record.BodyParts + 1] = item
+                            if isLeg then record.LegParts[#record.LegParts + 1] = item end
+                        end
                     end
-                    local fields = F.avatarProps(part, F.AVATAR_PART_PROPERTIES)
-                    F.V38.trackAssets(part, fields, "AvatarBody")
-                    local extra = F.avatarChildNames(part, {
-                        Attachment = true, SpecialMesh = true, Vector3Value = true,
-                        SurfaceAppearance = true, WrapLayer = true, WrapTarget = true
-                    }, 30)
-                    local item = {
-                        Name = name, Path = F.safeFullName(part), ClassName = part.ClassName,
-                        Properties = fields, Children = extra,
-                        RelativeToRoot = rigRoot and F.V38.relativeFrame(rigRoot, part) or nil,
-                        OriginalSize = (part:FindFirstChild("OriginalSize") and
-                            F.avatarRead(part:FindFirstChild("OriginalSize"), "Value")) or nil
-                    }
-                    record.BodyParts[#record.BodyParts + 1] = item
-                    if legParts[part] then record.LegParts[#record.LegParts + 1] = item end
                 end
             end
-            local descendantsOk, descendants = pcall(function() return character:GetDescendants() end)
             if descendantsOk then
                 for _, item in ipairs(descendants) do
                     local class = F.safeClassName(item)
@@ -6233,7 +6170,7 @@ end
 
 function F.avatarInspectionDocument()
     return {
-        Schema = "Synergy.AvatarInspection", Version = 2, DumpId = currentDumpId,
+        Schema = "Averyn.AvatarInspection", Version = 2, DumpId = currentDumpId,
         GeneratedAtUnix = os.time(), GameId = game.GameId, PlaceId = game.PlaceId,
         JobId = tostring(game.JobId), ReadOnly = true,
         Notes = {
@@ -6317,7 +6254,7 @@ function F.finishAvatarInspection()
 end
 
 F.V38 = {
-    SchemaVersion = 3.8,
+    SchemaVersion = 3.9,
     Events = {}, EventOmitted = 0, Connections = {},
     Observed = setmetatable({}, { __mode = "k" }), ObservedCount = 0,
     TagWatch = {}, TagEventCount = 0,
@@ -6328,7 +6265,7 @@ F.V38 = {
     PlayerCharacters = setmetatable({}, { __mode = "k" }),
     CharacterSnapshots = {}, CharacterDeaths = {},
     BaselinePose = setmetatable({}, { __mode = "k" }),
-    WeaponSnapshots = {}, WeaponOmitted = 0,
+    ToolSnapshots = {}, ToolOmitted = 0,
     ListenerMarkers = 0,
     CallbacksWrapped = setmetatable({}, { __mode = "k" }),
     CallbackCoverage = { NamecallHook = false, DirectCalls = "NotIntercepted", CallbackWrappingOptIn = false },
@@ -6530,7 +6467,7 @@ end
 function F.V38.buildRigHierarchy(record)
     local result = {
         RigType = record.RigType, Parts = {}, Joints = record.BodyJoints,
-        Accessories = {}, RootPart = "HumanoidRootPart",
+        Accessories = {}, RootPart = record.RootPart,
         PoseExplanation = "PoseDifferenceFromRest is an observation, not evidence of tampering"
     }
     for _, part in ipairs(record.BodyParts) do
@@ -6621,7 +6558,7 @@ function F.V38.makeRigDocument()
     local rigs = {}
     for _, row in pairs(byId) do rigs[#rigs + 1] = row end
     table.sort(rigs, function(a, b) return a.UserId < b.UserId end)
-    return { Schema = "Synergy.RigHierarchy", Version = 1, DumpId = currentDumpId,
+    return { Schema = "Averyn.RigHierarchy", Version = 1, DumpId = currentDumpId,
         TotalPlayers = #rigs, Note = "Best-effort client-replicated rig, not mesh binary data", Players = rigs }
 end
 
@@ -6775,10 +6712,6 @@ function F.V38.watchAnimationTrack(track, animator, alreadyPlaying)
     F.V38.signal(track, "KeyframeReached", function(name)
         log("AnimationKeyframeReached", { Keyframe = F.sanitizeString(tostring(name)) })
     end)
-    for _, marker in ipairs({ "Fire", "Shoot", "Hit", "Step", "Footstep", "Swing", "Equip", "Reload",
-        "Impact", "Attack", "Damage", "Sound", "Whoosh", "End", "Marker", "Start" }) do
-        F.V38.watchMarker(track, marker, log)
-    end
     F.V38.discoverAnimationMarkers(track, log)
 end
 
@@ -6852,7 +6785,7 @@ function F.V38.watchVisual(object, className)
     end
 end
 
-function F.V38.weaponAppearance(tool, phase)
+function F.V38.toolAppearance(tool, phase)
     local items, truncated = {}, false
     local ok, descendants = pcall(function() return tool:GetDescendants() end)
     if not ok then return { Phase = phase, Error = "DescendantsInaccessible" } end
@@ -6874,23 +6807,23 @@ function F.V38.weaponAppearance(tool, phase)
         Items = items, Truncated = truncated }
 end
 
-function F.V38.firstPersonState(tool, event)
+function F.V38.captureRigAndCameraState(tool, event)
     local camera = workspace.CurrentCamera
     local row = {
         Event = event, Camera = camera and F.avatarProps(camera,
             { "CFrame", "Focus", "CameraType", "CameraSubject", "FieldOfView" }) or nil,
-        Tool = tool and F.safeFullName(tool) or nil, Arms = {}, Joints = {}, Tracks = {}
+        Tool = tool and F.safeFullName(tool) or nil, Parts = {}, Joints = {}, Tracks = {}
     }
     local character = LocalPlayer and LocalPlayer.Character
     if character then
         for _, part in ipairs(character:GetDescendants()) do
-            local name = F.safeName(part)
-            if (F.safeIsA(part, "BasePart") and
-                (name:find("Arm") or name:find("Hand") or name:find("View") or name:find("Weapon")))
-                and #row.Arms < 40 then
-                row.Arms[#row.Arms + 1] = { Path = F.safeFullName(part),
+            if F.safeIsA(part, "BasePart") and #row.Parts < 60
+                and not part:FindFirstAncestorOfClass("Accessory")
+                and not part:FindFirstAncestorOfClass("Tool") then
+                row.Parts[#row.Parts + 1] = {
+                    Path = F.safeFullName(part), ClassName = F.safeClassName(part),
                     Properties = F.avatarProps(part, { "CFrame", "Size", "LocalTransparencyModifier" }) }
-            elseif F.safeClassName(part) == "Motor6D" and #row.Joints < 50 then
+            elseif F.safeClassName(part) == "Motor6D" and #row.Joints < 70 then
                 row.Joints[#row.Joints + 1] = F.V38.captureJoint(part, character)
             elseif F.safeClassName(part) == "Animator" then
                 row.Tracks = F.getAnimatorPlaybackTracks(part) or {}
@@ -6900,23 +6833,23 @@ function F.V38.firstPersonState(tool, event)
     return row
 end
 
-function F.V38.watchWeapon(tool)
+function F.V38.watchTool(tool)
     if not LocalPlayer then return end
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     local character = LocalPlayer.Character
     if not ((backpack and F.safeIsDescendantOf(tool, backpack))
         or (character and F.safeIsDescendantOf(tool, character))) then return end
     local r = F.V38
-    if not r.Weapons then r.Weapons = setmetatable({}, { __mode = "k" }) end
-    if r.Weapons[tool] then return end
-    r.Weapons[tool] = true
+    if not r.Tools then r.Tools = setmetatable({}, { __mode = "k" }) end
+    if r.Tools[tool] then return end
+    r.Tools[tool] = true
     local function snapshot(phase)
         if not runtimeTraceActive then return end
-        if #r.WeaponSnapshots >= 350 then r.WeaponOmitted = r.WeaponOmitted + 1 return end
-        local record = F.V38.weaponAppearance(tool, phase)
-        record.Viewmodel = F.V38.firstPersonState(tool, phase)
-        r.WeaponSnapshots[#r.WeaponSnapshots + 1] = record
-        F.V38.addEvent("Tool" .. phase, tool, { AppearanceSnapshot = #r.WeaponSnapshots })
+        if #r.ToolSnapshots >= 350 then r.ToolOmitted = r.ToolOmitted + 1 return end
+        local record = F.V38.toolAppearance(tool, phase)
+        record.CharacterRigAndCamera = F.V38.captureRigAndCameraState(tool, phase)
+        r.ToolSnapshots[#r.ToolSnapshots + 1] = record
+        F.V38.addEvent("Tool" .. phase, tool, { AppearanceSnapshot = #r.ToolSnapshots })
     end
     snapshot("Observed")
     F.V38.signal(tool, "Equipped", function()
@@ -7006,7 +6939,7 @@ function F.V38.observeInstance(object, className)
     r.ObservedCount = r.ObservedCount + 1
     if isVisual then F.V38.watchVisual(object, className) end
     if isPhysics then F.V38.watchConstraint(object, className) end
-    if isTool then F.V38.watchWeapon(object) end
+    if isTool then F.V38.watchTool(object) end
     if isBindable then F.V38.watchBindable(object, className) end
 end
 
@@ -7571,7 +7504,7 @@ function F.V38.makeCoverage()
         VisualAnimation = visualAnimationPlaybackOmitted, GUI = guiCapture.SnapshotOmitted,
         RuntimeEvents = r.EventOmitted, RemoteUsage = remoteUsageOverflow,
         Tags = tagOmitted, Physics = physicsOmitted, Interactions = interactionOmitted,
-        AvatarRecords = F.avatarInspection.Skipped, WeaponSnapshots = r.WeaponOmitted,
+        AvatarRecords = F.avatarInspection.Skipped, ToolSnapshots = r.ToolOmitted,
         AssetIds = r.AssetOmitted, DependencyEdges = r.DependencyOmitted,
         RemoteStats = r.RemoteStatsOmitted or 0,
         Observers = r.Coverage.ObserversOmitted,
@@ -7586,7 +7519,7 @@ function F.V38.makeCoverage()
         end
     end
     return {
-        Schema = "Synergy.CaptureCoverage", Version = 1, DumpId = currentDumpId,
+        Schema = "Averyn.CaptureCoverage", Version = 1, DumpId = currentDumpId,
         Selection = SELECTION,
         Totals = {
             TraversedNodes = nodeCount, RegisteredIds = nextInstanceId,
@@ -7649,7 +7582,7 @@ function F.V38.export(writtenFiles)
         write("runtime_v38_events.json", {
             DumpId = currentDumpId, Total = #r.Events,
             OmittedByCap = r.EventOmitted, Events = r.Events,
-            MarkerCoverage = "Known marker candidates, KeyframeReached and best-effort asset marker discovery",
+            MarkerCoverage = "KeyframeReached and best-effort discovery of markers from animation assets",
             MarkerLookupsRequested = r.MarkerLookupsRequested or 0,
             MarkerListenerCount = r.ListenerMarkers
         })
@@ -7660,8 +7593,8 @@ function F.V38.export(writtenFiles)
             EffectGroups = F.V38.buildEffectGroups(),
             Limitations = "Direct calls and server-only interactions cannot be measured conclusively"
         })
-        write("runtime_weapon_viewmodels.json", { DumpId = currentDumpId,
-            Snapshots = r.WeaponSnapshots, Omitted = r.WeaponOmitted,
+        write("runtime_tool_visual_state.json", { DumpId = currentDumpId,
+            Snapshots = r.ToolSnapshots, Omitted = r.ToolOmitted,
             PlayerDeaths = r.CharacterDeaths, LastCharacterSnapshots = r.CharacterSnapshots })
     end
 end
@@ -7964,7 +7897,7 @@ function F.buildModuleDecompileResult(entry, guard)
     end
 
     local bytecodeBytes = #bytecode
-    local bytecodeDigest = SELECTION.CombatResearch and F.comparisonDigest(bytecode) or nil
+    local bytecodeDigest = SELECTION.InteractionResearch and F.comparisonDigest(bytecode) or nil
     local success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
     bytecode = nil
 
@@ -7991,7 +7924,7 @@ function F.buildModuleDecompileResult(entry, guard)
         Attempts = attempts,
         BytecodeBytes = bytecodeBytes,
         BytecodeDigest = bytecodeDigest,
-        SourceDigest = SELECTION.CombatResearch and F.comparisonDigest(source) or nil,
+        SourceDigest = SELECTION.InteractionResearch and F.comparisonDigest(source) or nil,
         SourceBytes = #source
     }
 end
@@ -8209,18 +8142,13 @@ function F.decompileQueuedClientScripts(scriptsDocument)
         return
     end
 
-    local priorityNames = {}
-    for i, name in ipairs(CONFIG.LocalDecompilerPriorityNames or {}) do
-        priorityNames[string.lower(name)] = i
-    end
-    local function priority(entry)
-        return priorityNames[string.lower(entry.Record.Name or "")] or 9999
-    end
     table.sort(clientScriptQueue, function(a, b)
-        local pa, pb = priority(a), priority(b)
-        if pa ~= pb then
-            return pa < pb
-        end
+        local pathA = a.Record.Path or ""
+        local pathB = b.Record.Path or ""
+        local _, depthA = pathA:gsub("%.", "")
+        local _, depthB = pathB:gsub("%.", "")
+        if depthA ~= depthB then return depthA < depthB end
+        if pathA ~= pathB then return pathA < pathB end
         return (a.Record.Id or 0) < (b.Record.Id or 0)
     end)
 
@@ -8678,9 +8606,9 @@ flushRuntimeTrace = function()
 
     local eventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
     eventsDocument.CategoryTotals = {
-        Game = #runtimeEventCategoryRecords.Game,
-        Replicator = #runtimeEventCategoryRecords.Replicator,
-        Analytics = #runtimeEventCategoryRecords.Analytics,
+        RemoteEvent = #runtimeEventCategoryRecords.RemoteEvent,
+        UnreliableRemoteEvent = #runtimeEventCategoryRecords.UnreliableRemoteEvent,
+        RemoteFunction = #runtimeEventCategoryRecords.RemoteFunction,
         Other = #runtimeEventCategoryRecords.Other
     }
     eventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
@@ -8787,24 +8715,24 @@ flushRuntimeTrace = function()
 
     F.writeSafe(RUNTIME_FILES.Events, F.encodeJSON(eventsDocument, "runtime_events.json"))
     F.writeSafe(
-        RUNTIME_FILES.EventsGame,
+        RUNTIME_FILES.EventsRemoteEvent,
         F.encodeJSON(
-            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
-            "runtime_events_game.json"
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.RemoteEvent, "RemoteEvent"),
+            "runtime_events_remote_event.json"
         )
     )
     F.writeSafe(
-        RUNTIME_FILES.EventsReplicator,
+        RUNTIME_FILES.EventsUnreliableRemoteEvent,
         F.encodeJSON(
-            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
-            "runtime_events_replicator.json"
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.UnreliableRemoteEvent, "UnreliableRemoteEvent"),
+            "runtime_events_unreliable_remote_event.json"
         )
     )
     F.writeSafe(
-        RUNTIME_FILES.EventsAnalytics,
+        RUNTIME_FILES.EventsRemoteFunction,
         F.encodeJSON(
-            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
-            "runtime_events_analytics.json"
+            F.makeRuntimeEventDocument(runtimeEventCategoryRecords.RemoteFunction, "RemoteFunction"),
+            "runtime_events_remote_function.json"
         )
     )
     F.writeSafe(
@@ -8985,17 +8913,17 @@ local activeRegistryToken
 function F.run()
     if type(shared) == "table" then
         activeRegistry = shared
-        if type(activeRegistry.__SynergyStructureDumperActive) == "table"
-            and activeRegistry.__SynergyStructureDumperActive.JobId == tostring(game.JobId)
+        if type(activeRegistry.__AverynDumperActive) == "table"
+            and activeRegistry.__AverynDumperActive.JobId == tostring(game.JobId)
         then
             warn("GameStructureDump: a dump is already running in this server; duplicate execution ignored.")
             return
         end
         activeRegistryToken = { JobId = tostring(game.JobId), StartedAt = os.clock() }
-        activeRegistry.__SynergyStructureDumperActive = activeRegistryToken
+        activeRegistry.__AverynDumperActive = activeRegistryToken
     end
-    if SELECTION.ClosureResearch then SELECTION.CombatResearch = true end
-    if SELECTION.CombatResearch then
+    if SELECTION.ClosureResearch then SELECTION.InteractionResearch = true end
+    if SELECTION.InteractionResearch then
         for _, key in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
             SELECTION[key] = true
         end
@@ -9366,8 +9294,8 @@ function F.run()
     if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
         F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
     end
-    if SELECTION.CombatResearch then
-        checkpointStage("combat_research_export")
+    if SELECTION.InteractionResearch then
+        checkpointStage("interaction_research_export")
         local candidates = {}
         local normalizedCounts = {}
         for _, bucket in pairs(remoteIndex) do
@@ -9403,9 +9331,9 @@ function F.run()
             end
         end
         table.sort(scripts, function(a, b) return a.StableKey < b.StableKey end)
-        local weapons = {}
+        local tools = {}
         for _, entry in ipairs(toolRecords) do
-            weapons[#weapons + 1] = {
+            tools[#tools + 1] = {
                 Name = entry.Name, Path = entry.Path,
                 NormalizedPath = F.normalizeComparisonPath(entry.Path),
                 InventorySource = entry.Source,
@@ -9414,14 +9342,14 @@ function F.run()
                 Attributes = entry.Attributes, Properties = entry.Properties
             }
         end
-        F.writeJSONDocument(COMBAT_RESEARCH_FILE, {
-            Schema = "Averyn.CombatResearch", Version = 1,
+        F.writeJSONDocument(INTERACTION_RESEARCH_FILE, {
+            Schema = "Averyn.InteractionResearch", Version = 1,
             DumpId = currentDumpId,
             PlaceId = game.PlaceId, GameId = game.GameId, JobId = F.sanitizeString(game.JobId),
             Method = "Passive enumeration, script source analysis and optional outbound trace",
             Caveats = {
                 "Client observation cannot reveal server-only source or authoritative validation.",
-                "Normalized HEX64 names are patterns, not guaranteed identities.",
+                "Normalized high-entropy path components are patterns, not guaranteed identities.",
                 "Instance IDs are dump-local, not stable across servers.",
                 "A matching remote path does not prove identical argument schemas.",
                 "Outgoing FireServer/InvokeServer activity requires the opt-in hook; without it, it is unobserved."
@@ -9429,31 +9357,31 @@ function F.run()
             OutgoingHookEnabled = CONFIG.RuntimeTraceOutgoingRemotes,
             OutgoingHookInstalled = runtimeOutgoingHookInstalled,
             SourcesSucceeded = clientDecompileStats.Succeeded + moduleDecompileStats.Succeeded,
-            SourceReferenceCount = #combatSourceReferences,
-            SourceReferenceRecordsDropped = combatSourceRefsDropped,
+            SourceReferenceCount = #interactionSourceReferences,
+            SourceReferenceRecordsDropped = interactionSourceRefsDropped,
             RemoteCount = #candidates, Remotes = candidates,
-            Scripts = scripts, Weapons = weapons,
+            Scripts = scripts, Tools = tools,
             RemoteUsageFile = REMOTE_USAGE_FILE,
-            ToolObservations = combatToolCounts,
-            RemoteLifecycle = combatRemoteLifecycleCounts,
-            EventsSaved = #combatEvents, EventsDropped = combatDropped
-        }, "combat_research.json", writtenFiles, true)
-        F.writeJSONDocument(COMBAT_EVENTS_FILE, {
-            DumpId = currentDumpId, Total = #combatEvents, Dropped = combatDropped,
-            Description = "Cumulative client tool events and remote lifecycle; not a server-side firing log",
-            Events = combatEvents
-        }, "combat_events.json", writtenFiles, false)
+            ToolObservations = interactionToolCounts,
+            RemoteLifecycle = interactionRemoteLifecycleCounts,
+            EventsSaved = #interactionEvents, EventsDropped = interactionDropped
+        }, "interaction_research.json", writtenFiles, true)
+        F.writeJSONDocument(INTERACTION_EVENTS_FILE, {
+            DumpId = currentDumpId, Total = #interactionEvents, Dropped = interactionDropped,
+            Description = "Client-observed tool and interaction events and remote lifecycle; server activity is not fully visible",
+            Events = interactionEvents
+        }, "interaction_events.json", writtenFiles, false)
         F.writeJSONDocument(SOURCE_REFERENCES_FILE, {
-            DumpId = currentDumpId, Total = #combatSourceReferences,
-            Dropped = combatSourceRefsDropped, Records = combatSourceReferences
+            DumpId = currentDumpId, Total = #interactionSourceReferences,
+            Dropped = interactionSourceRefsDropped, Records = interactionSourceReferences
         }, "source_references.json", writtenFiles, false)
         F.writeJSONDocument(CONNECTION_RESEARCH_FILE, {
             DumpId = currentDumpId,
             Enabled = SELECTION.ClosureResearch,
-            Total = #combatConnectionRecords,
-            Dropped = combatConnectionDropped,
-            Description = "Best-effort optional Tool.Activated callback/upvalue inspection. Snapshot-only evidence.",
-            Records = combatConnectionRecords
+            Total = #interactionConnectionRecords,
+            Dropped = interactionConnectionDropped,
+            Description = "Best-effort callback and upvalue inspection for supported native interaction signals. Snapshot-only evidence.",
+            Records = interactionConnectionRecords
         }, "connection_research.json", writtenFiles, false)
     end
     if SELECTION.Runtime then F.writeJSONDocument(REMOTE_USAGE_FILE, {
@@ -9472,9 +9400,9 @@ function F.run()
     if SELECTION.Runtime then
     local runtimeEventsDocument = F.makeRuntimeEventDocument(runtimeEventRecords, nil)
     runtimeEventsDocument.CategoryTotals = {
-        Game = #runtimeEventCategoryRecords.Game,
-        Replicator = #runtimeEventCategoryRecords.Replicator,
-        Analytics = #runtimeEventCategoryRecords.Analytics,
+        RemoteEvent = #runtimeEventCategoryRecords.RemoteEvent,
+        UnreliableRemoteEvent = #runtimeEventCategoryRecords.UnreliableRemoteEvent,
+        RemoteFunction = #runtimeEventCategoryRecords.RemoteFunction,
         Other = #runtimeEventCategoryRecords.Other
     }
     runtimeEventsDocument.CategoryDroppedDueToCap = runtimeEventCategoryDropped
@@ -9601,23 +9529,23 @@ function F.run()
         false
     )
     F.writeJSONDocument(
-        RUNTIME_FILES.EventsGame,
-        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Game, "Game"),
-        "runtime_events_game.json",
+        RUNTIME_FILES.EventsRemoteEvent,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.RemoteEvent, "RemoteEvent"),
+        "runtime_events_remote_event.json",
         writtenFiles,
         false
     )
     F.writeJSONDocument(
-        RUNTIME_FILES.EventsReplicator,
-        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Replicator, "Replicator"),
-        "runtime_events_replicator.json",
+        RUNTIME_FILES.EventsUnreliableRemoteEvent,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.UnreliableRemoteEvent, "UnreliableRemoteEvent"),
+        "runtime_events_unreliable_remote_event.json",
         writtenFiles,
         false
     )
     F.writeJSONDocument(
-        RUNTIME_FILES.EventsAnalytics,
-        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.Analytics, "Analytics"),
-        "runtime_events_analytics.json",
+        RUNTIME_FILES.EventsRemoteFunction,
+        F.makeRuntimeEventDocument(runtimeEventCategoryRecords.RemoteFunction, "RemoteFunction"),
+        "runtime_events_remote_function.json",
         writtenFiles,
         false
     )
@@ -9822,7 +9750,7 @@ function F.run()
             OutgoingRemoteObservationMode = "PostCallPassive",
             DynamicRemotes = CONFIG.RuntimeTraceDynamicRemotes,
             ToolAttributes = CONFIG.RuntimeTraceToolAttributes,
-            InterestingAttributes = CONFIG.RuntimeTraceInterestingAttributes,
+            AllAttributes = CONFIG.RuntimeTraceAllAttributes,
             AllValues = CONFIG.RuntimeTraceAllValues,
             CaptureCaller = CONFIG.RuntimeCaptureCaller,
             CaptureCallerStack = CONFIG.RuntimeCaptureCallerStack,
@@ -9858,9 +9786,9 @@ function F.run()
             MaxTimelineRecords = CONFIG.RuntimeMaxTimelineRecords,
             Recorded = {
                 Events = #runtimeEventRecords,
-                GameEvents = #runtimeEventCategoryRecords.Game,
-                ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
-                AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+                RemoteEventEvents = #runtimeEventCategoryRecords.RemoteEvent,
+                UnreliableRemoteEventEvents = #runtimeEventCategoryRecords.UnreliableRemoteEvent,
+                RemoteFunctionEvents = #runtimeEventCategoryRecords.RemoteFunction,
                 OtherEvents = #runtimeEventCategoryRecords.Other,
                 ValueChanges = #runtimeValueRecords,
                 AttributeChanges = #runtimeAttributeRecords,
@@ -9874,17 +9802,17 @@ function F.run()
             },
             CategoryDroppedDueToCap = runtimeEventCategoryDropped
         },
-        CombatResearch = {
-            Enabled = SELECTION.CombatResearch,
+        InteractionResearch = {
+            Enabled = SELECTION.InteractionResearch,
             RemoteCount = F.totalRemoteCount(),
-            ToolEvents = #combatEvents,
-            ToolEventsDropped = combatDropped,
-            SourceReferences = #combatSourceReferences,
-            SourceReferencesDropped = combatSourceRefsDropped,
+            ToolEvents = #interactionEvents,
+            ToolEventsDropped = interactionDropped,
+            SourceReferences = #interactionSourceReferences,
+            SourceReferencesDropped = interactionSourceRefsDropped,
             ClosureResearchEnabled = SELECTION.ClosureResearch,
-            ClosureSnapshots = #combatConnectionRecords,
-            Files = SELECTION.CombatResearch and {
-                COMBAT_RESEARCH_FILE, COMBAT_EVENTS_FILE, SOURCE_REFERENCES_FILE,
+            ClosureSnapshots = #interactionConnectionRecords,
+            Files = SELECTION.InteractionResearch and {
+                INTERACTION_RESEARCH_FILE, INTERACTION_EVENTS_FILE, SOURCE_REFERENCES_FILE,
                 CONNECTION_RESEARCH_FILE
             } or nil
         },
@@ -9952,9 +9880,9 @@ function F.run()
             Frozen = runtimeHookState.Frozen,
             FreezeInfo = runtimeHookState.FreezeInfo,
             Events = #runtimeEventRecords,
-            GameEvents = #runtimeEventCategoryRecords.Game,
-            ReplicatorEvents = #runtimeEventCategoryRecords.Replicator,
-            AnalyticsEvents = #runtimeEventCategoryRecords.Analytics,
+            RemoteEventEvents = #runtimeEventCategoryRecords.RemoteEvent,
+            UnreliableRemoteEventEvents = #runtimeEventCategoryRecords.UnreliableRemoteEvent,
+            RemoteFunctionEvents = #runtimeEventCategoryRecords.RemoteFunction,
             OtherEvents = #runtimeEventCategoryRecords.Other,
             ValueChanges = #runtimeValueRecords,
             AttributeChanges = #runtimeAttributeRecords,
@@ -10035,9 +9963,9 @@ end
 function F.executeDump()
     local runOk, runError = xpcall(F.run, F.formatFatalError)
 if activeRegistry and activeRegistryToken
-    and activeRegistry.__SynergyStructureDumperActive == activeRegistryToken
+    and activeRegistry.__AverynDumperActive == activeRegistryToken
 then
-    activeRegistry.__SynergyStructureDumperActive = nil
+    activeRegistry.__AverynDumperActive = nil
 end
 if not runOk then
     snapshotBusy = false
@@ -10100,25 +10028,26 @@ end
         "elapsed:", string.format("%.2fs", os.clock() - started), "folder:", OUTPUT_FOLDER)
     dumpRunning = false
     if selectionStartButton and selectionStartButton.Parent then
-        selectionStartButton.Text = runOk and currentStage == "complete" and "COMPLETED" or "FAILED"
+        selectionStartButton.Text = runOk and currentStage == "complete" and "CAPTURE COMPLETE" or "CAPTURE FAILED"
     end
     if selectionStatus and selectionStatus.Parent then
         selectionStatus.Text = runOk and currentStage == "complete"
             and ("Saved to " .. OUTPUT_FOLDER)
             or ("Failed: " .. tostring(runError or currentStage))
         selectionStatus.TextColor3 = runOk and currentStage == "complete"
-            and Color3.fromRGB(136, 217, 174) or Color3.fromRGB(252, 143, 143)
+            and Color3.fromRGB(215, 215, 215) or Color3.fromRGB(176, 176, 176)
     end
 end
 
 function F.showSelectionWindow()
     local UserInputService = game:GetService("UserInputService")
-    local accent = Color3.fromRGB(149, 135, 255)
-    local mainColor = Color3.fromRGB(18, 21, 31)
-    local surfaceColor = Color3.fromRGB(29, 33, 45)
-    local subtleColor = Color3.fromRGB(146, 151, 171)
-    local lightText = Color3.fromRGB(240, 241, 248)
-    local darkBorder = Color3.fromRGB(61, 64, 80)
+    local accent = Color3.fromRGB(205, 205, 205)
+    local mainColor = Color3.fromRGB(13, 13, 13)
+    local surfaceColor = Color3.fromRGB(29, 29, 29)
+    local subtleColor = Color3.fromRGB(158, 158, 158)
+    local lightText = Color3.fromRGB(241, 241, 241)
+    local darkBorder = Color3.fromRGB(67, 67, 67)
+    local selectedSurfaceColor = Color3.fromRGB(45, 45, 45)
 
     local function create(class, props, parent)
         local object = Instance.new(class)
@@ -10188,9 +10117,9 @@ function F.showSelectionWindow()
         Name = "Header", BackgroundTransparency = 1,
         Position = UDim2.fromOffset(18, 9), Size = UDim2.new(1, -36, 0, 55), Active = true
     }, panel)
-    local heading = label(header, "Game Structure Dump v3.8", 18, lightText, Enum.Font.GothamBold)
+    local heading = label(header, "Averyn Dumper", 18, lightText, Enum.Font.GothamBold)
     heading.Size = UDim2.new(1, -40, 0, 26)
-    local subheading = label(header, "Choose exactly what to capture", 12, subtleColor)
+    local subheading = label(header, "Select the data and activity to export", 12, subtleColor)
     subheading.Position = UDim2.fromOffset(0, 28)
     subheading.Size = UDim2.new(1, -20, 0, 20)
     local closeButton = create("TextButton", {
@@ -10213,22 +10142,26 @@ function F.showSelectionWindow()
         SortOrder = Enum.SortOrder.LayoutOrder }, body)
 
     local rows = {}
+    local compactLayout = width < 340
+    local optionRowHeight = compactLayout and 104 or 78
+    local optionTitleHeight = compactLayout and 36 or 21
+    local optionDescriptionHeight = compactLayout and 52 or 39
     local definitions = {
-        { "Structure", "Complete structure", "Tree, instances, physics, tags and state" },
-        { "GUI", "GUI", "ScreenGui, frames, buttons, text, positions" },
-        { "Remotes", "Remotes", "RemoteEvents, functions and bindables" },
-        { "Scripts", "Scripts index", "LocalScripts, ModuleScripts and script paths" },
-        { "Values", "Values & attributes", "ValueBase objects and attributes" },
-        { "PlayersTools", "Players & tools", "Players, inventory, weapons and references" },
-        { "AvatarInspection", "Avatar / Korblox inspector", "Full R6/R15 rig, wraps, accessories, joints, animation pose" },
-        { "Visuals", "Visual assets", "Animations, particles, new audio, assets and material variants" },
-        { "Runtime", "Runtime capture", "Events, animation markers, remote schemas and character" },
-        { "LocalSources", "Decompile LocalScripts", "Source files, if the executor supports it" },
-        { "ModuleSources", "Decompile ModuleScripts", "Source files using the configured endpoint" },
-        { "CombatResearch", "Combat research (3-server)", "Weapons, remote identities, source refs and cross-server signatures" },
-        { "ClosureResearch", "Connections / upvalues (optional)", "Inspect Tool.Activated callbacks; requires supported executor" },
-        { "OutgoingHook", "Outgoing hook (risky)", "Optional __namecall tracing; can crash some executors" },
-    { "CallbackTrace", "Callback tracing (risky)", "Opt-in wrapping of existing OnInvoke/OnClientInvoke callbacks" },
+        { "Structure", "Instance & World Snapshot", "Export hierarchy, instance properties, tags, physics and interaction data." },
+        { "GUI", "Interface Hierarchy", "Capture GUI objects, layouts, text, input controls and visual properties." },
+        { "Remotes", "Remote & Bindable Registry", "Index RemoteEvents, RemoteFunctions and Bindables with their paths." },
+        { "Scripts", "Script Location Index", "Locate LocalScripts, ModuleScripts and Scripts in the instance tree." },
+        { "Values", "Values & Attribute Index", "Record ValueBase contents and attributes attached to instances." },
+        { "PlayersTools", "Players & Tool Inventories", "Record players, their inventories, tools and ownership references." },
+        { "AvatarInspection", "Character & Rig Inspection", "Inspect standard and custom rigs, accessories, joints and poses." },
+        { "Visuals", "Animation, Audio & Effects", "Catalogue animation IDs, sounds, particles, meshes and effect assets." },
+        { "Runtime", "Live Activity Recorder", "Track remote activity, value changes, GUI events and character state." },
+        { "LocalSources", "LocalScript Source Export", "Reconstruct and save readable source files from client LocalScripts." },
+        { "ModuleSources", "ModuleScript Source Export", "Decompile ModuleScript bytecode and save the recovered Luau sources." },
+        { "InteractionResearch", "Interactions & Remote Analysis", "Inspect tools, prompts, clicks, remote lifecycles and script references." },
+        { "ClosureResearch", "Callback & Upvalue Analysis", "Inspect native interaction callbacks, connected functions and upvalues." },
+        { "OutgoingHook", "Outgoing Remote Interception", "Trace FireServer and InvokeServer calls; alters the namecall hook." },
+        { "CallbackTrace", "Invoke Callback Monitoring", "Observe OnInvoke and OnClientInvoke calls by wrapping handlers." },
     }
     local function updateRow(key)
         local elements = rows[key]
@@ -10236,42 +10169,45 @@ function F.showSelectionWindow()
         local on = SELECTION[key]
         elements.Check.BackgroundColor3 = on and accent or surfaceColor
         elements.Tick.Visible = on
-        elements.Row.BackgroundColor3 = on and Color3.fromRGB(34, 37, 56) or surfaceColor
+        elements.Row.BackgroundColor3 = on and selectedSurfaceColor or surfaceColor
     end
     for order, item in ipairs(definitions) do
         local key, title, subtitle = item[1], item[2], item[3]
         local row = create("TextButton", {
             Name = key, Text = "", BackgroundColor3 = surfaceColor,
-            AutoButtonColor = false, Size = UDim2.new(1, -6, 0, 54),
+            AutoButtonColor = false, Size = UDim2.new(1, -6, 0, optionRowHeight),
             LayoutOrder = order
         }, body)
         round(row, 9)
         local check = create("Frame", {
             BackgroundColor3 = accent, Size = UDim2.fromOffset(21, 21),
-            Position = UDim2.fromOffset(13, 16), BorderSizePixel = 0
+            Position = UDim2.new(0, 13, 0.5, -10), BorderSizePixel = 0
         }, row)
         round(check, 6)
-        local tick = label(check, "✓", 15, Color3.fromRGB(15, 17, 28), Enum.Font.GothamBold)
+        local tick = label(check, "✓", 15, Color3.fromRGB(17, 17, 17), Enum.Font.GothamBold)
         tick.TextXAlignment = Enum.TextXAlignment.Center
-        local name = label(row, title, 13, lightText, Enum.Font.GothamMedium)
-        name.Position = UDim2.fromOffset(45, 7)
-        name.Size = UDim2.new(1, -55, 0, 23)
-        local description = label(row, subtitle, 10, subtleColor)
-        description.Position = UDim2.fromOffset(45, 29)
-        description.Size = UDim2.new(1, -55, 0, 16)
-        description.TextTruncate = Enum.TextTruncate.AtEnd
+        local name = label(row, title, compactLayout and 12 or 13, lightText, Enum.Font.GothamMedium)
+        name.Position = UDim2.fromOffset(45, compactLayout and 9 or 11)
+        name.Size = UDim2.new(1, -55, 0, optionTitleHeight)
+        name.TextWrapped = true
+        name.TextYAlignment = Enum.TextYAlignment.Top
+        local description = label(row, subtitle, 11, subtleColor)
+        description.Position = UDim2.fromOffset(45, compactLayout and 46 or 35)
+        description.Size = UDim2.new(1, -55, 0, optionDescriptionHeight)
+        description.TextWrapped = true
+        description.TextYAlignment = Enum.TextYAlignment.Top
         rows[key] = { Row = row, Check = check, Tick = tick }
         row.MouseButton1Click:Connect(function()
             if dumpRunning then return end
             SELECTION[key] = not SELECTION[key]
-            if key == "CombatResearch" and SELECTION.CombatResearch then
+            if key == "InteractionResearch" and SELECTION.InteractionResearch then
                 for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
                     SELECTION[dependency] = true
                     updateRow(dependency)
                 end
             elseif key == "ClosureResearch" and SELECTION.ClosureResearch then
-                SELECTION.CombatResearch = true
-                updateRow("CombatResearch")
+                SELECTION.InteractionResearch = true
+                updateRow("InteractionResearch")
                 for _, dependency in ipairs({ "Remotes", "Scripts", "PlayersTools", "Runtime", "LocalSources", "ModuleSources" }) do
                     SELECTION[dependency] = true
                     updateRow(dependency)
@@ -10290,7 +10226,7 @@ function F.showSelectionWindow()
         Position = UDim2.new(0, 18, 1, -118),
         Size = UDim2.new(1, -36, 0, 108)
     }, panel)
-    local runtimeTitle = label(footer, "Runtime duration (seconds)", 12, subtleColor)
+    local runtimeTitle = label(footer, "Extra live capture (seconds)", 12, subtleColor)
     runtimeTitle.Size = UDim2.new(1, -70, 0, 26)
     local runtimeBox = create("TextBox", {
         Text = tostring(CONFIG.RuntimeTracePostSeconds),
@@ -10301,8 +10237,8 @@ function F.showSelectionWindow()
     }, footer)
     round(runtimeBox, 7)
     local start = create("TextButton", {
-        Text = "START DUMP", Font = Enum.Font.GothamBold,
-        TextSize = 14, TextColor3 = Color3.fromRGB(17, 18, 26),
+        Text = "START CAPTURE", Font = Enum.Font.GothamBold,
+        TextSize = 14, TextColor3 = Color3.fromRGB(17, 17, 17),
         BackgroundColor3 = accent,
         Position = UDim2.fromOffset(0, 36), Size = UDim2.new(1, 0, 0, 43),
         AutoButtonColor = true
@@ -10321,21 +10257,21 @@ function F.showSelectionWindow()
         for _, enabled in pairs(SELECTION) do if enabled then any = true break end end
         if not any then
             status.Text = "Select at least one capture category."
-            status.TextColor3 = Color3.fromRGB(255, 173, 137)
+            status.TextColor3 = Color3.fromRGB(202, 202, 202)
             return
         end
         if SELECTION.Runtime or SELECTION.AvatarInspection then
             local seconds = tonumber(runtimeBox.Text)
             if not seconds or seconds < 0 or seconds > 600 then
-                status.Text = "Use a runtime duration from 0 to 600 seconds."
-                status.TextColor3 = Color3.fromRGB(255, 173, 137)
+                status.Text = "Set a capture time between 0 and 600 seconds."
+                status.TextColor3 = Color3.fromRGB(202, 202, 202)
                 return
             end
             CONFIG.RuntimeTracePostSeconds = seconds
         end
         dumpRunning = true
         started = os.clock()
-        start.Text = "DUMPING..."
+        start.Text = "CAPTURING..."
         start.AutoButtonColor = false
         status.TextColor3 = subtleColor
         status.Text = "Preparing output folder..."
@@ -10344,7 +10280,7 @@ function F.showSelectionWindow()
         progressLastStage = nil
         lastTraversalYield = os.clock()
         lastSelectionYield = os.clock()
-        F.log("START pressed. Open the executor / Roblox console to see progress.")
+        F.log("Capture started. Check the console for progress.")
         task.spawn(F.executeDump)
     end)
 
