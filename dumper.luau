@@ -25,6 +25,7 @@ local SELECTION = {
 local selectionGui
 local selectionStatus
 local selectionStartButton
+local selectionCaptureFinished
 local selectedSnapshotNodes
 local dumpRunning = false
 local SCHEMA_NAME = "Averyn.GameStructureDump"
@@ -10064,23 +10065,62 @@ end
             and ("Saved to " .. OUTPUT_FOLDER)
             or ("Failed: " .. tostring(runError or currentStage))
         selectionStatus.TextColor3 = runOk and currentStage == "complete"
-            and Color3.fromRGB(215, 215, 215) or Color3.fromRGB(176, 176, 176)
+            and Color3.fromRGB(215, 215, 215) or Color3.fromRGB(226, 160, 160)
+    end
+    if selectionCaptureFinished then
+        selectionCaptureFinished(runOk and currentStage == "complete")
     end
 end
 
 function F.showSelectionWindow()
     local UserInputService = game:GetService("UserInputService")
-    local accent = Color3.fromRGB(205, 205, 205)
-    local mainColor = Color3.fromRGB(13, 13, 13)
-    local surfaceColor = Color3.fromRGB(29, 29, 29)
-    local subtleColor = Color3.fromRGB(158, 158, 158)
-    local lightText = Color3.fromRGB(241, 241, 241)
-    local darkBorder = Color3.fromRGB(67, 67, 67)
-    local selectedSurfaceColor = Color3.fromRGB(45, 45, 45)
-
+    local TweenService = game:GetService("TweenService")
+    local accent = Color3.fromRGB(226, 228, 234)
+    local mainColor = Color3.fromRGB(14, 15, 18)
+    local surfaceColor = Color3.fromRGB(26, 27, 31)
+    local selectedSurfaceColor = Color3.fromRGB(40, 42, 47)
+    local surfaceHover = Color3.fromRGB(34, 36, 41)
+    local lightText = Color3.fromRGB(246, 246, 248)
+    local subtleColor = Color3.fromRGB(150, 153, 162)
+    local darkBorder = Color3.fromRGB(64, 66, 73)
+    local iconIds = {
+        ["activity"] = "rbxassetid://94212016861936",
+        ["check"] = "rbxassetid://93898873302694",
+        ["chevron-down"] = "rbxassetid://134243273101015",
+        ["chevron-up"] = "rbxassetid://122444883127455",
+        ["circle-alert"] = "rbxassetid://83898160590116",
+        ["circle-check"] = "rbxassetid://85262178816537",
+        ["clock-3"] = "rbxassetid://136385631189327",
+        ["code-xml"] = "rbxassetid://130150477351734",
+        ["database"] = "rbxassetid://126791525623846",
+        ["file-code"] = "rbxassetid://130978036895504",
+        ["folder-tree"] = "rbxassetid://85577554337861",
+        ["folder-open"] = "rbxassetid://76018996254888",
+        ["loader-circle"] = "rbxassetid://116535712789945",
+        ["monitor"] = "rbxassetid://72664649203050",
+        ["mouse-pointer-click"] = "rbxassetid://107150227368485",
+        ["palette"] = "rbxassetid://86350350950064",
+        ["play"] = "rbxassetid://135609604299893",
+        ["radio-tower"] = "rbxassetid://93958663130054",
+        ["scan-search"] = "rbxassetid://80009010551347",
+        ["settings-2"] = "rbxassetid://135684703553372",
+        ["shield-check"] = "rbxassetid://87354736164608",
+        ["terminal"] = "rbxassetid://106783148545356",
+        ["users"] = "rbxassetid://115398113982385",
+        ["x"] = "rbxassetid://110786993356448"
+    }
+    local quick = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local smooth = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local function tween(object, properties, info)
+        if object and object.Parent then
+            local animation = TweenService:Create(object, info or quick, properties)
+            animation:Play()
+            return animation
+        end
+    end
     local function create(class, props, parent)
         local object = Instance.new(class)
-        for name, value in pairs(props or {}) do object[name] = value end
+        for property, value in pairs(props or {}) do object[property] = value end
         if parent then object.Parent = parent end
         return object
     end
@@ -10088,17 +10128,26 @@ function F.showSelectionWindow()
         create("UICorner", { CornerRadius = UDim.new(0, radius) }, object)
         return object
     end
-    local function stroke(object, color, thickness)
-        create("UIStroke", { Color = color or darkBorder, Thickness = thickness or 1,
-            Transparency = 0.34 }, object)
+    local function stroke(object, color, transparency, thickness)
+        return create("UIStroke", {
+            Color = color or darkBorder, Transparency = transparency or 0.5,
+            Thickness = thickness or 1
+        }, object)
     end
-    local function label(parent, text, size, color, font)
+    local function label(parent, value, size, color, font)
         return create("TextLabel", {
             BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
-            Text = text, Font = font or Enum.Font.Gotham,
-            TextColor3 = color or lightText, TextSize = size or 14,
+            Text = value, Font = font or Enum.Font.Gotham,
+            TextColor3 = color or lightText, TextSize = size or 13,
             TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Center,
+            TextYAlignment = Enum.TextYAlignment.Center
+        }, parent)
+    end
+    local function icon(parent, name, size, color)
+        return create("ImageLabel", {
+            Name = "Icon_" .. name, BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(size, size), Image = iconIds[name] or "",
+            ImageColor3 = color or lightText, ScaleType = Enum.ScaleType.Fit
         }, parent)
     end
 
@@ -10130,71 +10179,145 @@ function F.showSelectionWindow()
     root.Parent = parent
     selectionGui = root
 
-    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(420, 700)
-    local width = math.min(414, math.max(250, viewport.X - 24))
-    local height = math.min(610, math.max(290, viewport.Y - 24))
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(460, 750)
+    local width = math.min(458, math.max(260, viewport.X - 22))
+    local height = math.min(676, math.max(350, viewport.Y - 26))
+    local compact = width < 355
 
-    local panel = create("Frame", {
-        Name = "Panel", BackgroundColor3 = mainColor, BorderSizePixel = 0,
-        Size = UDim2.fromOffset(width, height), AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5), Active = true
+    local backdrop = create("TextButton", {
+        Name = "Backdrop", Text = "", AutoButtonColor = false,
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0), BackgroundTransparency = 1,
+        BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), Active = true
     }, root)
-    round(panel, 15)
-    stroke(panel)
+    local panel = create("CanvasGroup", {
+        Name = "AverynPanel", GroupTransparency = 1,
+        BackgroundColor3 = mainColor, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(width, height), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 13), Active = true
+    }, root)
+    round(panel, 17)
+    stroke(panel, Color3.fromRGB(84, 87, 94), 0.48)
+    local panelScale = create("UIScale", { Scale = 0.95 }, panel)
+    local topAccent = create("Frame", {
+        Name = "TopEdge", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(126, 129, 139),
+        Position = UDim2.new(0, 19, 0, 0), Size = UDim2.new(1, -38, 0, 2),
+        BackgroundTransparency = 0.30
+    }, panel)
+    create("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.48, 0.2),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+    }, topAccent)
 
     local header = create("Frame", {
         Name = "Header", BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(18, 9), Size = UDim2.new(1, -36, 0, 55), Active = true
+        Position = UDim2.fromOffset(18, 16), Size = UDim2.new(1, -36, 0, 81), Active = true
     }, panel)
-    local heading = label(header, "Averyn Dumper", 18, lightText, Enum.Font.GothamBold)
-    heading.Size = UDim2.new(1, -40, 0, 26)
-    local subheading = label(header, "Select the data and activity to export", 12, subtleColor)
-    subheading.Position = UDim2.fromOffset(0, 28)
-    subheading.Size = UDim2.new(1, -20, 0, 20)
-    local closeButton = create("TextButton", {
-        Text = "×", Font = Enum.Font.GothamMedium, TextSize = 24,
-        TextColor3 = subtleColor, BackgroundTransparency = 1,
-        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0),
-        Size = UDim2.fromOffset(30, 30)
-    }, header)
-    closeButton.MouseButton1Click:Connect(function() root:Destroy() end)
+    local brand = round(create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(43, 45, 51), BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 5), Size = UDim2.fromOffset(46, 46)
+    }, header), 12)
+    stroke(brand, Color3.fromRGB(101, 103, 114), 0.48)
+    local brandIcon = icon(brand, "scan-search", 25, accent)
+    brandIcon.Position = UDim2.new(0.5, -12.5, 0.5, -12.5)
+    local headerTitle = label(header, "AVERYN", 20, lightText, Enum.Font.GothamBold)
+    headerTitle.Position = UDim2.fromOffset(60, 5)
+    headerTitle.Size = UDim2.new(1, -107, 0, 27)
+    local headerSubtitle = label(header, "D U M P E R   /   3.9", 10, subtleColor, Enum.Font.GothamMedium)
+    headerSubtitle.Position = UDim2.fromOffset(61, 30)
+    headerSubtitle.Size = UDim2.new(1, -110, 0, 20)
+    local description = label(header, "Client inspection & runtime research", compact and 10 or 11, subtleColor)
+    description.Position = UDim2.fromOffset(1, 60)
+    description.Size = UDim2.new(1, -8, 0, 18)
+
+    local closeButton = round(create("TextButton", {
+        Name = "Close", Text = "", AutoButtonColor = false,
+        BackgroundColor3 = Color3.fromRGB(32, 33, 37), BorderSizePixel = 0,
+        Position = UDim2.new(1, -31, 0, 3), Size = UDim2.fromOffset(31, 31)
+    }, header), 8)
+    local closeIcon = icon(closeButton, "x", 16, subtleColor)
+    closeIcon.Position = UDim2.new(0.5, -8, 0.5, -8)
+    closeButton.MouseEnter:Connect(function()
+        tween(closeButton, { BackgroundColor3 = Color3.fromRGB(65, 48, 51) })
+        tween(closeIcon, { ImageColor3 = lightText })
+    end)
+    closeButton.MouseLeave:Connect(function()
+        tween(closeButton, { BackgroundColor3 = Color3.fromRGB(32, 33, 37) })
+        tween(closeIcon, { ImageColor3 = subtleColor })
+    end)
+    local closing = false
+    local function closeWindow()
+        if closing then return end
+        closing = true
+        tween(backdrop, { BackgroundTransparency = 1 }, TweenInfo.new(0.2, Enum.EasingStyle.Quad))
+        tween(panelScale, { Scale = 0.96 }, TweenInfo.new(0.18, Enum.EasingStyle.Quad))
+        local endTween = tween(panel, { GroupTransparency = 1 }, TweenInfo.new(0.2, Enum.EasingStyle.Quad))
+        if endTween then
+            endTween.Completed:Once(function()
+                if root.Parent then root:Destroy() end
+            end)
+        else
+            root:Destroy()
+        end
+    end
+    closeButton.MouseButton1Click:Connect(closeWindow)
+
+    create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(58, 60, 67), BackgroundTransparency = 0.45,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(18, 104),
+        Size = UDim2.new(1, -36, 0, 1)
+    }, panel)
+    local sectionLabel = label(panel, "CAPTURE MODULES", 10, Color3.fromRGB(181, 183, 191), Enum.Font.GothamBold)
+    sectionLabel.Position = UDim2.fromOffset(20, 114)
+    sectionLabel.Size = UDim2.new(1, -124, 0, 20)
+    local countBadge = round(create("Frame", {
+        Name = "SelectedCount", BackgroundColor3 = Color3.fromRGB(40, 42, 47),
+        BorderSizePixel = 0, Position = UDim2.new(1, -98, 0, 114),
+        Size = UDim2.fromOffset(78, 21)
+    }, panel), 7)
+    local countLabel = label(countBadge, "0 / 9", 10, lightText, Enum.Font.GothamBold)
+    countLabel.TextXAlignment = Enum.TextXAlignment.Center
 
     local body = create("ScrollingFrame", {
-        Name = "Options", BackgroundTransparency = 1, BorderSizePixel = 0,
-        ScrollBarThickness = 3, ScrollBarImageColor3 = accent,
+        Name = "Categories", BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = Color3.fromRGB(106, 108, 118),
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
         CanvasSize = UDim2.fromOffset(0, 0),
-        Position = UDim2.fromOffset(18, 70),
-        Size = UDim2.new(1, -36, 1, -196)
+        Position = UDim2.fromOffset(18, 143),
+        Size = UDim2.new(1, -36, 1, -288),
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
     }, panel)
-    create("UIListLayout", { Padding = UDim.new(0, 6),
-        SortOrder = Enum.SortOrder.LayoutOrder }, body)
-
-    local compactLayout = width < 340
-    local optionRowHeight = compactLayout and 92 or 75
-    local advancedRowHeight = compactLayout and 58 or 51
+    create("UIListLayout", {
+        Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder
+    }, body)
+    local optionRowHeight = compact and 86 or 77
+    local advancedRowHeight = compact and 65 or 57
     local categories = {
-        { Key = "Structure", Title = "World Structure", Description = "Map instances, properties, physics, constraints and CollectionService tags.", Flags = { "Structure" } },
-        { Key = "GUI", Title = "Interface Analysis", Description = "Document ScreenGuis, layouts, controls, text and interface properties.", Flags = { "GUI" } },
-        { Key = "Remotes", Title = "Remote Registry", Description = "Index RemoteEvents, RemoteFunctions and bindables with their paths.", Flags = { "Remotes" } },
-        { Key = "Scripts", Title = "Script Analysis", Description = "Index script locations. Optionally recover LocalScript and ModuleScript sources.", Flags = { "Scripts" }, Advanced = {
-            { Key = "LocalSources", Title = "Recover LocalScript sources", Description = "Save decompiled client LocalScripts as Luau files." },
-            { Key = "ModuleSources", Title = "Recover ModuleScript sources", Description = "Save decompiled accessible ModuleScripts as Luau files." }
+        { Key = "Structure", Icon = "folder-tree", Title = "World Structure", Description = "Instances, properties, physics, constraints and tags.", Flags = { "Structure" } },
+        { Key = "GUI", Icon = "monitor", Title = "Interface Analysis", Description = "ScreenGuis, layouts, controls and UI properties.", Flags = { "GUI" } },
+        { Key = "Remotes", Icon = "radio-tower", Title = "Remote Registry", Description = "RemoteEvents, RemoteFunctions and bindable paths.", Flags = { "Remotes" } },
+        { Key = "Scripts", Icon = "file-code", Title = "Script Analysis", Description = "Index scripts and optionally recover their source.", Flags = { "Scripts" }, Advanced = {
+            { Key = "LocalSources", Icon = "code-xml", Title = "LocalScript recovery", Description = "Save decompiled client LocalScripts as Luau files." },
+            { Key = "ModuleSources", Icon = "terminal", Title = "ModuleScript recovery", Description = "Save accessible decompiled ModuleScripts." }
         } },
-        { Key = "Values", Title = "Values & Attributes", Description = "Record ValueBase contents and instance attributes.", Flags = { "Values" } },
-        { Key = "Players", Title = "Players & Characters", Description = "Inspect player inventories, tools, accessories, joints and custom rigs.", Flags = { "PlayersTools", "AvatarInspection" } },
-        { Key = "Visuals", Title = "Asset Inspection", Description = "Catalogue animations, sounds, meshes, particles and effect resources.", Flags = { "Visuals" } },
-        { Key = "Runtime", Title = "Runtime Monitoring", Description = "Observe remote traffic, state changes, interface activity and logs.", Flags = { "Runtime" }, Advanced = {
-            { Key = "OutgoingHook", Title = "Intercept outgoing remotes", Description = "Opt in to FireServer/InvokeServer interception; installs a hook." },
-            { Key = "CallbackTrace", Title = "Monitor invoke callbacks", Description = "Opt in to wrapping readable OnInvoke/OnClientInvoke callbacks." }
+        { Key = "Values", Icon = "database", Title = "Values & Attributes", Description = "Record ValueBase contents and instance attributes.", Flags = { "Values" } },
+        { Key = "Players", Icon = "users", Title = "Players & Characters", Description = "Inventories, accessories, joints, tools and rigs.", Flags = { "PlayersTools", "AvatarInspection" } },
+        { Key = "Visuals", Icon = "palette", Title = "Asset Inspection", Description = "Animations, sounds, meshes, particles and effects.", Flags = { "Visuals" } },
+        { Key = "Runtime", Icon = "activity", Title = "Runtime Monitoring", Description = "Remote traffic, state changes, UI activity and logs.", Flags = { "Runtime" }, Advanced = {
+            { Key = "OutgoingHook", Icon = "radio-tower", Title = "Outgoing remote interception", Description = "Hook FireServer / InvokeServer (opt-in)." },
+            { Key = "CallbackTrace", Icon = "code-xml", Title = "Callback monitoring", Description = "Wrap accessible OnInvoke / OnClientInvoke callbacks." }
         } },
-        { Key = "InteractionResearch", Title = "Interaction Analysis", Description = "Track tools, prompts, clicks, remotes and script relationships.", Flags = { "InteractionResearch" }, Advanced = {
-            { Key = "ClosureResearch", Title = "Inspect callbacks & upvalues", Description = "Best-effort analysis of interaction signal connections and closures." }
+        { Key = "InteractionResearch", Icon = "mouse-pointer-click", Title = "Interaction Analysis", Description = "Track tool activity, prompts, clicks and relationships.", Flags = { "InteractionResearch" }, Advanced = {
+            { Key = "ClosureResearch", Icon = "scan-search", Title = "Callback & upvalue inspection", Description = "Best-effort inspection of signals and closures." }
         } }
     }
     local categoryActive = {}
     local advancedActive = {}
     local cards = {}
+    local categoryCount = 0
     local status
     for _, category in ipairs(categories) do
         categoryActive[category.Key] = false
@@ -10216,17 +10339,23 @@ function F.showSelectionWindow()
     local function refreshCategory(category)
         local card = cards[category.Key]
         if not card then return end
-        local active = categoryActive[category.Key]
-        card.Row.BackgroundColor3 = active and selectedSurfaceColor or surfaceColor
-        card.Check.BackgroundColor3 = active and accent or mainColor
-        card.Tick.Visible = active
-        card.RowStroke.Color = active and accent or darkBorder
+        local selected = categoryActive[category.Key]
+        local hovered = card.Hovered
+        tween(card.Row, { BackgroundColor3 = selected and selectedSurfaceColor or (hovered and surfaceHover or surfaceColor) })
+        tween(card.IconBackground, { BackgroundColor3 = selected and Color3.fromRGB(73, 76, 85) or Color3.fromRGB(41, 43, 49) })
+        tween(card.CategoryIcon, { ImageColor3 = selected and lightText or Color3.fromRGB(183, 185, 194), Rotation = hovered and -5 or 0 })
+        tween(card.Check, { BackgroundColor3 = selected and accent or Color3.fromRGB(34, 35, 40) })
+        tween(card.RowStroke, { Color = selected and Color3.fromRGB(166, 171, 184) or darkBorder, Transparency = selected and 0.30 or (hovered and 0.30 or 0.67) })
+        tween(card.SideAccent, { BackgroundTransparency = selected and 0.03 or 1 })
+        card.Tick.Visible = selected
         for _, detail in ipairs(category.Advanced or {}) do
             local option = card.Details[detail.Key]
-            option.Check.BackgroundColor3 = advancedActive[detail.Key] and accent or mainColor
-            option.Tick.Visible = advancedActive[detail.Key]
-            option.Row.BackgroundColor3 = advancedActive[detail.Key]
-                and Color3.fromRGB(49, 49, 49) or Color3.fromRGB(35, 35, 35)
+            if option then
+                local active = advancedActive[detail.Key]
+                tween(option.Row, { BackgroundColor3 = active and Color3.fromRGB(55, 57, 63) or Color3.fromRGB(32, 34, 39) })
+                tween(option.Check, { BackgroundColor3 = active and accent or Color3.fromRGB(29, 30, 34) })
+                option.Tick.Visible = active
+            end
         end
     end
     local function refreshCount()
@@ -10235,95 +10364,126 @@ function F.showSelectionWindow()
             if categoryActive[category.Key] then count = count + 1 end
             refreshCategory(category)
         end
+        categoryCount = count
         syncSelection()
-        if status then
-            status.Text = string.format("%d of %d categories selected", count, #categories)
+        countLabel.Text = string.format("%d / %d", count, #categories)
+        tween(countBadge, { BackgroundColor3 = count > 0 and Color3.fromRGB(63, 66, 74) or Color3.fromRGB(40, 42, 47) })
+        if status and not dumpRunning then
+            status.Text = count == 0 and "Select a module to begin" or string.format("%d module%s ready for capture", count, count == 1 and "" or "s")
             status.TextColor3 = subtleColor
         end
     end
-
     for order, category in ipairs(categories) do
         local card = create("Frame", {
             Name = category.Key, BackgroundTransparency = 1, BorderSizePixel = 0,
-            Size = UDim2.new(1, -6, 0, optionRowHeight), LayoutOrder = order
+            ClipsDescendants = true, Size = UDim2.new(1, -5, 0, optionRowHeight),
+            LayoutOrder = order
         }, body)
-        cards[category.Key] = { Details = {} }
-        local main = create("TextButton", {
+        local main = round(create("TextButton", {
             Name = "Select", Text = "", BackgroundColor3 = surfaceColor,
-            AutoButtonColor = false, Size = UDim2.new(1, 0, 0, optionRowHeight)
-        }, card)
-        round(main, 9)
-        local mainStroke = create("UIStroke", {
-            Color = darkBorder, Transparency = 0.55, Thickness = 1
-        }, main)
-        local check = create("Frame", {
-            BackgroundColor3 = mainColor, Size = UDim2.fromOffset(21, 21),
-            Position = UDim2.new(0, 13, 0.5, -10), BorderSizePixel = 0
-        }, main)
-        round(check, 6)
-        stroke(check)
-        local tick = label(check, "✓", 15, Color3.fromRGB(17, 17, 17), Enum.Font.GothamBold)
-        tick.TextXAlignment = Enum.TextXAlignment.Center
-        local hasAdvanced = category.Advanced ~= nil
-        local name = label(main, category.Title, compactLayout and 12 or 13, lightText, Enum.Font.GothamMedium)
-        name.Position = UDim2.fromOffset(45, 9)
-        name.Size = UDim2.new(1, hasAdvanced and -132 or -55, 0, compactLayout and 30 or 23)
-        name.TextWrapped = true
-        name.TextYAlignment = Enum.TextYAlignment.Top
-        local description = label(main, category.Description, 11, subtleColor)
-        description.Position = UDim2.fromOffset(45, compactLayout and 39 or 32)
-        description.Size = UDim2.new(1, -55, 0, compactLayout and 46 or 38)
-        description.TextWrapped = true
-        description.TextYAlignment = Enum.TextYAlignment.Top
-        cards[category.Key].Row = main
-        cards[category.Key].RowStroke = mainStroke
-        cards[category.Key].Check = check
-        cards[category.Key].Tick = tick
+            AutoButtonColor = false, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, optionRowHeight)
+        }, card), 10)
+        local mainStroke = stroke(main, darkBorder, 0.67)
+        local side = round(create("Frame", {
+            BackgroundColor3 = accent, BackgroundTransparency = 1,
+            BorderSizePixel = 0, Position = UDim2.fromOffset(0, 14),
+            Size = UDim2.fromOffset(3, optionRowHeight - 28)
+        }, main), 2)
+        local iconBackground = round(create("Frame", {
+            BackgroundColor3 = Color3.fromRGB(41, 43, 49), BorderSizePixel = 0,
+            Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(39, 39)
+        }, main), 10)
+        local categoryIcon = icon(iconBackground, category.Icon, 21, Color3.fromRGB(183, 185, 194))
+        categoryIcon.Position = UDim2.new(0.5, -10.5, 0.5, -10.5)
+        local title = label(main, category.Title, compact and 11 or 13, lightText, Enum.Font.GothamBold)
+        title.Position = UDim2.fromOffset(62, 11)
+        title.Size = UDim2.new(1, category.Advanced and -152 or -110, 0, 22)
+        title.TextTruncate = Enum.TextTruncate.AtEnd
+        local descriptionText = label(main, category.Description, compact and 10 or 11, subtleColor)
+        descriptionText.Position = UDim2.fromOffset(62, 34)
+        descriptionText.Size = UDim2.new(1, -103, 0, compact and 44 or 33)
+        descriptionText.TextWrapped = true
+        descriptionText.TextYAlignment = Enum.TextYAlignment.Top
+        local checkbox = round(create("Frame", {
+            Name = "Checkbox", BackgroundColor3 = Color3.fromRGB(34, 35, 40),
+            BorderSizePixel = 0, Position = UDim2.new(1, -37, 0, 16),
+            Size = UDim2.fromOffset(23, 23)
+        }, main), 7)
+        stroke(checkbox, Color3.fromRGB(102, 104, 112), 0.55)
+        local tick = icon(checkbox, "check", 15, Color3.fromRGB(18, 19, 22))
+        tick.Position = UDim2.new(0.5, -7.5, 0.5, -7.5)
+        tick.Visible = false
+        cards[category.Key] = {
+            Row = main, RowStroke = mainStroke, SideAccent = side,
+            Check = checkbox, Tick = tick, IconBackground = iconBackground,
+            CategoryIcon = categoryIcon, Details = {}, Hovered = false
+        }
+        main.MouseEnter:Connect(function()
+            cards[category.Key].Hovered = true
+            refreshCategory(category)
+        end)
+        main.MouseLeave:Connect(function()
+            cards[category.Key].Hovered = false
+            refreshCategory(category)
+        end)
         main.MouseButton1Click:Connect(function()
             if dumpRunning then return end
             categoryActive[category.Key] = not categoryActive[category.Key]
             refreshCount()
         end)
 
-        if hasAdvanced then
-            local detailsHeight = #category.Advanced * advancedRowHeight + 8
+        if category.Advanced then
+            local detailHeight = #category.Advanced * advancedRowHeight + 7
             local expanded = false
-            local optionsButton = create("TextButton", {
-                Name = "Configure", Text = "OPTIONS  +", Font = Enum.Font.GothamBold,
-                TextSize = 10, TextColor3 = accent, BackgroundTransparency = 1,
-                Size = UDim2.fromOffset(85, 27),
-                Position = UDim2.new(1, -94, 0, 4)
-            }, card)
-            local detailsFrame = create("Frame", {
-                Name = "Advanced", BackgroundColor3 = Color3.fromRGB(23, 23, 23),
-                BorderSizePixel = 0, Visible = false,
-                Position = UDim2.fromOffset(0, optionRowHeight + 3),
-                Size = UDim2.new(1, 0, 0, detailsHeight - 3)
-            }, card)
-            round(detailsFrame, 9)
+            local expansionVersion = 0
+            local settingsButton = round(create("TextButton", {
+                Name = "Configure", Text = "", AutoButtonColor = false,
+                BackgroundColor3 = Color3.fromRGB(45, 47, 53), BorderSizePixel = 0,
+                Position = UDim2.new(1, -72, 0, 13), Size = UDim2.fromOffset(28, 28),
+                ZIndex = 5
+            }, card), 8)
+            local settingsIcon = icon(settingsButton, "settings-2", 16, Color3.fromRGB(185, 187, 194))
+            settingsIcon.Position = UDim2.new(0.5, -8, 0.5, -8)
+            settingsIcon.ZIndex = 6
+            settingsButton.MouseEnter:Connect(function()
+                tween(settingsButton, { BackgroundColor3 = Color3.fromRGB(67, 70, 77) })
+            end)
+            settingsButton.MouseLeave:Connect(function()
+                tween(settingsButton, { BackgroundColor3 = expanded and Color3.fromRGB(73, 75, 82) or Color3.fromRGB(45, 47, 53) })
+            end)
+            local detailsFrame = round(create("Frame", {
+                Name = "Advanced", BackgroundColor3 = Color3.fromRGB(22, 23, 27),
+                BorderSizePixel = 0, ClipsDescendants = true, Visible = false,
+                Position = UDim2.fromOffset(0, optionRowHeight + 5),
+                Size = UDim2.new(1, 0, 0, 0)
+            }, card), 9)
             for index, detail in ipairs(category.Advanced) do
-                local row = create("TextButton", {
-                    Name = detail.Key, Text = "", BackgroundColor3 = Color3.fromRGB(35, 35, 35),
-                    AutoButtonColor = false, Size = UDim2.new(1, -12, 0, advancedRowHeight - 5),
-                    Position = UDim2.fromOffset(6, 5 + (index - 1) * advancedRowHeight)
-                }, detailsFrame)
-                round(row, 7)
-                local extraCheck = create("Frame", {
-                    BackgroundColor3 = mainColor, Size = UDim2.fromOffset(18, 18),
-                    Position = UDim2.new(0, 9, 0.5, -9), BorderSizePixel = 0
-                }, row)
-                round(extraCheck, 5)
-                stroke(extraCheck)
-                local extraTick = label(extraCheck, "✓", 13, Color3.fromRGB(17, 17, 17), Enum.Font.GothamBold)
-                extraTick.TextXAlignment = Enum.TextXAlignment.Center
+                local row = round(create("TextButton", {
+                    Name = detail.Key, Text = "", BackgroundColor3 = Color3.fromRGB(32, 34, 39),
+                    AutoButtonColor = false, BorderSizePixel = 0,
+                    Size = UDim2.new(1, -10, 0, advancedRowHeight - 5),
+                    Position = UDim2.fromOffset(5, 5 + (index - 1) * advancedRowHeight)
+                }, detailsFrame), 7)
+                local detailIcon = icon(row, detail.Icon, 17, subtleColor)
+                detailIcon.Position = UDim2.fromOffset(11, 13)
                 local extraTitle = label(row, detail.Title, 11, lightText, Enum.Font.GothamMedium)
-                extraTitle.Position = UDim2.fromOffset(35, 3)
-                extraTitle.Size = UDim2.new(1, -40, 0, 17)
+                extraTitle.Position = UDim2.fromOffset(37, 7)
+                extraTitle.Size = UDim2.new(1, -70, 0, 16)
+                extraTitle.TextTruncate = Enum.TextTruncate.AtEnd
                 local extraDescription = label(row, detail.Description, 10, subtleColor)
-                extraDescription.Position = UDim2.fromOffset(35, 20)
-                extraDescription.Size = UDim2.new(1, -40, 0, advancedRowHeight - 25)
+                extraDescription.Position = UDim2.fromOffset(37, 25)
+                extraDescription.Size = UDim2.new(1, -70, 0, advancedRowHeight - 31)
                 extraDescription.TextWrapped = true
                 extraDescription.TextYAlignment = Enum.TextYAlignment.Top
+                local extraCheck = round(create("Frame", {
+                    BackgroundColor3 = Color3.fromRGB(29, 30, 34), BorderSizePixel = 0,
+                    Position = UDim2.new(1, -29, 0, 13), Size = UDim2.fromOffset(18, 18)
+                }, row), 5)
+                stroke(extraCheck, Color3.fromRGB(99, 100, 109), 0.5)
+                local extraTick = icon(extraCheck, "check", 12, Color3.fromRGB(18, 19, 22))
+                extraTick.Position = UDim2.new(0.5, -6, 0.5, -6)
+                extraTick.Visible = false
                 cards[category.Key].Details[detail.Key] = { Row = row, Check = extraCheck, Tick = extraTick }
                 row.MouseButton1Click:Connect(function()
                     if dumpRunning then return end
@@ -10332,61 +10492,120 @@ function F.showSelectionWindow()
                     refreshCount()
                 end)
             end
-            optionsButton.MouseButton1Click:Connect(function()
+            settingsButton.MouseButton1Click:Connect(function()
                 if dumpRunning then return end
                 expanded = not expanded
-                detailsFrame.Visible = expanded
-                optionsButton.Text = expanded and "OPTIONS  -" or "OPTIONS  +"
-                card.Size = UDim2.new(1, -6, 0, optionRowHeight + (expanded and detailsHeight or 0))
+                expansionVersion = expansionVersion + 1
+                local version = expansionVersion
+                if expanded then detailsFrame.Visible = true end
+                tween(settingsButton, { BackgroundColor3 = expanded and Color3.fromRGB(73, 75, 82) or Color3.fromRGB(45, 47, 53) })
+                tween(settingsIcon, { Rotation = expanded and 90 or 0, ImageColor3 = expanded and accent or subtleColor }, smooth)
+                tween(card, { Size = UDim2.new(1, -5, 0, optionRowHeight + (expanded and detailHeight + 5 or 0)) }, smooth)
+                local animation = tween(detailsFrame, { Size = UDim2.new(1, 0, 0, expanded and detailHeight or 0) }, smooth)
+                if animation and not expanded then
+                    animation.Completed:Once(function()
+                        if expansionVersion == version and not expanded and detailsFrame.Parent then
+                            detailsFrame.Visible = false
+                        end
+                    end)
+                end
             end)
         end
     end
 
     local footer = create("Frame", {
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 18, 1, -118),
-        Size = UDim2.new(1, -36, 0, 108)
+        Name = "Footer", BackgroundTransparency = 1,
+        Position = UDim2.new(0, 18, 1, -136),
+        Size = UDim2.new(1, -36, 0, 126)
     }, panel)
-    local runtimeTitle = label(footer, "Live observation (seconds)", 12, subtleColor)
-    runtimeTitle.Size = UDim2.new(1, -70, 0, 26)
-    local runtimeBox = create("TextBox", {
-        Text = tostring(CONFIG.RuntimeTracePostSeconds),
-        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = lightText,
-        BackgroundColor3 = surfaceColor, ClearTextOnFocus = false,
-        Size = UDim2.fromOffset(62, 28), Position = UDim2.new(1, -62, 0, 0),
+    create("Frame", {
+        BackgroundColor3 = Color3.fromRGB(58, 60, 67), BackgroundTransparency = 0.5,
+        BorderSizePixel = 0, Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.new(1, 0, 0, 1)
+    }, footer)
+    local timerIcon = icon(footer, "clock-3", 15, subtleColor)
+    timerIcon.Position = UDim2.fromOffset(1, 12)
+    local runtimeTitle = label(footer, "Observation window", 11, subtleColor, Enum.Font.GothamMedium)
+    runtimeTitle.Position = UDim2.fromOffset(24, 7)
+    runtimeTitle.Size = UDim2.new(1, -117, 0, 27)
+    local runtimeBox = round(create("TextBox", {
+        Name = "RuntimeSeconds", Text = tostring(CONFIG.RuntimeTracePostSeconds),
+        PlaceholderText = "90", Font = Enum.Font.GothamMedium,
+        TextSize = 12, TextColor3 = lightText, PlaceholderColor3 = subtleColor,
+        BackgroundColor3 = surfaceColor, BorderSizePixel = 0,
+        ClearTextOnFocus = false, Size = UDim2.fromOffset(67, 28),
+        Position = UDim2.new(1, -67, 0, 6),
         TextXAlignment = Enum.TextXAlignment.Center
-    }, footer)
-    round(runtimeBox, 7)
-    local start = create("TextButton", {
-        Text = "START CAPTURE", Font = Enum.Font.GothamBold,
-        TextSize = 14, TextColor3 = Color3.fromRGB(17, 17, 17),
-        BackgroundColor3 = accent,
-        Position = UDim2.fromOffset(0, 36), Size = UDim2.new(1, 0, 0, 43),
-        AutoButtonColor = true
-    }, footer)
-    round(start, 10)
+    }, footer), 7)
+    stroke(runtimeBox, darkBorder, 0.57)
+    local start = round(create("TextButton", {
+        Name = "StartCapture", Text = "BEGIN CAPTURE", Font = Enum.Font.GothamBold,
+        TextSize = 13, TextColor3 = Color3.fromRGB(21, 22, 26),
+        BackgroundColor3 = accent, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(0, 43), Size = UDim2.new(1, 0, 0, 43),
+        AutoButtonColor = false
+    }, footer), 10)
     selectionStartButton = start
-    status = label(footer, "", 11, subtleColor)
-    status.Position = UDim2.fromOffset(0, 82)
-    status.Size = UDim2.new(1, 0, 0, 23)
+    local startIcon = icon(start, "play", 16, Color3.fromRGB(21, 22, 26))
+    startIcon.Position = UDim2.new(0.5, -89, 0.5, -8)
+    start.MouseEnter:Connect(function()
+        if not dumpRunning then tween(start, { BackgroundColor3 = Color3.fromRGB(245, 246, 249) }) end
+    end)
+    start.MouseLeave:Connect(function()
+        if not dumpRunning then tween(start, { BackgroundColor3 = accent }) end
+    end)
+    local statusIcon = icon(footer, "shield-check", 14, subtleColor)
+    statusIcon.Position = UDim2.fromOffset(1, 95)
+    status = label(footer, "Select a module to begin", 10, subtleColor)
+    status.Position = UDim2.fromOffset(21, 91)
+    status.Size = UDim2.new(1, -24, 0, 23)
     status.TextTruncate = Enum.TextTruncate.AtEnd
     selectionStatus = status
+    local progressTrack = round(create("Frame", {
+        Name = "ActivityTrack", BackgroundColor3 = Color3.fromRGB(45, 47, 52),
+        BorderSizePixel = 0, Position = UDim2.fromOffset(0, 122),
+        Size = UDim2.new(1, 0, 0, 3), ClipsDescendants = true,
+        Visible = false
+    }, footer), 2)
+    local progressStrip = round(create("Frame", {
+        Name = "ActivityIndicator", BackgroundColor3 = accent, BorderSizePixel = 0,
+        Position = UDim2.fromScale(-0.33, 0), Size = UDim2.fromScale(0.33, 1)
+    }, progressTrack), 2)
+    local spinnerTween
+    local progressTween
+    local function stopActivity()
+        if spinnerTween then spinnerTween:Cancel() spinnerTween = nil end
+        if progressTween then progressTween:Cancel() progressTween = nil end
+        startIcon.Rotation = 0
+        progressTrack.Visible = false
+    end
+    selectionCaptureFinished = function(success)
+        if not root.Parent then return end
+        stopActivity()
+        startIcon.Image = success and iconIds["circle-check"] or iconIds["circle-alert"]
+        startIcon.ImageColor3 = Color3.fromRGB(21, 22, 26)
+        tween(start, { BackgroundColor3 = success and Color3.fromRGB(223, 229, 224) or Color3.fromRGB(230, 207, 207) })
+        statusIcon.Image = success and iconIds["circle-check"] or iconIds["circle-alert"]
+        statusIcon.ImageColor3 = success and Color3.fromRGB(160, 199, 171) or Color3.fromRGB(221, 160, 160)
+    end
     refreshCount()
 
     start.MouseButton1Click:Connect(function()
         if dumpRunning then return end
-        local any = false
-        for _, enabled in pairs(SELECTION) do if enabled then any = true break end end
-        if not any then
-            status.Text = "Select at least one capture category."
-            status.TextColor3 = Color3.fromRGB(202, 202, 202)
+        if categoryCount == 0 then
+            status.Text = "Select at least one capture module."
+            status.TextColor3 = Color3.fromRGB(230, 172, 172)
+            statusIcon.Image = iconIds["circle-alert"]
+            statusIcon.ImageColor3 = status.TextColor3
             return
         end
         if SELECTION.Runtime or SELECTION.AvatarInspection or SELECTION.InteractionResearch then
             local seconds = tonumber(runtimeBox.Text)
             if not seconds or seconds < 0 or seconds > 600 then
-                status.Text = "Set a capture time between 0 and 600 seconds."
-                status.TextColor3 = Color3.fromRGB(202, 202, 202)
+                status.Text = "Enter an observation time from 0 to 600 seconds."
+                status.TextColor3 = Color3.fromRGB(230, 172, 172)
+                statusIcon.Image = iconIds["circle-alert"]
+                statusIcon.ImageColor3 = status.TextColor3
                 return
             end
             CONFIG.RuntimeTracePostSeconds = seconds
@@ -10395,8 +10614,19 @@ function F.showSelectionWindow()
         started = os.clock()
         start.Text = "CAPTURING..."
         start.AutoButtonColor = false
+        startIcon.Image = iconIds["loader-circle"]
+        startIcon.Rotation = 0
+        spinnerTween = TweenService:Create(startIcon, TweenInfo.new(1.0, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), { Rotation = 360 })
+        spinnerTween:Play()
+        statusIcon.Image = iconIds["activity"]
+        statusIcon.ImageColor3 = subtleColor
         status.TextColor3 = subtleColor
         status.Text = "Preparing output folder..."
+        progressTrack.Visible = true
+        progressStrip.Position = UDim2.fromScale(-0.33, 0)
+        progressTween = TweenService:Create(progressStrip, TweenInfo.new(1.18, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1), { Position = UDim2.fromScale(1.04, 0) })
+        progressTween:Play()
+        tween(start, { BackgroundColor3 = Color3.fromRGB(202, 205, 212) })
         progressLastLoggedAt = os.clock()
         progressLastCount = 0
         progressLastStage = nil
@@ -10429,9 +10659,20 @@ function F.showSelectionWindow()
         if input == dragging then dragging = nil end
     end)
     root.Destroying:Connect(function()
+        dragging = nil
         moveConnection:Disconnect()
         endedConnection:Disconnect()
+        stopActivity()
+        selectionCaptureFinished = nil
+        if selectionGui == root then
+            selectionGui = nil
+            selectionStatus = nil
+            selectionStartButton = nil
+        end
     end)
+    tween(backdrop, { BackgroundTransparency = 0.51 }, TweenInfo.new(0.25, Enum.EasingStyle.Quad))
+    tween(panelScale, { Scale = 1 }, TweenInfo.new(0.36, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
+    tween(panel, { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out))
 end
 
 F.showSelectionWindow()
