@@ -10184,10 +10184,10 @@ function F.showSelectionWindow()
     local height = math.min(676, math.max(350, viewport.Y - 26))
     local compact = width < 355
 
-    local backdrop = create("TextButton", {
-        Name = "Backdrop", Text = "", AutoButtonColor = false,
-        BackgroundColor3 = Color3.fromRGB(0, 0, 0), BackgroundTransparency = 1,
-        BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), Active = true
+    local backdrop = create("Frame", {
+        Name = "Backdrop", BackgroundTransparency = 1,
+        BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
+        Active = false, Interactable = false
     }, root)
     local panel = create("CanvasGroup", {
         Name = "AverynPanel", GroupTransparency = 1,
@@ -10579,9 +10579,62 @@ function F.showSelectionWindow()
         startIcon.Rotation = 0
         progressTrack.Visible = false
     end
+    local captureHud
+    local captureHudTitle
+    local captureHudStatus
+    local function enterGameplayCaptureMode()
+        local focused = UserInputService:GetFocusedTextBox()
+        if focused and focused:IsDescendantOf(root) then
+            focused:ReleaseFocus()
+        end
+
+        backdrop.Visible = false
+        panel.Visible = false
+        panel.Active = false
+        stopActivity()
+
+        captureHud = round(create("Frame", {
+            Name = "CaptureStatus", BackgroundColor3 = mainColor,
+            BackgroundTransparency = 0.22, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -12, 0, 12),
+            Size = UDim2.fromOffset(238, 54),
+            Active = false, Interactable = false
+        }, root), 10)
+        stroke(captureHud, darkBorder, 0.55)
+
+        captureHudTitle = label(captureHud, "AVERYN  /  LIVE CAPTURE", 10, lightText, Enum.Font.GothamBold)
+        captureHudTitle.Position = UDim2.fromOffset(12, 7)
+        captureHudTitle.Size = UDim2.new(1, -24, 0, 18)
+        captureHudTitle.Active = false
+        captureHudTitle.Interactable = false
+
+        captureHudStatus = label(captureHud, "Play, move and use tools normally", 10, subtleColor)
+        captureHudStatus.Position = UDim2.fromOffset(12, 27)
+        captureHudStatus.Size = UDim2.new(1, -24, 0, 18)
+        captureHudStatus.TextTruncate = Enum.TextTruncate.AtEnd
+        captureHudStatus.Active = false
+        captureHudStatus.Interactable = false
+
+        selectionStatus = captureHudStatus
+        selectionStartButton = nil
+    end
+
     selectionCaptureFinished = function(success)
         if not root.Parent then return end
         stopActivity()
+        if captureHud and captureHud.Parent then
+            captureHudTitle.Text = success and "AVERYN  /  CAPTURE COMPLETE" or "AVERYN  /  CAPTURE FAILED"
+            captureHudTitle.TextColor3 = success and Color3.fromRGB(180, 221, 189) or Color3.fromRGB(230, 162, 162)
+            captureHudStatus.Text = success and ("Saved to " .. OUTPUT_FOLDER) or "See console for details"
+            captureHudStatus.TextColor3 = subtleColor
+            task.delay(15, function()
+                if root.Parent and not dumpRunning then
+                    root:Destroy()
+                end
+            end)
+            return
+        end
         startIcon.Image = success and iconIds["circle-check"] or iconIds["circle-alert"]
         startIcon.ImageColor3 = Color3.fromRGB(21, 22, 26)
         tween(start, { BackgroundColor3 = success and Color3.fromRGB(223, 229, 224) or Color3.fromRGB(230, 207, 207) })
@@ -10633,6 +10686,7 @@ function F.showSelectionWindow()
         lastTraversalYield = os.clock()
         lastSelectionYield = os.clock()
         F.log("Capture started. Check the console for progress.")
+        enterGameplayCaptureMode()
         task.spawn(F.executeDump)
     end)
 
@@ -10670,7 +10724,6 @@ function F.showSelectionWindow()
             selectionStartButton = nil
         end
     end)
-    tween(backdrop, { BackgroundTransparency = 0.51 }, TweenInfo.new(0.25, Enum.EasingStyle.Quad))
     tween(panelScale, { Scale = 1 }, TweenInfo.new(0.36, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
     tween(panel, { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out))
 end
