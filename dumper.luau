@@ -79,6 +79,7 @@ local REMOTE_USAGE_FILE = OUTPUT_FOLDER .. "/remote_usage.json"
 local INTERACTION_RESEARCH_FILE = OUTPUT_FOLDER .. "/interaction_research.json"
 local INTERACTION_EVENTS_FILE = OUTPUT_FOLDER .. "/interaction_events.json"
 local SOURCE_REFERENCES_FILE = OUTPUT_FOLDER .. "/source_references.json"
+local SOURCE_COVERAGE_FILE = OUTPUT_FOLDER .. "/source_coverage.json"
 local CONNECTION_RESEARCH_FILE = OUTPUT_FOLDER .. "/connection_research.json"
 local MODULE_SOURCES_FOLDER = OUTPUT_FOLDER .. "/modules"
 local CLIENT_SOURCES_FOLDER = OUTPUT_FOLDER .. "/localscripts"
@@ -193,6 +194,10 @@ local CONFIG = {
     StateIndexMaxPerBucket = 1500,
     DecompileModuleScripts = true,
     DecompileLocalScripts = true,
+    -- Applies to every Script with RunContext=Client, regardless of the game.
+    CaptureClientRunContextScripts = true,
+    -- Preserve the existing ByteFall pipeline, but allow local decompile() as fallback.
+    UseExecutorDecompilerFallback = true,
     LocalDecompilerMaxScripts = 500,
     LocalDecompilerWorkers = 3,
     LocalDecompilerTimeout = 10,
@@ -249,6 +254,7 @@ local nativeBase64Encoder =
 local capabilities = {
     writefile = type(writefile) == "function",
     getscriptbytecode = type(getscriptbytecode) == "function",
+    decompile = type(decompile) == "function",
     http_request = type(executorRequest) == "function",
     base64_native = type(nativeBase64Encoder) == "function",
     makefolder = type(makefolder) == "function",
@@ -434,6 +440,10 @@ local clientScriptQueue = {}
 local clientDecompileStats = {
     Enabled = CONFIG.DecompileLocalScripts,
     Queued = 0,
+    RunContextClientQueued = 0,
+    RunContextClientSucceeded = 0,
+    RunContextClientFailed = 0,
+    RunContextClientSkipped = 0,
     Attempted = 0,
     Succeeded = 0,
     Failed = 0,
@@ -909,7 +919,11 @@ function F.scanSourceReferences(source, record, file)
         "gettagged(", "getinstanceaddedsignal(", "getinstanceremovedsignal(",
         ":connect(", ":once(", ":fire(", ":invoke(",
         "activated:connect", "triggered:connect", "touched:connect",
-        "raycast(", "blockcast(", "shapecast(", "overlapparts(",
+        "raycast(", "blockcast(", "spherecast(", "shapecast(", "overlapparts(",
+        "getpartsinpart(", "getpartboundsinbox(", "getpartboundsinradius(",
+        "findpartonray(", "findpartonraywithignorelist(",
+        "fireclient(", "fireallclients(", "invokeclient(",
+        "getnetworkowner(", "setnetworkowner(", "getattributes(",
         "getconnections(", "getupvalue(", "getupvalues(", "hookfunction(",
         "hookmetamethod(", "getnamecallmethod(", "task.spawn(", "task.defer("
     }
@@ -2514,15 +2528,39 @@ function F.registerScript(object, id, name, className, parentId, path, propertie
     if properties.Disabled ~= nil then
         record.Disabled = properties.Disabled
     end
+    if properties.Enabled ~= nil then
+        record.Enabled = properties.Enabled
+    end
+
+    -- RunContext is a property of Script, not a reliable filename or folder hint.
+    -- Resolve it independently even when the snapshot uses selective properties.
+    if className == "Script" then
+        local runContext, readable = F.safeGet(object, "RunContext")
+        if readable and runContext ~= nil then
+            record.RunContext = F.sanitizeString(tostring(runContext))
+        elseif type(properties.RunContext) == "table" then
+            record.RunContext = properties.RunContext.value
+        end
+    elseif type(properties.RunContext) == "table" then
+        record.RunContext = properties.RunContext.value
+    end
+
+    record.ClientExecutable = className == "LocalScript"
+        or (className == "Script" and
+            (record.RunContext == "Enum.RunContext.Client" or record.RunContext == "Client"))
 
     table.insert(scriptIndex[bucket], record)
 
-    if className == "LocalScript" and CONFIG.DecompileLocalScripts then
+    if record.ClientExecutable and CONFIG.DecompileLocalScripts
+        and (className == "LocalScript" or CONFIG.CaptureClientRunContextScripts) then
         table.insert(clientScriptQueue, {
             Object = object,
             Record = record
         })
         clientDecompileStats.Queued = clientDecompileStats.Queued + 1
+        if className == "Script" then
+            clientDecompileStats.RunContextClientQueued = clientDecompileStats.RunContextClientQueued + 1
+        end
     end
 
     if className == "ModuleScript" and CONFIG.DecompileModuleScripts then
@@ -5669,12 +5707,15 @@ function F.buildSummary(elapsed, pathStats)
         "Registered IDs: " .. tostring(nextInstanceId),
         "Remotes / Bindables: " .. tostring(F.totalRemoteCount()),
         "Scripts: " .. tostring(F.totalScriptCount()),
+        "Client RunContext Scripts queued: " .. tostring(clientDecompileStats.RunContextClientQueued),
+        "Client RunContext Scripts decompiled: " .. tostring(clientDecompileStats.RunContextClientSucceeded),
+        "Local decompiler fallback available: " .. tostring(CONFIG.UseExecutorDecompilerFallback and capabilities.decompile),
         "Interaction Research: " .. tostring(SELECTION.InteractionResearch),
         "Outgoing Hook (opt-in): " .. tostring(CONFIG.RuntimeTraceOutgoingRemotes),
-        "LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued),
-        "LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded),
-        "LocalScripts decompile failed: " .. tostring(clientDecompileStats.Failed),
-        "LocalScripts decompile skipped: " .. tostring(clientDecompileStats.Skipped),
+        "LocalScripts queued for decompile: " .. tostring(clientDecompileStats.Queued - clientDecompileStats.RunContextClientQueued),
+        "LocalScripts decompiled: " .. tostring(clientDecompileStats.Succeeded - clientDecompileStats.RunContextClientSucceeded),
+        "LocalScripts decompile failed: " .. tostring(clientDecompileStats.Failed - clientDecompileStats.RunContextClientFailed),
+        "LocalScripts decompile skipped: " .. tostring(clientDecompileStats.Skipped - clientDecompileStats.RunContextClientSkipped),
         "ModuleScripts queued for decompile: " .. tostring(moduleDecompileStats.Queued),
         "ModuleScripts decompiled: " .. tostring(moduleDecompileStats.Succeeded),
         "ModuleScripts decompile failed: " .. tostring(moduleDecompileStats.Failed),
@@ -7881,6 +7922,35 @@ function F.requestByteFall(bytecode)
     return false, nil, lastStatus, lastError, maxAttempts
 end
 
+-- Best-effort local fallback. Does not call or mutate any game function.
+-- Executors without decompile() keep the original ByteFall behavior.
+function F.tryExecutorDecompiler(object, guard, bytecodeBytes, bytecodeDigest)
+    if not CONFIG.UseExecutorDecompilerFallback or not capabilities.decompile then
+        return nil, "executor decompile() unavailable"
+    end
+    local ok, source = pcall(decompile, object)
+    if guard and guard.Cancelled then
+        return nil, "decompile cancelled"
+    end
+    if not ok or type(source) ~= "string" or source == "" then
+        return nil, F.compactDecompilerError(ok and "decompile() returned no source" or source)
+    end
+    -- Some executor APIs return error text instead of raising an exception.
+    local prefix = source:sub(1, 200):lower()
+    if prefix:match("^%s*decompilation failed") or prefix:match("^%s*decompile failed") then
+        return nil, F.compactDecompilerError(source)
+    end
+    return {
+        Status = "Success",
+        Method = "ExecutorDecompile",
+        Source = source,
+        BytecodeBytes = bytecodeBytes,
+        BytecodeDigest = bytecodeDigest,
+        SourceDigest = SELECTION.InteractionResearch and F.comparisonDigest(source) or nil,
+        SourceBytes = #source
+    }, nil
+end
+
 function F.buildModuleDecompileResult(entry, guard)
     local object = entry and entry.Object or nil
     local record = entry and entry.Record or nil
@@ -7891,7 +7961,12 @@ function F.buildModuleDecompileResult(entry, guard)
         }
     end
 
-    local bytecodeOk, bytecode = pcall(getscriptbytecode, object)
+    local bytecodeOk, bytecode
+    if capabilities.getscriptbytecode then
+        bytecodeOk, bytecode = pcall(getscriptbytecode, object)
+    else
+        bytecodeOk, bytecode = false, "getscriptbytecode unavailable"
+    end
     if guard and guard.Cancelled then
         return nil
     end
@@ -7900,15 +7975,23 @@ function F.buildModuleDecompileResult(entry, guard)
         local reason = bytecodeOk
             and "getscriptbytecode returned empty or non-string data"
             or ("getscriptbytecode failed: " .. tostring(bytecode))
+        local fallback, fallbackError = F.tryExecutorDecompiler(object, guard)
+        if guard and guard.Cancelled then return nil end
+        if fallback then return fallback end
         return {
             Status = "Failed",
-            Reason = F.compactDecompilerError(reason)
+            Reason = F.compactDecompilerError(reason .. "; fallback: " .. tostring(fallbackError))
         }
     end
 
     local bytecodeBytes = #bytecode
     local bytecodeDigest = SELECTION.InteractionResearch and F.comparisonDigest(bytecode) or nil
-    local success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
+    local success, source, statusCode, requestError, attempts
+    if capabilities.http_request then
+        success, source, statusCode, requestError, attempts = F.requestByteFall(bytecode)
+    else
+        success, source, statusCode, requestError, attempts = false, nil, 0, "HTTP API unavailable", 0
+    end
     bytecode = nil
 
     if guard and guard.Cancelled then
@@ -7917,18 +8000,22 @@ function F.buildModuleDecompileResult(entry, guard)
     end
 
     if not success then
+        local fallback, fallbackError = F.tryExecutorDecompiler(object, guard, bytecodeBytes, bytecodeDigest)
+        if guard and guard.Cancelled then return nil end
+        if fallback then return fallback end
         return {
             Status = "Failed",
             HttpStatus = statusCode,
             Attempts = attempts,
             BytecodeBytes = bytecodeBytes,
             BytecodeDigest = bytecodeDigest,
-            Reason = F.compactDecompilerError(requestError)
+            Reason = F.compactDecompilerError(tostring(requestError) .. "; fallback: " .. tostring(fallbackError))
         }
     end
 
     return {
         Status = "Success",
+        Method = "ByteFall",
         Source = source,
         HttpStatus = statusCode,
         Attempts = attempts,
@@ -7965,6 +8052,7 @@ function F.applyModuleDecompileResult(entry, result)
             Status = result.Status or "Failed",
             HttpStatus = result.HttpStatus,
             Attempts = result.Attempts,
+            Method = result.Method,
             BytecodeBytes = result.BytecodeBytes,
             BytecodeDigest = result.BytecodeDigest,
             Reason = result.Reason
@@ -7995,6 +8083,7 @@ function F.applyModuleDecompileResult(entry, result)
         File = path,
         HttpStatus = result.HttpStatus,
         Attempts = result.Attempts,
+        Method = result.Method,
         BytecodeBytes = result.BytecodeBytes,
         BytecodeDigest = result.BytecodeDigest,
         SourceDigest = result.SourceDigest,
@@ -8054,6 +8143,8 @@ function F.clientScriptSourcePath(record)
     local safeName = F.sanitizeFileComponent(record and record.Name or "LocalScript")
     local id = record and record.Id or 0
     local folder = currentClientSourcesFolder or CLIENT_SOURCES_FOLDER
+    -- The ID guarantees uniqueness even when multiple scripts share a name.
+    -- Record.ClassName remains available in scripts.json to identify the source type.
     return string.format("%s/%06d_%s.luau", folder, id, safeName)
 end
 
@@ -8075,11 +8166,15 @@ function F.applyClientDecompileResult(entry, result)
             Status = result.Status or "Failed",
             HttpStatus = result.HttpStatus,
             Attempts = result.Attempts,
+            Method = result.Method,
             BytecodeBytes = result.BytecodeBytes,
             BytecodeDigest = result.BytecodeDigest,
             Reason = result.Reason or "client decompilation failed"
         }
         clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+        if record.ClassName == "Script" then
+            clientDecompileStats.RunContextClientFailed = clientDecompileStats.RunContextClientFailed + 1
+        end
         F.recordWarning("LocalScriptDecompile", object, record.Decompile.Reason)
         return
     end
@@ -8094,6 +8189,9 @@ function F.applyClientDecompileResult(entry, result)
             Reason = "failed to write decompiled client source"
         }
         clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+        if record.ClassName == "Script" then
+            clientDecompileStats.RunContextClientFailed = clientDecompileStats.RunContextClientFailed + 1
+        end
         F.recordWarning("LocalScriptDecompileWrite", object, record.Decompile.Reason)
         return
     end
@@ -8103,6 +8201,7 @@ function F.applyClientDecompileResult(entry, result)
         File = path,
         HttpStatus = result.HttpStatus,
         Attempts = result.Attempts,
+        Method = result.Method,
         BytecodeBytes = result.BytecodeBytes,
         BytecodeDigest = result.BytecodeDigest,
         SourceDigest = result.SourceDigest,
@@ -8111,6 +8210,9 @@ function F.applyClientDecompileResult(entry, result)
     F.scanSourceReferences(result.Source, record, path)
     F.V38.scanSource(result.Source, record, path)
     clientDecompileStats.Succeeded = clientDecompileStats.Succeeded + 1
+    if record.ClassName == "Script" and record.ClientExecutable then
+        clientDecompileStats.RunContextClientSucceeded = clientDecompileStats.RunContextClientSucceeded + 1
+    end
     clientDecompileStats.Written = clientDecompileStats.Written + 1
     clientDecompileStats.SourceBytes = clientDecompileStats.SourceBytes + (tonumber(result.SourceBytes) or 0)
     result.Source = nil
@@ -8123,6 +8225,9 @@ function F.markClientScriptsSkipped(reason, startIndex, countAsAborted)
         if record and not record.Decompile then
             record.Decompile = {Status = "Skipped", Reason = reason}
             clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
+            if record.ClassName == "Script" then
+                clientDecompileStats.RunContextClientSkipped = clientDecompileStats.RunContextClientSkipped + 1
+            end
             if countAsAborted then
                 clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
             end
@@ -8136,8 +8241,9 @@ function F.decompileQueuedClientScripts(scriptsDocument)
         clientDecompileStats.ElapsedSeconds = os.clock() - started
         return
     end
-    if not capabilities.getscriptbytecode or not capabilities.http_request then
-        F.markClientScriptsSkipped("getscriptbytecode or HTTP API unavailable")
+    if (not capabilities.getscriptbytecode or not capabilities.http_request)
+        and not (CONFIG.UseExecutorDecompilerFallback and capabilities.decompile) then
+        F.markClientScriptsSkipped("getscriptbytecode/HTTP unavailable and executor decompile() unavailable")
         clientDecompileStats.ElapsedSeconds = os.clock() - started
         table.clear(clientScriptQueue)
         return
@@ -8197,6 +8303,9 @@ function F.decompileQueuedClientScripts(scriptsDocument)
                         local record = entry.Record
                         record.Decompile = {Status = "TimedOut", Reason = F.compactDecompilerError(errorText)}
                         clientDecompileStats.Failed = clientDecompileStats.Failed + 1
+                        if record.ClassName == "Script" then
+                            clientDecompileStats.RunContextClientFailed = clientDecompileStats.RunContextClientFailed + 1
+                        end
                         clientDecompileStats.TimedOut = clientDecompileStats.TimedOut + 1
                         timeouts = timeouts + 1
                         F.recordWarning("LocalScriptDecompileTimeout", entry.Object, errorText)
@@ -8242,6 +8351,9 @@ function F.decompileQueuedClientScripts(scriptsDocument)
             if record and not record.Decompile then
                 record.Decompile = {Status = "Skipped", Reason = reason}
                 clientDecompileStats.Skipped = clientDecompileStats.Skipped + 1
+                if record.ClassName == "Script" then
+                    clientDecompileStats.RunContextClientSkipped = clientDecompileStats.RunContextClientSkipped + 1
+                end
                 clientDecompileStats.Aborted = clientDecompileStats.Aborted + 1
             end
         end
@@ -8285,15 +8397,9 @@ function F.decompileQueuedModules(scriptsDocument)
         return
     end
 
-    if not capabilities.getscriptbytecode then
-        F.markQueuedModulesSkipped("getscriptbytecode is unavailable")
-        moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
-        table.clear(moduleScriptQueue)
-        return
-    end
-
-    if not capabilities.http_request then
-        F.markQueuedModulesSkipped("executor HTTP request API is unavailable")
+    if (not capabilities.getscriptbytecode or not capabilities.http_request)
+        and not (CONFIG.UseExecutorDecompilerFallback and capabilities.decompile) then
+        F.markQueuedModulesSkipped("getscriptbytecode/HTTP unavailable and executor decompile() unavailable")
         moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
         table.clear(moduleScriptQueue)
         return
@@ -8401,6 +8507,55 @@ function F.decompileQueuedModules(scriptsDocument)
     moduleDecompileStats.ElapsedSeconds = os.clock() - decompileStartedAt
     table.clear(moduleScriptQueue)
     F.releaseTemporaryMemory()
+end
+
+-- Universal completeness report. It distinguishes unavailable server source,
+-- unsupported executor APIs, decompiler failures and successfully captured code.
+function F.buildSourceCoverageDocument()
+    local rows, counts = {}, {
+        Total = 0, ClientExecutable = 0, RunContextClient = 0,
+        Succeeded = 0, Failed = 0, Skipped = 0, TimedOut = 0,
+        NotRequested = 0, ByteFall = 0, ExecutorDecompile = 0
+    }
+    for _, bucket in pairs(scriptIndex) do
+        for _, entry in ipairs(bucket) do
+            counts.Total = counts.Total + 1
+            if entry.ClientExecutable then counts.ClientExecutable = counts.ClientExecutable + 1 end
+            if entry.ClassName == "Script" and entry.ClientExecutable then
+                counts.RunContextClient = counts.RunContextClient + 1
+            end
+            local result = entry.Decompile
+            local status = result and result.Status or "NotRequested"
+            counts[status] = (counts[status] or 0) + 1
+            if result and result.Method and counts[result.Method] ~= nil then
+                counts[result.Method] = counts[result.Method] + 1
+            end
+            rows[#rows + 1] = {
+                Id = entry.Id, ClassName = entry.ClassName,
+                Path = entry.Path, RunContext = entry.RunContext,
+                ClientExecutable = entry.ClientExecutable,
+                Status = status,
+                Method = result and result.Method,
+                File = result and result.File,
+                Reason = result and result.Reason
+            }
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.Path ~= b.Path then return a.Path < b.Path end
+        return a.Id < b.Id
+    end)
+    return {
+        SchemaVersion = SCHEMA_VERSION, DumpId = currentDumpId,
+        Counts = counts, Scripts = rows,
+        Notes = {
+            "This report covers only Instances visible to the current client.",
+            "A Script with RunContext=Client is a client decompilation candidate.",
+            "Server or legacy Script source is not exposed by normal client bytecode APIs.",
+            "A missing or failed decompilation is not proof of source virtualization.",
+            "ExecutorDecompile indicates the optional local decompile() fallback."
+        }
+    }
 end
 
 checkpointStage = function(stage)
@@ -9321,6 +9476,8 @@ function F.run()
     F.decompileQueuedModules(scriptsDocument)
     if SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources then
         F.writeJSONDocument(SCRIPTS_FILE, scriptsDocument, "scripts.json", writtenFiles, true)
+        F.writeJSONDocument(SOURCE_COVERAGE_FILE, F.buildSourceCoverageDocument(),
+            "source_coverage.json", writtenFiles, false)
     end
     if SELECTION.InteractionResearch then
         checkpointStage("interaction_research_export")
@@ -9698,10 +9855,12 @@ function F.run()
             RegisteredIds = nextInstanceId,
             RemotesAndBindables = F.totalRemoteCount(),
             Scripts = F.totalScriptCount(),
-            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
-            LocalScriptsDecompiled = clientDecompileStats.Succeeded,
-            LocalScriptsDecompileFailed = clientDecompileStats.Failed,
-            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
+            ClientRunContextScriptsQueued = clientDecompileStats.RunContextClientQueued,
+            ClientRunContextScriptsDecompiled = clientDecompileStats.RunContextClientSucceeded,
+            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued - clientDecompileStats.RunContextClientQueued,
+            LocalScriptsDecompiled = clientDecompileStats.Succeeded - clientDecompileStats.RunContextClientSucceeded,
+            LocalScriptsDecompileFailed = clientDecompileStats.Failed - clientDecompileStats.RunContextClientFailed,
+            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped - clientDecompileStats.RunContextClientSkipped,
             ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
             ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
             ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
@@ -9727,6 +9886,9 @@ function F.run()
         },
         LocalScriptDecompiler = {
             Enabled = CONFIG.DecompileLocalScripts,
+            CaptureClientRunContextScripts = CONFIG.CaptureClientRunContextScripts,
+            ExecutorDecompilerFallback = CONFIG.UseExecutorDecompilerFallback and capabilities.decompile,
+            SourceCoverageFile = (SELECTION.Scripts or SELECTION.LocalSources or SELECTION.ModuleSources) and SOURCE_COVERAGE_FILE or nil,
             Endpoint = CONFIG.ModuleDecompilerEndpoint,
             MaxScripts = CONFIG.LocalDecompilerMaxScripts,
             Workers = CONFIG.LocalDecompilerWorkers,
@@ -9736,6 +9898,7 @@ function F.run()
         },
         ModuleDecompiler = {
             Enabled = CONFIG.DecompileModuleScripts,
+            ExecutorDecompilerFallback = CONFIG.UseExecutorDecompilerFallback and capabilities.decompile,
             Endpoint = CONFIG.ModuleDecompilerEndpoint,
             Workers = CONFIG.ModuleDecompilerWorkers,
             TimeoutSeconds = CONFIG.ModuleDecompilerTimeout,
@@ -9890,10 +10053,12 @@ function F.run()
             RegisteredIds = nextInstanceId,
             GuiElements = guiCapture.SnapshotSaved,
             GuiChanges = #guiCapture.Records,
-            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued,
-            LocalScriptsDecompiled = clientDecompileStats.Succeeded,
-            LocalScriptsDecompileFailed = clientDecompileStats.Failed,
-            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped,
+            ClientRunContextScriptsQueued = clientDecompileStats.RunContextClientQueued,
+            ClientRunContextScriptsDecompiled = clientDecompileStats.RunContextClientSucceeded,
+            LocalScriptsQueuedForDecompile = clientDecompileStats.Queued - clientDecompileStats.RunContextClientQueued,
+            LocalScriptsDecompiled = clientDecompileStats.Succeeded - clientDecompileStats.RunContextClientSucceeded,
+            LocalScriptsDecompileFailed = clientDecompileStats.Failed - clientDecompileStats.RunContextClientFailed,
+            LocalScriptsDecompileSkipped = clientDecompileStats.Skipped - clientDecompileStats.RunContextClientSkipped,
             ModuleScriptsQueuedForDecompile = moduleDecompileStats.Queued,
             ModuleScriptsDecompiled = moduleDecompileStats.Succeeded,
             ModuleScriptsDecompileFailed = moduleDecompileStats.Failed,
@@ -9950,9 +10115,12 @@ function F.run()
     print("Registered IDs:", nextInstanceId)
     print("Remotes / Bindables:", F.totalRemoteCount())
     print("Scripts:", F.totalScriptCount())
-    print("LocalScripts queued for decompile:", clientDecompileStats.Queued)
-    print("LocalScripts decompiled:", clientDecompileStats.Succeeded)
-    print("LocalScripts decompile failed:", clientDecompileStats.Failed)
+    print("RunContext Client Scripts queued:", clientDecompileStats.RunContextClientQueued)
+    print("RunContext Client Scripts decompiled:", clientDecompileStats.RunContextClientSucceeded)
+    print("All client-executable scripts queued:", clientDecompileStats.Queued)
+    print("LocalScripts queued:", clientDecompileStats.Queued - clientDecompileStats.RunContextClientQueued)
+    print("LocalScripts decompiled:", clientDecompileStats.Succeeded - clientDecompileStats.RunContextClientSucceeded)
+    print("LocalScripts decompile failed:", clientDecompileStats.Failed - clientDecompileStats.RunContextClientFailed)
     print("ModuleScripts queued for decompile:", moduleDecompileStats.Queued)
     print("ModuleScripts decompiled:", moduleDecompileStats.Succeeded)
     print("ModuleScripts decompile failed:", moduleDecompileStats.Failed)
